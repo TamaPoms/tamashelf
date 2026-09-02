@@ -1,0 +1,19 @@
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Python / backend
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+*.pyc
+
+# Données runtime (montées en volume Docker, jamais versionnées)
+data/
+
+# Éditeurs / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

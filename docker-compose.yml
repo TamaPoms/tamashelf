@@ -1,0 +1,22 @@
+services:
+  tamashelf:
+    build: .
+    container_name: tamashelf
+    restart: unless-stopped
+    ports:
+      - "9999:9999"
+    volumes:
+      # Base de données locale (persistante)
+      - ./data:/data
+      # Monter les disques entiers pour pouvoir ajouter des bibliothèques depuis l'admin
+      - /mnt/14To:/mnt/14To:ro
+      - /mnt/8To:/mnt/8To:ro
+      # Accès direct (lecture ET écriture) à la vraie base Nautiljon -- remplace
+      # l'ancienne API HTTP séparée. Un bind mount plus spécifique (ce sous-dossier)
+      # écrase le mode lecture seule du mount parent /mnt/14To:ro ci-dessus, ce qui
+      # permet à l'admin de créer des séries/volumes depuis l'interface web.
+      - /mnt/14To/nautiljon:/mnt/14To/nautiljon:rw
+    environment:
+      - TAMASHELF_DATA=/data
+      - TAMASHELF_STATIC=/app/static
+      - NAUTILJON_DB=/mnt/14To/nautiljon/nautiljon_mangas.db
