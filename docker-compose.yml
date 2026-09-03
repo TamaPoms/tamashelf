@@ -11,12 +11,24 @@ services:
       # Monter les disques entiers pour pouvoir ajouter des bibliothèques depuis l'admin
       - /mnt/14To:/mnt/14To:ro
       - /mnt/8To:/mnt/8To:ro
-      # Accès direct (lecture ET écriture) à la vraie base Nautiljon -- remplace
-      # l'ancienne API HTTP séparée. Un bind mount plus spécifique (ce sous-dossier)
-      # écrase le mode lecture seule du mount parent /mnt/14To:ro ci-dessus, ce qui
-      # permet à l'admin de créer des séries/volumes depuis l'interface web.
-      - /mnt/14To/nautiljon:/mnt/14To/nautiljon:rw
+      # Depuis que app.py est le seul process à écrire dans nautiljon_mangas.db (voir
+      # NAUTILJON_DB/APP_PY_* ci-dessous), TamaShelf n'a plus besoin d'un accès en
+      # écriture à ce dossier -- il ne fait plus que lire les jaquettes déjà
+      # téléchargées sur disque (/api/nautiljon/img). :ro suffit désormais, et retire
+      # un chemin d'écriture directe de plus vers ce fichier partagé.
+      - /mnt/14To/nautiljon:/mnt/14To/nautiljon:ro
     environment:
       - TAMASHELF_DATA=/data
       - TAMASHELF_STATIC=/app/static
+      # Sert uniquement à retrouver le dossier des images (nautiljon_dir()) -- plus
+      # aucun accès SQLite direct depuis ce conteneur, voir APP_PY_* ci-dessous.
       - NAUTILJON_DB=/mnt/14To/nautiljon/nautiljon_mangas.db
+      # Adresse où app.py écoute (le process qui, seul désormais, ouvre
+      # nautiljon_mangas.db) -- remplace-la par l'IP réelle du Pi si app.py ne tourne
+      # pas dans ce même conteneur/hôte au sens Docker (cas normal : app.py tourne en
+      # dehors de Docker, directement sur le Pi). Identifiants : mêmes que la connexion
+      # à l'interface web de app.py (check_auth) -- à changer ici SI tu les changes
+      # côté app.py (par défaut mika/1234).
+      - APP_PY_URL=http://192.168.1.XXX:5555
+      - APP_PY_USER=mika
+      - APP_PY_PASS=1234
