@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 from contextlib import contextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Response, Request, Form
+from fastapi import FastAPI, Depends, HTTPException, Query, Response, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,15 +111,6 @@ def get_db():
 
 def _strip_accents(text: str) -> str:
     return ''.join(ch for ch in unicodedata.normalize("NFD", text or "") if unicodedata.category(ch) != "Mn")
-
-def _parser_liste(texte: str) -> list[str]:
-    """Découpe un champ formulaire "a, b, c" (ou "a; b; c") en liste de valeurs
-    nettoyées, en ignorant les entrées vides. Même comportement que _parser_liste()
-    dans app.py, utilisé côté admin pour les genres/thèmes/éditeurs/auteurs saisis
-    manuellement lors de la création d'une série."""
-    if not texte:
-        return []
-    return [v.strip() for v in re.split(r"[,;]", texte) if v.strip()]
 
 def _normalize_match_key(text: str) -> str:
     t = _strip_accents((text or '').lower().strip())
@@ -2187,119 +2178,6 @@ async def reset_match(manga_id: int, admin=Depends(require_admin)):
         """, (manga_id,))
         db.commit()
         return {"ok": True}
-
-
-# ═══════════════════════════════════════════
-#  Admin — création manuelle dans la base Nautiljon
-#  (série absente/introuvable sur nautiljon.com : l'admin la saisit à la main,
-#  directement dans la vraie base, via nautiljon_db.py — web only, cf. décision
-#  utilisateur : pas d'équivalent dans l'appli Android.)
-# ═══════════════════════════════════════════
-
-async def _lire_fichier_optionnel(valeur) -> Optional[bytes]:
-    """Lit un champ de formulaire multipart censé être un fichier, en gérant proprement
-    le cas très courant d'un <input type="file"> laissé vide : le navigateur envoie
-    quand même une partie multipart pour ce champ, mais Starlette la décode alors comme
-    une chaîne vide plutôt qu'un UploadFile (contrairement à un champ typé UploadFile
-    déclaré directement dans la signature FastAPI, qui lèverait une 422 dans ce cas).
-    Renvoie None si le champ est absent/vide, les bytes lus sinon."""
-    if isinstance(valeur, StarletteUploadFile) and valeur.filename:
-        return await valeur.read()
-    return None
-
-
-@app.post("/api/admin/nautiljon/serie")
-async def creer_serie_nautiljon(request: Request, admin=Depends(require_admin)):
-    """Crée une nouvelle série (+ 1 édition + volumes éventuels) directement dans la
-    vraie base Nautiljon locale. Mêmes champs que /admin/serie/nouvelle dans app.py.
-    Utilise directement request.form() (plutôt que des paramètres Form()/File() typés)
-    pour rester tolérant aux lignes de volumes sans image (cf. _lire_fichier_optionnel)."""
-    if not nautiljon_db.is_available():
-        raise HTTPException(400, f"Base Nautiljon introuvable : {nautiljon_db.NAUTILJON_DB}")
-
-    form = await request.form()
-    titre = (form.get("titre") or "").strip()
-    synopsis = (form.get("synopsis") or "").strip()
-    type_serie = (form.get("type") or "").strip()
-    statut_vo = (form.get("statut_vo") or "").strip()
-    statut_vf = (form.get("statut_vf") or "").strip()
-    edition_nom = (form.get("edition_nom") or "").strip() or "Édition Standard"
-
-    image_bytes = await _lire_fichier_optionnel(form.get("image"))
-
-    vol_numero = form.getlist("vol_numero")
-    vol_titre = form.getlist("vol_titre")
-    vol_synopsis = form.getlist("vol_synopsis")
-    vol_image = form.getlist("vol_image")
-
-    volumes = []
-    for i in range(len(vol_numero)):
-        numero = (vol_numero[i] or "").strip() if i < len(vol_numero) else ""
-        titre_vol = (vol_titre[i] or "").strip() if i < len(vol_titre) else ""
-        if not numero and not titre_vol:
-            continue  # ligne de volume laissée vide -> ignorée
-        synopsis_v = (vol_synopsis[i] or "").strip() if i < len(vol_synopsis) else ""
-        vol_img_bytes = await _lire_fichier_optionnel(vol_image[i]) if i < len(vol_image) else None
-        volumes.append({"numero": numero, "titre": titre_vol, "synopsis": synopsis_v, "image_bytes": vol_img_bytes})
-
-    try:
-        resultat = nautiljon_db.creer_serie(
-            titre=titre, synopsis=synopsis, type_serie=type_serie,
-            statut_vo=statut_vo, statut_vf=statut_vf, edition_nom=edition_nom,
-            genres=_parser_liste(form.get("genres") or ""), themes=_parser_liste(form.get("themes") or ""),
-            editeurs=_parser_liste(form.get("editeurs") or ""), auteurs=_parser_liste(form.get("auteurs") or ""),
-            scenaristes=_parser_liste(form.get("scenaristes") or ""),
-            dessinateurs=_parser_liste(form.get("dessinateurs") or ""),
-            image_bytes=image_bytes, volumes=volumes,
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"ok": True, **resultat}
-
-
-@app.post("/api/admin/nautiljon/edition")
-async def ajouter_edition_nautiljon(
-    serie_url: str = Form(...),
-    nom: str = Form(...),
-    statut: str = Form(""),
-    admin=Depends(require_admin),
-):
-    """Ajoute une édition supplémentaire (ex. "Édition Deluxe") à une série déjà
-    présente dans la base Nautiljon locale (scrapée ou créée à la main)."""
-    if not nautiljon_db.is_available():
-        raise HTTPException(400, f"Base Nautiljon introuvable : {nautiljon_db.NAUTILJON_DB}")
-    try:
-        edition_id = nautiljon_db.ajouter_edition(serie_url, nom, statut)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"ok": True, "edition_id": edition_id}
-
-
-@app.post("/api/admin/nautiljon/volume")
-async def ajouter_volume_nautiljon(request: Request, admin=Depends(require_admin)):
-    """Ajoute un volume à une édition déjà existante dans la base Nautiljon locale.
-    Comme creer_serie_nautiljon(), parse le multipart à la main pour tolérer un champ
-    image vide (cf. _lire_fichier_optionnel)."""
-    if not nautiljon_db.is_available():
-        raise HTTPException(400, f"Base Nautiljon introuvable : {nautiljon_db.NAUTILJON_DB}")
-
-    form = await request.form()
-    edition_id_str = (form.get("edition_id") or "").strip()
-    if not edition_id_str.isdigit():
-        raise HTTPException(400, "edition_id invalide")
-    edition_id = int(edition_id_str)
-    numero = (form.get("numero") or "").strip()
-    titre = (form.get("titre") or "").strip()
-    synopsis = (form.get("synopsis") or "").strip()
-    image_bytes = await _lire_fichier_optionnel(form.get("image"))
-
-    try:
-        volume_id = nautiljon_db.ajouter_volume(
-            edition_id, numero=numero, titre=titre, synopsis=synopsis, image_bytes=image_bytes,
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"ok": True, "volume_id": volume_id}
 
 
 @app.post("/api/admin/create-manual/{manga_id}")
