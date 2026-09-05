@@ -26,9 +26,14 @@ services:
       # Adresse où app.py écoute (le process qui, seul désormais, ouvre
       # nautiljon_mangas.db) -- remplace-la par l'IP réelle du Pi si app.py ne tourne
       # pas dans ce même conteneur/hôte au sens Docker (cas normal : app.py tourne en
-      # dehors de Docker, directement sur le Pi). Identifiants : mêmes que la connexion
-      # à l'interface web de app.py (check_auth) -- à changer ici SI tu les changes
-      # côté app.py (par défaut mika/1234).
+      # dehors de Docker, directement sur le Pi).
+      #
+      # ⚠️ IMPORTANT -- à CHANGER obligatoirement, ce ne sont PAS des identifiants
+      # valides par défaut : app.py exige désormais ses propres identifiants admin via
+      # les variables d'environnement TAMAJON_ADMIN_USER / TAMAJON_ADMIN_PASS côté
+      # tamajon.py (il refuse de démarrer si elles ne sont pas définies -- plus aucun
+      # identifiant codé en dur dans le code). APP_PY_USER/APP_PY_PASS ci-dessous
+      # doivent correspondre EXACTEMENT à ce que tu as choisi là-bas.
       - APP_PY_URL=http://192.168.1.XXX:5555
-      - APP_PY_USER=mika
-      - APP_PY_PASS=1234
+      - APP_PY_USER=change-moi
+      - APP_PY_PASS=change-moi-aussi
