@@ -25,7 +25,6 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Response, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel
 import httpx
 
@@ -3999,87 +3998,6 @@ def export_catalog(user=Depends(get_current_user)):
             "progress": [dict(r) for r in progress],
             "exported_at": time.time()
         }
-
-
-    # ═══════════════════════════════════════════
-    #  Appli Android — hébergement de l'APK
-    #  (un seul APK hébergé à la fois : chaque upload remplace le précédent, pas
-    #  d'historique de versions conservé côté serveur)
-    # ═══════════════════════════════════════════
-
-APK_DIR = DATA_DIR / "releases"
-APK_DIR.mkdir(parents=True, exist_ok=True)
-APK_FILENAME = "tamashelf.apk"
-
-
-@app.get("/api/apk/latest")
-def apk_latest():
-    """Infos sur la dernière appli Android disponible. Volontairement public (pas
-    d'auth) : on doit pouvoir voir qu'une appli est dispo avant même de se connecter."""
-    with get_db_ctx() as db:
-        filename = get_config_val(db, "apk_filename", "")
-        path = APK_DIR / filename if filename else None
-        if not filename or not path.is_file():
-            return {"available": False}
-        return {
-            "available": True,
-            "version": get_config_val(db, "apk_version", ""),
-            "notes": get_config_val(db, "apk_notes", ""),
-            "uploaded_at": float(get_config_val(db, "apk_uploaded_at", "0") or 0),
-            "size": path.stat().st_size,
-        }
-
-
-@app.get("/api/apk/download")
-def apk_download():
-    """Télécharge la dernière appli Android (.apk). Volontairement public (pas
-    d'auth) : comme le lien d'installation de n'importe quelle appli mobile, et un
-    <a href> de téléchargement ne peut de toute façon pas envoyer de Bearer token."""
-    with get_db_ctx() as db:
-        filename = get_config_val(db, "apk_filename", "")
-        version = get_config_val(db, "apk_version", "")
-    if not filename:
-        raise HTTPException(404, "Aucune appli Android disponible pour le moment")
-    path = APK_DIR / filename
-    if not path.is_file():
-        raise HTTPException(404, "Fichier APK introuvable")
-    download_name = f"tamashelf-{version}.apk" if version else "tamashelf.apk"
-    return FileResponse(
-        str(path),
-        media_type="application/vnd.android.package-archive",
-        filename=download_name,
-        headers={"Cache-Control": "no-cache"},
-    )
-
-
-@app.post("/api/admin/apk")
-async def upload_apk(request: Request, admin=Depends(require_admin)):
-    """Publie une nouvelle version de l'appli Android (upload de l'APK + numéro de
-    version) : appelé par le logiciel de build Windows après un `flutter build apk`,
-    ou manuellement depuis l'admin web. Remplace la version précédemment publiée."""
-    form = await request.form()
-    version = (form.get("version") or "").strip()
-    notes = (form.get("notes") or "").strip()
-    apk_file = form.get("apk")
-
-    if not version:
-        raise HTTPException(400, "La version est obligatoire.")
-    if not isinstance(apk_file, StarletteUploadFile) or not apk_file.filename:
-        raise HTTPException(400, "Fichier APK manquant.")
-
-    data = await apk_file.read()
-    if len(data) < 1000:
-        raise HTTPException(400, "Fichier APK invalide (trop petit pour être un vrai APK).")
-
-    (APK_DIR / APK_FILENAME).write_bytes(data)
-    with get_db_ctx() as db:
-        set_config_val(db, "apk_filename", APK_FILENAME)
-        set_config_val(db, "apk_version", version)
-        set_config_val(db, "apk_notes", notes)
-        set_config_val(db, "apk_uploaded_at", str(time.time()))
-
-    return {"ok": True, "version": version, "size": len(data)}
-
 
     # ═══════════════════════════════════════════
     #  Serve Frontend (static files)

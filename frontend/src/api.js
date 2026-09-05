@@ -122,22 +122,6 @@ export const api = {
   nautiljonSearch: (q, limit = 48, offset = 0) => request(`/nautiljon/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
   nautiljonManga: (url) => request(`/nautiljon/manga?url=${encodeURIComponent(url)}`),
 
-  // Nautiljon — création manuelle (admin uniquement)
-  createNautiljonSerie: (formData) => requestForm("/admin/nautiljon/serie", formData),
-  addNautiljonEdition: (serieUrl, nom, statut = "") => {
-    const fd = new FormData();
-    fd.set("serie_url", serieUrl);
-    fd.set("nom", nom);
-    fd.set("statut", statut);
-    return requestForm("/admin/nautiljon/edition", fd);
-  },
-  addNautiljonVolume: (formData) => requestForm("/admin/nautiljon/volume", formData),
-
-  // Appli Android (APK) -- publics (pas d'auth requise) sauf l'upload admin
-  apkLatest: () => request("/apk/latest", { headers: {} }),
-  apkDownloadUrl: () => "/api/apk/download",
-  uploadApk: (formData) => requestForm("/admin/apk", formData),
-
   // Progress
   getProgress: () => request("/progress"),
   saveProgress: (data) => request("/progress", { method: "POST", body: JSON.stringify(data) }),

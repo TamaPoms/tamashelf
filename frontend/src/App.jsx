@@ -4,25 +4,25 @@ import "./index.css";
 
 
 
+// L'appli Android est distribuée uniquement via une release GitHub (plus d'upload/
+// hébergement côté serveur TamaShelf) -- ce lien pointe toujours vers la dernière
+// release tant que l'asset attaché s'appelle "tamashelf.apk".
+const APK_DOWNLOAD_URL = "https://github.com/TamaPoms/tamashelf/releases/latest/download/tamashelf.apk";
+
 function isCbzLikePath(path) {
   return /\.(cbz|cbr|zip)$/i.test(String(path || '').trim());
 }
 
-// Lien "Télécharger l'appli Android" : ne s'affiche que si un APK a été publié côté
-// serveur (voir /api/apk/latest, /api/admin/apk). Public -- utilisable sur l'écran de
-// connexion, avant même d'avoir un compte.
+// Lien "Télécharger l'appli Android" : public -- utilisable sur l'écran de connexion,
+// avant même d'avoir un compte.
 function ApkDownloadLink({ compact = false }) {
-  const [info, setInfo] = useState(null);
-  useEffect(() => { api.apkLatest().then(setInfo).catch(() => setInfo({ available: false })); }, []);
-  if (!info?.available) return null;
   if (compact) {
-    return <a className="btn btn-s" href={api.apkDownloadUrl()} style={{ textDecoration: "none" }}>📱 Appli Android v{info.version}</a>;
+    return <a className="btn btn-s" href={APK_DOWNLOAD_URL} style={{ textDecoration: "none" }}>📱 Appli Android</a>;
   }
   return (
     <div style={{ marginTop: 14, padding: 12, background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", textAlign: "left" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>📱 Appli Android disponible — v{info.version}</div>
-      {info.notes && <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 8 }}>{info.notes}</div>}
-      <a className="btn btn-p btn-s" href={api.apkDownloadUrl()} style={{ textDecoration: "none", display: "inline-block" }}>⬇️ Télécharger le .apk</a>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>📱 Appli Android disponible</div>
+      <a className="btn btn-p btn-s" href={APK_DOWNLOAD_URL} style={{ textDecoration: "none", display: "inline-block" }}>⬇️ Télécharger le .apk</a>
     </div>
   );
 }
@@ -1069,7 +1069,7 @@ function MainApp({ session, doLogout, show, toast }) {
           </>}
 
           {/* ══ APP ANDROID ══ */}
-          {nav === "app-android" && <AppAndroidView isAdmin={isAdmin} show={show} />}
+          {nav === "app-android" && <AppAndroidView />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -1944,68 +1944,19 @@ function ThemeCreator({ themes, currentThemeId, applyTheme, setCurrentThemeId, s
 // Page "App Android" : visible par tout le monde (lien de téléchargement du dernier
 // APK publié) ; pour l'admin, ajoute un formulaire pour publier une nouvelle version
 // (utilisé aussi bien à la main que par le logiciel de build Windows via /api/admin/apk).
-function AppAndroidView({ isAdmin, show }) {
-  const [info, setInfo] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [file, setFile] = useState(null);
-  const [version, setVersion] = useState("");
-  const [notes, setNotes] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [err, setErr] = useState("");
-
-  const load = async () => {
-    setLoading(true);
-    try { setInfo(await api.apkLatest()); } catch (e) { show(e.message); }
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, []); // eslint-disable-line
-
-  const formatSize = (bytes) => {
-    if (!bytes) return "";
-    const mb = bytes / (1024 * 1024);
-    return mb >= 1 ? `${mb.toFixed(1)} Mo` : `${(bytes / 1024).toFixed(0)} Ko`;
-  };
-
-  const publier = async () => {
-    if (!version.trim()) { setErr("La version est obligatoire (ex. 1.2.0)."); return; }
-    if (!file) { setErr("Choisissez un fichier .apk."); return; }
-    setErr(""); setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.set("version", version.trim());
-      fd.set("notes", notes.trim());
-      fd.set("apk", file);
-      await api.uploadApk(fd);
-      show("✅ Nouvelle version publiée");
-      setFile(null); setVersion(""); setNotes("");
-      await load();
-    } catch (e) { setErr(e.message); }
-    setUploading(false);
-  };
-
+// Appli Android : distribuée uniquement via une release GitHub (voir APK_DOWNLOAD_URL
+// tout en haut du fichier) -- plus d'upload/hébergement côté serveur TamaShelf. Publier
+// une nouvelle version se fait désormais uniquement en créant/mettant à jour la release
+// GitHub avec un asset nommé "tamashelf.apk" (voir README).
+function AppAndroidView() {
   return (
     <>
       <div className="sec-h"><span className="sec-t">📱 Appli Android</span></div>
-      {loading ? <div className="loading"><div className="spinner" /></div> : (
-        info?.available ? (
-          <div style={{ maxWidth: 480, padding: 16, background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)" }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--t1)" }}>TamaShelf v{info.version}</div>
-            {info.notes && <p style={{ color: "var(--t2)", fontSize: 12, marginTop: 6 }}>{info.notes}</p>}
-            <div className="hint" style={{ marginTop: 4 }}>{formatSize(info.size)}{info.uploaded_at ? ` — publié le ${new Date(info.uploaded_at * 1000).toLocaleDateString("fr")}` : ""}</div>
-            <a className="btn btn-p" style={{ marginTop: 12, textDecoration: "none", display: "inline-block" }} href={api.apkDownloadUrl()}>⬇️ Télécharger le .apk</a>
-          </div>
-        ) : <div className="empty" style={{ padding: 20 }}><p>Aucune appli Android publiée pour le moment.{isAdmin ? " Utilisez le formulaire ci-dessous." : ""}</p></div>
-      )}
-
-      {isAdmin && <div style={{ maxWidth: 480, marginTop: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "var(--t1)" }}>➕ Publier une nouvelle version</div>
-        <div className="fld"><label>Version (ex. 1.2.0)</label><input value={version} onChange={e => setVersion(e.target.value)} /></div>
-        <div className="fld"><label>Notes de version (optionnel)</label><textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} /></div>
-        <div className="fld"><label>Fichier .apk</label><input type="file" accept=".apk" onChange={e => setFile(e.target.files[0] || null)} /></div>
-        <div className="card-err">{err}</div>
-        <button className="btn btn-p" onClick={publier} disabled={uploading}>{uploading ? "Publication…" : "Publier"}</button>
-        <p className="hint" style={{ marginTop: 8 }}>Astuce : le logiciel de build Windows peut publier directement ici après un build, sans passer par ce formulaire.</p>
-      </div>}
+      <div style={{ maxWidth: 480, padding: 16, background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)" }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--t1)" }}>TamaShelf</div>
+        <p style={{ color: "var(--t2)", fontSize: 12, marginTop: 6 }}>App Android native (Flutter), distribuée via GitHub Releases.</p>
+        <a className="btn btn-p" style={{ marginTop: 12, textDecoration: "none", display: "inline-block" }} href={APK_DOWNLOAD_URL}>⬇️ Télécharger le .apk</a>
+      </div>
     </>
   );
 }
