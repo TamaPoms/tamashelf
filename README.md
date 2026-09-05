@@ -49,11 +49,10 @@ scp -r tamashelf/ pi@<IP_DU_PI>:~/tamashelf/
 # 2. Sur le Pi
 cd ~/tamashelf
 
-# 3. Éditer docker-compose.yml :
-#    - le chemin de vos CBZ (remplacer /media/mangas par votre dossier de scans)
-#    - NAUTILJON_DB / le mount rw si votre base Nautiljon (produite par le
-#      scraper) n'est pas dans /mnt/14To/nautiljon
-nano docker-compose.yml
+# 3. Créer ta config locale à partir du modèle (jamais commitée dans git, voir
+#    .env.example / .gitignore) : chemins réels de tes disques + IP de app.py
+cp .env.example .env
+nano .env
 
 # 4. Build et lancer
 docker compose up -d --build

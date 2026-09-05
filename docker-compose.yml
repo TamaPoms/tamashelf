@@ -9,28 +9,26 @@ services:
       # Base de données locale (persistante)
       - ./data:/data
       # Monter les disques entiers pour pouvoir ajouter des bibliothèques depuis l'admin
-      # -- exemples ci-dessous, à remplacer par les chemins réels de TES disques (ceux-ci
-      # ne sont pas des identifiants, juste des exemples de mise en page du serveur du
-      # mainteneur -- change-les pour correspondre à ta propre machine).
-      - /mnt/TON_DISQUE_1:/mnt/TON_DISQUE_1:ro
-      - /mnt/TON_DISQUE_2:/mnt/TON_DISQUE_2:ro
+      # -- DISQUE_1/DISQUE_2 viennent de .env (jamais commité, voir .env.example pour le
+      # modèle) : tes vraies valeurs restent locales, jamais touchées par un git pull.
+      - ${DISQUE_1}:${DISQUE_1}:ro
+      - ${DISQUE_2}:${DISQUE_2}:ro
       # Depuis que app.py est le seul process à écrire dans nautiljon_mangas.db (voir
       # NAUTILJON_DB/APP_PY_* ci-dessous), TamaShelf n'a plus besoin d'un accès en
       # écriture à ce dossier -- il ne fait plus que lire les jaquettes déjà
       # téléchargées sur disque (/api/nautiljon/img). :ro suffit désormais, et retire
       # un chemin d'écriture directe de plus vers ce fichier partagé.
-      - /mnt/TON_DISQUE_1/nautiljon:/mnt/TON_DISQUE_1/nautiljon:ro
+      - ${DISQUE_1}/nautiljon:${DISQUE_1}/nautiljon:ro
     environment:
       - TAMASHELF_DATA=/data
       - TAMASHELF_STATIC=/app/static
       # Sert uniquement à retrouver le dossier des images (nautiljon_dir()) -- plus
-      # aucun accès SQLite direct depuis ce conteneur, voir APP_PY_* ci-dessous. À faire
-      # correspondre au chemin réel choisi ci-dessus (/mnt/TON_DISQUE_1/...).
-      - NAUTILJON_DB=/mnt/TON_DISQUE_1/nautiljon/nautiljon_mangas.db
+      # aucun accès SQLite direct depuis ce conteneur, voir APP_PY_* ci-dessous.
+      - NAUTILJON_DB=${DISQUE_1}/nautiljon/nautiljon_mangas.db
       # Adresse où app.py écoute (le process qui, seul désormais, ouvre
-      # nautiljon_mangas.db) -- remplace-la par l'IP réelle du Pi si app.py ne tourne
-      # pas dans ce même conteneur/hôte au sens Docker (cas normal : app.py tourne en
-      # dehors de Docker, directement sur le Pi).
+      # nautiljon_mangas.db) -- vient de .env (APP_PY_URL), à faire correspondre à l'IP
+      # réelle de la machine qui fait tourner app.py si ce n'est pas la même (cas normal :
+      # app.py tourne en dehors de Docker, directement sur cette même machine).
       #
       # Pas d'identifiants admin ici : les seules routes que TamaShelf appelle
       # (/api/recherche, /api/serie/details -- recherche/lecture pour le matching) sont
@@ -38,4 +36,4 @@ services:
       # infos déjà publiques sur la fiche /serie. TamaShelf n'a donc plus besoin de
       # connaître les identifiants admin de tamajon.py (TAMAJON_ADMIN_USER/PASS,
       # définis uniquement côté tamajon.py, jamais ici) pour fonctionner.
-      - APP_PY_URL=http://192.168.1.XXX:5555
+      - APP_PY_URL=${APP_PY_URL}

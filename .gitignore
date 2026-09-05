@@ -12,6 +12,10 @@ backend/.pytest_cache/
 # Données runtime (montées en volume Docker, jamais versionnées)
 data/
 
+# Config locale (chemins de disques réels, IP de app.py) -- jamais versionnée,
+# voir .env.example pour le modèle à copier.
+.env
+
 # Éditeurs / OS
 .DS_Store
 .vscode/
