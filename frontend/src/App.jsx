@@ -808,6 +808,26 @@ function MainApp({ session, doLogout, show, toast }) {
   }, [rdr, rMode, rPg.length]);
   useEffect(() => { const h = (e) => { if (rdr) return; if (e.key === "Escape" && sel) closeDet(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); });
 
+  // Point (tap ou clic) sur la page : centre → afficher/masquer la barre, côtés → page
+  // précédente/suivante (mode paginé/double uniquement). Partagé entre le tap tactile
+  // (handleTouchEnd) et le clic souris (handleReaderClick) pour un comportement identique
+  // sur mobile et sur ordinateur.
+  const handleReaderTapZone = (cx, cy) => {
+    if (cx > 0.25 && cx < 0.75 && cy > 0.2 && cy < 0.8) {
+      setRBarVisible(v => !v);
+      return;
+    }
+    if (rMode === 'paged' || rMode === 'double') {
+      if (cx <= 0.25) rdrGo(rRTL ? rP + (rMode === 'double' ? 2 : 1) : rP - (rMode === 'double' ? 2 : 1));
+      else if (cx >= 0.75) rdrGo(rRTL ? rP - (rMode === 'double' ? 2 : 1) : rP + (rMode === 'double' ? 2 : 1));
+    }
+  };
+
+  // Clic souris sur la page (ordinateur) : même zones que le tap tactile ci-dessous.
+  const handleReaderClick = (e) => {
+    handleReaderTapZone(e.clientX / window.innerWidth, e.clientY / window.innerHeight);
+  };
+
   // Touch gestures: swipe left/right = next/prev, tap center = toggle bar
   const handleTouchStart = (e) => {
     const t = e.touches[0];
@@ -825,17 +845,7 @@ function MainApp({ session, doLogout, show, toast }) {
 
     // Tap (short press, small movement) at center → toggle bar
     if (Math.abs(dx) < 20 && Math.abs(dy) < 20 && dt < 300) {
-      const cx = t.clientX / w;
-      const cy = t.clientY / h;
-      if (cx > 0.25 && cx < 0.75 && cy > 0.2 && cy < 0.8) {
-        setRBarVisible(v => !v);
-        return;
-      }
-      // Tap on sides → navigate (paged/double mode only)
-      if (rMode === 'paged' || rMode === 'double') {
-        if (cx <= 0.25) rdrGo(rRTL ? rP + (rMode === 'double' ? 2 : 1) : rP - (rMode === 'double' ? 2 : 1));
-        else if (cx >= 0.75) rdrGo(rRTL ? rP - (rMode === 'double' ? 2 : 1) : rP + (rMode === 'double' ? 2 : 1));
-      }
+      handleReaderTapZone(t.clientX / w, t.clientY / h);
       return;
     }
 
@@ -1593,7 +1603,7 @@ function MainApp({ session, doLogout, show, toast }) {
         </div>
 
         {rMode === 'webtoon' ? (
-          <div className="rdr-wt" ref={rScrollRef}>
+          <div className="rdr-wt" ref={rScrollRef} onClick={handleReaderClick}>
             {rPg.map((u, i) => (
               <img
                 key={u}
@@ -1615,7 +1625,7 @@ function MainApp({ session, doLogout, show, toast }) {
             ))}
           </div>
         ) : rMode === 'double' ? (
-          <div className="rdr-cv" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+          <div className="rdr-cv" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }} onClick={handleReaderClick}>
             {rRTL ? (
               <>
                 {rPg[rP + 1] && <img src={rPg[rP + 1]} alt="" style={{ maxHeight: '100vh', maxWidth: '49vw', objectFit: 'contain', transform: rZoom !== 1 ? `scale(${rZoom})` : undefined }} draggable={false} />}
@@ -1629,7 +1639,7 @@ function MainApp({ session, doLogout, show, toast }) {
             )}
           </div>
         ) : (
-          <div className="rdr-cv">
+          <div className="rdr-cv" onClick={handleReaderClick}>
             {rPg[rP] && <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} />}
           </div>
         )}
