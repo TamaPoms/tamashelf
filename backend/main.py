@@ -48,10 +48,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "mangashelf.db"
 STATIC_DIR = Path(os.getenv("TAMASHELF_STATIC", os.getenv("MANGASHELF_STATIC", "/app/static")))
 
-# Accès direct (lecture + écriture admin) à la vraie base Nautiljon — voir
-# nautiljon_db.py. Remplace l'ancienne API HTTP séparée (NAUTILJON_API) : plus de
-# service réseau à part, seulement le fichier .db produit par scrapersql.py, mappé dans
-# le conteneur (voir docker-compose.yml / variable d'env NAUTILJON_DB).
+# Accès à la vraie base Nautiljon (recherche, détails, images) via l'API HTTP publique
+# de app.py — voir nautiljon_db.py (APP_PY_URL). TamaShelf n'ouvre plus jamais
+# nautiljon_mangas.db ni le dossier qui le contient directement : aucun accès disque à
+# ce dossier n'est nécessaire, juste pouvoir joindre app.py sur le réseau.
 
 # Outils externes (pour CBR -> CBZ)
 SEVEN_Z_BIN = os.getenv("SEVEN_Z_BIN", "7z")
@@ -920,7 +920,7 @@ def get_config(admin=Depends(require_admin)):
     with get_db_ctx() as db:
         result = {
             "nautiljon_db_available": nautiljon_db.is_available(),
-            "nautiljon_db_path": str(nautiljon_db.NAUTILJON_DB),
+            "nautiljon_db_path": nautiljon_db.APP_PY_URL,
             "cbz_path": get_cbz_path(db),
             "tome_keywords": get_config_val(db, "tome_keywords", "Tome,T,Vol,Volume"),
             "chapter_keywords": get_config_val(db, "chapter_keywords", "Chapitre,Chapter,Ch,Ep,Episode"),
@@ -1436,16 +1436,14 @@ def change_password(req: ChangePasswordRequest, user=Depends(get_current_user)):
         return {"ok": True}
 
     # ═══════════════════════════════════════════
-    #  Routes: Nautiljon — accès direct à la vraie base (nautiljon_db.py)
-    #  Ancienne API HTTP séparée retirée : plus de service réseau à part, seulement le
-    #  fichier .db produit par scrapersql.py.
+    #  Routes: Nautiljon — via l'API HTTP publique de app.py (nautiljon_db.py)
     # ═══════════════════════════════════════════
 
 @app.get("/api/nautiljon/health")
 async def nautiljon_health(user=Depends(get_current_user)):
     if nautiljon_db.is_available():
-        return {"status": "online", "db_path": str(nautiljon_db.NAUTILJON_DB)}
-    return {"status": "offline", "error": f"Fichier introuvable ou illisible : {nautiljon_db.NAUTILJON_DB}"}
+        return {"status": "online", "db_path": nautiljon_db.APP_PY_URL}
+    return {"status": "offline", "error": f"app.py injoignable ou base absente : {nautiljon_db.APP_PY_URL}"}
 
 @app.get("/api/nautiljon/list")
 async def nautiljon_list(
@@ -2019,7 +2017,7 @@ async def auto_match(admin=Depends(require_admin)):
         """).fetchall()
 
         if not nautiljon_db.is_available():
-            return {"error": f"Base Nautiljon introuvable : {nautiljon_db.NAUTILJON_DB}"}
+            return {"error": f"Base Nautiljon injoignable via {nautiljon_db.APP_PY_URL}"}
 
         auto_matched = 0
         not_found = 0
@@ -2251,31 +2249,25 @@ async def replace_cbz_cover(
         if not full_path.exists():
             raise HTTPException(404, f"CBZ introuvable: {cbz_path}")
     
-        # 1. Récupérer la cover : soit un fichier LOCAL déjà téléchargé par
-        # scrapersql.py (URL de la forme /api/nautiljon/img/...), lu directement sur
-        # disque -- soit, pour compatibilité avec une URL externe collée à la main,
-        # un téléchargement HTTP classique.
+        # 1. Récupérer la cover : soit une image Nautiljon (URL de la forme
+        # /api/nautiljon/img/...), qu'on va chercher en HTTP chez app.py -- soit, pour
+        # compatibilité avec une URL externe collée à la main, un téléchargement HTTP
+        # classique. Les deux cas se résument à un simple GET HTTP.
         if cover_url.startswith(nautiljon_db.IMAGE_ROUTE_PREFIX):
             relatif = cover_url[len(nautiljon_db.IMAGE_ROUTE_PREFIX):].lstrip("/")
-            racine = nautiljon_db.nautiljon_dir().resolve()
-            fichier = (racine / relatif).resolve()
-            if racine not in fichier.parents and fichier != racine:
-                raise HTTPException(400, "Chemin d'image invalide")
-            if not fichier.is_file():
-                raise HTTPException(404, "Image locale introuvable")
-            cover_data = fichier.read_bytes()
-            cover_ext = fichier.suffix.lower() or ".jpg"
+            fetch_url = f"{nautiljon_db.APP_PY_URL}/{relatif}"
         else:
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    r = await client.get(cover_url)
-                    r.raise_for_status()
-                    cover_data = r.content
-                    cover_ext = Path(cover_url.split("?")[0]).suffix.lower() or ".jpg"
-                    if cover_ext not in (".jpg", ".jpeg", ".png", ".webp"):
-                        cover_ext = ".jpg"
-            except Exception as e:
-                raise HTTPException(400, f"Impossible de télécharger la cover: {e}")
+            fetch_url = cover_url
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(fetch_url)
+                r.raise_for_status()
+                cover_data = r.content
+                cover_ext = Path(fetch_url.split("?")[0]).suffix.lower() or ".jpg"
+                if cover_ext not in (".jpg", ".jpeg", ".png", ".webp"):
+                    cover_ext = ".jpg"
+        except Exception as e:
+            raise HTTPException(400, f"Impossible de télécharger la cover: {e}")
     
         # 2. Modifier le CBZ (zip)
         try:
@@ -2489,21 +2481,25 @@ async def nautiljon_manga(url: str, user=Depends(get_current_user)):
 
 @app.get("/api/nautiljon/img/{chemin:path}")
 async def nautiljon_img(chemin: str):
-    """Sert les images (couvertures série/volume) déjà téléchargées sur disque par
-    scrapersql.py dans le dossier de la base Nautiljon locale. Volontairement sans
-    authentification : les balises <img> ne peuvent pas envoyer d'en-tête Authorization,
-    et ce contenu (jaquettes de mangas) est aussi peu sensible que les anciens hotlinks
-    directs vers nautiljon.com que ça remplace."""
-    racine = nautiljon_db.nautiljon_dir().resolve()
-    full = (racine / chemin).resolve()
-    if racine != full and racine not in full.parents:
-        raise HTTPException(403, "Chemin invalide")
-    if not full.exists() or not full.is_file():
+    """Sert les images (couvertures série/volume) en proxy HTTP depuis app.py (sa route
+    publique /<chemin>, qui lit le fichier sur le disque partagé par scrapersql.py) --
+    TamaShelf n'a donc plus besoin d'un accès disque direct à ce dossier, seulement de
+    pouvoir joindre APP_PY_URL. Volontairement sans authentification : les balises <img>
+    ne peuvent pas envoyer d'en-tête Authorization, et ce contenu (jaquettes de mangas)
+    est aussi peu sensible que les anciens hotlinks directs vers nautiljon.com que ça
+    remplace."""
+    url = f"{nautiljon_db.APP_PY_URL}/{chemin.lstrip('/')}"
+    try:
+        async with httpx.AsyncClient(timeout=nautiljon_db.APP_PY_TIMEOUT) as client:
+            r = await client.get(url)
+    except (httpx.RequestError, TimeoutError):
+        raise HTTPException(502, "app.py injoignable")
+    if r.status_code != 200:
         raise HTTPException(404, "Image introuvable")
-    ext = full.suffix.lower().lstrip(".")
+    ext = Path(chemin).suffix.lower().lstrip(".")
     mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
             "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/jpeg")
-    return FileResponse(str(full), media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+    return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
 
 
 def _normalize_details(raw: dict) -> dict:
@@ -3759,7 +3755,7 @@ async def debug_manga_raw(url: str, admin=Depends(require_admin)):
     Appeler: /api/debug/manga-raw?url=https://www.nautiljon.com/mangas/xxx.html
     """
     return {
-        "db_path": str(nautiljon_db.NAUTILJON_DB),
+        "db_path": nautiljon_db.APP_PY_URL,
         "db_available": nautiljon_db.is_available(),
         "manga_auto": nautiljon_db.manga_auto(url),
         "manga_editions": nautiljon_db.manga_editions(url),

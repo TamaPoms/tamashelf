@@ -1332,7 +1332,7 @@ function MainApp({ session, doLogout, show, toast }) {
                 <label>Base Nautiljon</label>
                 <div className="hint" style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span className={`dot ${cfg.nautiljon_db_available ? "d-on" : "d-off"}`} />
-                  {cfg.nautiljon_db_available ? "Connectée" : "Introuvable"} — {cfg.nautiljon_db_path || "chemin non configuré"}
+                  {cfg.nautiljon_db_available ? "Connectée" : "Introuvable"} — {cfg.nautiljon_db_path || "adresse non configurée"}
                 </div>
               </div>
               <div className="fld"><label>Chemin CBZ</label><input value={cfg.cbz_path} onChange={e => setCfg(c => ({ ...c, cbz_path: e.target.value }))} /></div>

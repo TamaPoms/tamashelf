@@ -13,18 +13,12 @@ services:
       # modèle) : tes vraies valeurs restent locales, jamais touchées par un git pull.
       - ${DISQUE_1}:${DISQUE_1}:ro
       - ${DISQUE_2}:${DISQUE_2}:ro
-      # Depuis que app.py est le seul process à écrire dans nautiljon_mangas.db (voir
-      # NAUTILJON_DB/APP_PY_* ci-dessous), TamaShelf n'a plus besoin d'un accès en
-      # écriture à ce dossier -- il ne fait plus que lire les jaquettes déjà
-      # téléchargées sur disque (/api/nautiljon/img). :ro suffit désormais, et retire
-      # un chemin d'écriture directe de plus vers ce fichier partagé.
-      - ${DISQUE_1}/nautiljon:${DISQUE_1}/nautiljon:ro
+      # Le dossier nautiljon (base + jaquettes) n'a plus besoin d'être monté du tout :
+      # TamaShelf récupère tout (recherche, détails, images) en HTTP chez app.py
+      # (APP_PY_URL ci-dessous), plus aucun accès disque à ce dossier partagé.
     environment:
       - TAMASHELF_DATA=/data
       - TAMASHELF_STATIC=/app/static
-      # Sert uniquement à retrouver le dossier des images (nautiljon_dir()) -- plus
-      # aucun accès SQLite direct depuis ce conteneur, voir APP_PY_* ci-dessous.
-      - NAUTILJON_DB=${DISQUE_1}/nautiljon/nautiljon_mangas.db
       # Adresse où app.py écoute (le process qui, seul désormais, ouvre
       # nautiljon_mangas.db) -- vient de .env (APP_PY_URL), à faire correspondre à l'IP
       # réelle de la machine qui fait tourner app.py si ce n'est pas la même (cas normal :

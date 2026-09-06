@@ -25,9 +25,13 @@ le code déjà écrit côté backend (main.py), frontend React (App.jsx) et appl
 continue de fonctionner SANS modification -- seule la SOURCE des données change (appel
 HTTP à app.py au lieu d'un accès direct au fichier).
 
-Les URLs d'images restent des chemins locaux servis par /api/nautiljon/img/<chemin> (lu
-directement sur le disque partagé par main.py -- ça, ce n'est PAS de l'accès SQLite, donc
-aucun risque de corruption, pas besoin de le faire passer par app.py non plus).
+Les images (couvertures) passent aussi par app.py désormais (2026-09, suite) : la route
+/api/nautiljon/img/<chemin> de main.py ne lit plus le fichier sur disque, elle le
+récupère en HTTP chez app.py (route publique /<chemin> de app.py, qui lit le disque
+partagé de son côté). TamaShelf n'a donc plus besoin d'aucun accès disque au dossier
+Nautiljon ni de connaître son chemin -- seul APP_PY_URL est nécessaire, ce qui permet à
+TamaShelf de tourner sur n'importe quelle machine du réseau (voire ailleurs), tant qu'il
+peut joindre app.py.
 """
 import json
 import os
@@ -49,20 +53,11 @@ from typing import Optional
 APP_PY_URL = os.getenv("APP_PY_URL", "http://localhost:5555").rstrip("/")
 APP_PY_TIMEOUT = float(os.getenv("APP_PY_TIMEOUT", "20"))
 
-# Toujours nécessaire : chemin du fichier .db (même mount que app.py) pour en déduire le
-# dossier des images -- la lecture d'images se fait directement sur disque, pas via l'API.
-NAUTILJON_DB = Path(os.getenv("NAUTILJON_DB", "/mnt/14To/nautiljon/nautiljon_mangas.db"))
-
-# Préfixe de la route (ajoutée dans main.py) qui sert les images locales déjà
-# téléchargées par scrapersql.py -- voir _image_url() plus bas.
+# Préfixe de la route (ajoutée dans main.py) qui sert les images -- voir _image_url()
+# plus bas. main.py va chercher l'image chez app.py (APP_PY_URL + chemin) plutôt que sur
+# disque : TamaShelf n'a donc plus besoin d'un accès disque au dossier Nautiljon, ni de
+# connaître son chemin (NAUTILJON_DB a été retiré).
 IMAGE_ROUTE_PREFIX = "/api/nautiljon/img"
-
-
-def nautiljon_dir() -> Path:
-    """Dossier contenant le .db -- racine des chemins d'images relatifs stockés en base
-    (ex: colonne image_jpg = '/mangas/image/xxx.jpg' -> fichier réel à
-    <nautiljon_dir()>/mangas/image/xxx.jpg)."""
-    return NAUTILJON_DB.parent
 
 
 # ═══════════════════════════════════════════

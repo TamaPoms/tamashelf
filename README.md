@@ -2,9 +2,11 @@
 
 > Alternative Kavita légère pour CBZ avec métadonnées Nautiljon.
 > Tourne sur Raspberry Pi, accessible depuis n'importe quel appareil.
-> Les métadonnées viennent d'un accès direct (lecture + écriture admin) à la
-> vraie base Nautiljon locale (voir `backend/nautiljon_db.py`) — plus d'API
-> HTTP séparée à faire tourner à côté.
+> Les métadonnées (recherche, détails, jaquettes) viennent de l'API HTTP
+> publique de `app.py`/`tamajon.py` (voir `backend/nautiljon_db.py`), le seul
+> processus autorisé à ouvrir `nautiljon_mangas.db`. TamaShelf n'a donc besoin
+> d'aucun accès disque à ce fichier ni au dossier qui le contient, seulement de
+> pouvoir joindre `app.py` sur le réseau (`APP_PY_URL`).
 
 ## Architecture
 
@@ -12,7 +14,7 @@
 tamashelf/
 ├── backend/
 │   ├── main.py          ← FastAPI + SQLite
-│   ├── nautiljon_db.py  ← Accès direct (lecture/écriture) à la base Nautiljon
+│   ├── nautiljon_db.py  ← Client HTTP vers l'API publique de app.py (métadonnées + images)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -67,7 +69,7 @@ cd backend
 pip install -r requirements.txt
 export TAMASHELF_DATA=./data
 export TAMASHELF_STATIC=../frontend/dist
-export NAUTILJON_DB=/mnt/14To/nautiljon/nautiljon_mangas.db
+export APP_PY_URL=http://192.168.1.XXX:5555
 
 # Frontend
 cd ../frontend
@@ -84,10 +86,13 @@ uvicorn main:app --host 0.0.0.0 --port 9999
 1. Ouvrir `http://<IP_DU_PI>:9999`
 2. **Setup**: créer le compte admin + indiquer le chemin CBZ
 3. Se connecter avec le compte admin
-4. **Admin → Configuration**: vérifier que la base Nautiljon est bien détectée (chemin `NAUTILJON_DB`) et le chemin CBZ
+4. **Admin → Configuration**: vérifier que la base Nautiljon est bien détectée (via `app.py`, adresse `APP_PY_URL`) et le chemin CBZ
 5. **Admin → Utilisateurs**: créer des comptes pour les autres utilisateurs
 6. **Admin → Matching auto**: lancer le matching CBZ ↔ Nautiljon
-7. **Admin → Créer série**: pour les séries absentes de nautiljon.com, les créer/compléter à la main (série, éditions, volumes) directement dans la base locale
+
+Pour les séries absentes de nautiljon.com, elles se créent/complètent désormais
+directement dans l'admin de `app.py`/`tamajon.py` (TamaShelf ne fait plus que
+lire ces données, il ne les modifie plus).
 
 ## Fonctionnalités
 
@@ -115,10 +120,12 @@ uvicorn main:app --host 0.0.0.0 --port 9999
 4. **Saisie directe**: taper le nom du dossier CBZ
 
 ### Base de données
-- SQLite (léger, parfait pour RPi, pas de serveur DB séparé)
-- Accès direct (lecture + écriture admin) à la vraie base Nautiljon locale,
-  produite par le scraper — pas de cache nécessaire, la lecture locale est
-  déjà quasi instantanée (voir `backend/nautiljon_db.py`)
+- SQLite (léger, parfait pour RPi, pas de serveur DB séparé) pour les comptes,
+  permissions, associations CBZ et progression de TamaShelf lui-même
+- Métadonnées Nautiljon (recherche, détails, jaquettes) lues en lecture seule
+  via l'API HTTP publique de `app.py`/`tamajon.py` (voir `backend/nautiljon_db.py`)
+  — TamaShelf n'ouvre jamais `nautiljon_mangas.db` ni le dossier qui le
+  contient
 - Progression par utilisateur
 - Sessions avec tokens (30 jours)
 
@@ -150,12 +157,9 @@ tamashelf.mondomaine.fr {
 | POST | `/api/admin/users` | Créer utilisateur (admin) |
 | PUT | `/api/admin/config` | Modifier config (admin) |
 | POST | `/api/admin/auto-match` | Matching auto (admin) |
-| GET | `/api/nautiljon/list` | Liste mangas (base locale) |
-| GET | `/api/nautiljon/manga` | Détails + éditions (base locale, accès direct) |
-| GET | `/api/nautiljon/img/{path}` | Sert les couvertures téléchargées par le scraper |
-| POST | `/api/admin/nautiljon/serie` | Créer une série + édition + volumes à la main (admin) |
-| POST | `/api/admin/nautiljon/edition` | Ajouter une édition à une série existante (admin) |
-| POST | `/api/admin/nautiljon/volume` | Ajouter un volume à une édition existante (admin) |
+| GET | `/api/nautiljon/list` | Liste mangas (via l'API de app.py) |
+| GET | `/api/nautiljon/manga` | Détails + éditions (via l'API de app.py) |
+| GET | `/api/nautiljon/img/{path}` | Sert les jaquettes en proxy depuis app.py |
 | GET | `/api/progress` | Progression lecture |
 | POST | `/api/progress` | Sauver progression |
 | GET | `/api/matches` | Associations CBZ |
@@ -166,6 +170,12 @@ tamashelf.mondomaine.fr {
 
 Une app Android native (Flutter) existe déjà, voir `../flutter/` — lecteur
 hors-ligne qui se connecte à cette même API REST (authentification par token
-Bearer, `/api/cbz/read/`, progression synchronisée via `/api/progress`). Elle
-n'a volontairement pas de fonction de création manuelle de série : cette
-fonctionnalité admin (`/api/admin/nautiljon/*`) est réservée à l'interface web.
+Bearer, `/api/cbz/read/`, progression synchronisée via `/api/progress`).
+
+L'APK se télécharge uniquement via les [GitHub Releases](https://github.com/TamaPoms/tamashelf/releases/latest)
+du projet (lien affiché dans TamaShelf, section "App Android") — il n'y a plus
+d'upload/téléchargement de l'APK depuis le site lui-même. Pour publier une
+nouvelle version : créer une release sur GitHub avec un fichier joint nommé
+exactement `tamashelf.apk` (le lien utilisé est l'URL stable
+`.../releases/latest/download/tamashelf.apk`, qui ne change jamais tant que ce
+nom de fichier reste identique d'une release à l'autre).
