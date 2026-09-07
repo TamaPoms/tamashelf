@@ -2068,9 +2068,13 @@ async def auto_match(admin=Depends(require_admin)):
     with get_db_ctx() as db:
         base = get_cbz_path(db)
 
+        # 'pending' = recherche précédente n'ayant RIEN trouvé (candidats vides, voir plus
+        # bas) : on les retente à chaque auto-match, comme les 'unmatched', puisqu'un
+        # échec passé peut simplement venir d'une requête de recherche mal construite
+        # (corrigée depuis) plutôt que d'une série absente de Nautiljon.
         unmatched = db.execute("""
             SELECT id, cbz_folder, title FROM manga_library
-            WHERE match_status = 'unmatched'
+            WHERE match_status IN ('unmatched', 'pending')
         """).fetchall()
 
         if not nautiljon_db.is_available():

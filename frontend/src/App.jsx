@@ -62,6 +62,24 @@ function normalizeSearchText(s) {
   return t;
 }
 
+const EDITION_SUFFIXES = [
+  " - edition", " - édition", " edition", " édition",
+  " - version", " - deluxe", " - perfect", " - ultimate", " - collector",
+];
+function stripEditionSuffix(name) {
+  // Miroir de _strip_edition_suffix (backend main.py) : "20th Century Boys - Perfect
+  // Edition" -> "20th Century Boys", pour préremplir la recherche avec le titre tel
+  // qu'il apparaît sur Nautiljon plutôt qu'avec le nom exact du dossier local.
+  const n = String(name || '').trim();
+  const low = n.toLowerCase();
+  let best = -1;
+  for (const sep of EDITION_SUFFIXES) {
+    const idx = low.indexOf(sep);
+    if (idx > 0 && (best === -1 || idx < best)) best = idx;
+  }
+  return best > 0 ? n.slice(0, best).trim() : n;
+}
+
 
 function nautiljonMiniUrl(raw) {
   const u = String(raw || '').trim();
@@ -2233,7 +2251,7 @@ function AdminCbzCoverManager({ allMangas, show, onRefresh }) {
 
 /* ═══ Carte de matching manuel avec recherche ═══ */
 function UnmatchedCard({ manga, show, onDone }) {
-  const [sq, setSq] = useState(manga.title || manga.cbz_folder);
+  const [sq, setSq] = useState(stripEditionSuffix(manga.title || manga.cbz_folder));
   const [directUrl, setDirectUrl] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
