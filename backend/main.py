@@ -3053,24 +3053,28 @@ def list_cbz_files(folder: str, user=Depends(get_current_user)):
             # Pas encore indexé → scan disque en temps réel (ancien comportement)
             return _list_cbz_files_disk(folder, user)
     
-        # Dédupliquer : même tome dans plusieurs bibliothèques → prendre le premier
-        # Pour archives: dédupliquer par (volume_type, volume_num) ou filename si pas de numéro
-        # Pour images: dédupliquer par volume_num, fusionner les chapitres
+        # Dédupliquer PAR BIBLIOTHÈQUE : un même numéro de tome présent dans 2
+        # bibliothèques différentes (même nom de dossier) doit apparaître 2 fois,
+        # chacun avec son propre lib_id — sinon un seul survit et l'autre
+        # bibliothèque perd silencieusement ses tomes "en vrac"/base.
+        # Pour archives: dédupliquer par (library_id, volume_type, volume_num) ou filename si pas de numéro
+        # Pour images: dédupliquer par (library_id, volume_num), fusionner les chapitres au sein d'une même bibliothèque
         files_map = {}   # clé de dédup → entry
-        img_vols = {}    # volume_num → entry
-        seen_img_chapters = {}  # volume_num → set(chapitres déjà vus)
-    
+        img_vols = {}    # (library_id, volume_num) → entry
+        seen_img_chapters = {}  # (library_id, volume_num) → set(chapitres déjà vus)
+
         for r in rows:
             if r["source"] == "images":
                 v = r["volume_num"] or 0
+                img_key = (r["library_id"], v)
                 try:
                     chapters = json.loads(r["chapters_json"] or "[]")
                 except:
                     chapters = []
-            
-                if v not in img_vols:
-                    seen_img_chapters[v] = set(chapters)
-                    img_vols[v] = {
+
+                if img_key not in img_vols:
+                    seen_img_chapters[img_key] = set(chapters)
+                    img_vols[img_key] = {
                         "id": r["id"],
                         "name": r["filename"],
                         "size": 0,
@@ -3085,23 +3089,23 @@ def list_cbz_files(folder: str, user=Depends(get_current_user)):
                         "lib_id": r["library_id"],
                     }
                 else:
-                    # Fusionner seulement les chapitres NOUVEAUX (pas déjà vus)
-                    new_chapters = [ch for ch in chapters if ch not in seen_img_chapters[v]]
+                    # Fusionner seulement les chapitres NOUVEAUX (pas déjà vus), au sein de la même bibliothèque
+                    new_chapters = [ch for ch in chapters if ch not in seen_img_chapters[img_key]]
                     if new_chapters:
                         for ch in new_chapters:
-                            seen_img_chapters[v].add(ch)
-                            img_vols[v]["chapters"].append(ch)
-                        img_vols[v]["chapters"].sort()
-                        img_vols[v]["total_pages"] += (r["total_pages"] or 0)
+                            seen_img_chapters[img_key].add(ch)
+                            img_vols[img_key]["chapters"].append(ch)
+                        img_vols[img_key]["chapters"].sort()
+                        img_vols[img_key]["total_pages"] += (r["total_pages"] or 0)
             else:
-                # Dédupliquer par (volume_type, volume_num) ou par filename
+                # Dédupliquer par (library_id, volume_type, volume_num) ou par (library_id, filename)
                 vtype = r["volume_type"]
                 vnum = r["volume_num"]
                 if vtype and vnum is not None:
-                    dedup_key = f"{vtype}:{vnum}"
+                    dedup_key = f"{r['library_id']}:{vtype}:{vnum}"
                 else:
-                    dedup_key = f"file:{r['filename']}"
-            
+                    dedup_key = f"{r['library_id']}:file:{r['filename']}"
+
                 if dedup_key not in files_map:
                     files_map[dedup_key] = {
                         "id": r["id"],
@@ -3167,9 +3171,10 @@ def _list_cbz_files_disk(folder: str, user: dict):
             for f in target.iterdir():
                 if f.is_file() and f.suffix.lower() in (".cbz", ".cbr", ".zip"):
                     fname = f.name
-                    if fname not in files_map:
+                    fkey = (lib_id, fname)
+                    if fkey not in files_map:
                         info = _parse_cbz_info(f.stem, folder_name=folder)
-                        files_map[fname] = {
+                        files_map[fkey] = {
                             "name": fname, "size": f.stat().st_size,
                             "path": str(Path(folder) / fname).replace("\\", "/"),
                             "volume": info["num"], "volume_type": info["type"],
@@ -3180,15 +3185,16 @@ def _list_cbz_files_disk(folder: str, user: dict):
                     if not info:
                         continue
                     v, ch = int(info["tome"]), int(info["chapter"])
-                    if v not in img_vols:
-                        img_vols[v] = {
+                    vkey = (lib_id, v)
+                    if vkey not in img_vols:
+                        img_vols[vkey] = {
                             "name": f"Tome {v:02d} (images)", "size": 0,
                             "path": f"imgvol:{folder}:{v}", "volume": v,
                             "volume_type": "tome", "volume_display": f"Tome {v:02d}",
                             "source": "images", "chapters": [], "lib_id": lib_id,
                         }
-                    if ch not in img_vols[v]["chapters"]:
-                        img_vols[v]["chapters"].append(ch)
+                    if ch not in img_vols[vkey]["chapters"]:
+                        img_vols[vkey]["chapters"].append(ch)
 
         for obj in img_vols.values():
             obj["chapters"].sort()
