@@ -11,8 +11,10 @@ os.environ["TAMASHELF_DATA"] = _tmp
 os.environ["TAMASHELF_STATIC"] = "/nonexistent"
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import sqlite3
 from fastapi.testclient import TestClient
-from main import app, get_db_ctx, hash_password, verify_password
+import main
+from main import app, get_db_ctx, hash_password, verify_password, migrate_db
 
 client = TestClient(app)
 _token = None
@@ -317,6 +319,144 @@ class TestRebuildLibraryIndex:
             vols = {r["filename"] for r in db.execute("SELECT filename FROM manga_volumes WHERE cbz_folder = 'One Piece' AND library_id = ?", (lib_id,)).fetchall()}
             assert "One Piece T99-perime.cbz" not in vols  # tome périmé nettoyé
             assert "One Piece T01.cbz" in vols  # vrai fichier réindexé
+
+
+class TestCrossLibrarySameFolderName:
+    """Deux bibliothèques différentes peuvent chacune avoir un dossier du même nom (ex:
+    "Dragon Ball" dans 2 bibliothèques) -- elles doivent obtenir chacune leur propre fiche
+    manga_library (jamais fusionnées/écrasées), grâce à UNIQUE(cbz_folder, library_id)."""
+
+    def test_two_libraries_same_folder_name(self):
+        base_a = tempfile.mkdtemp()
+        base_b = tempfile.mkdtemp()
+        for base in (base_a, base_b):
+            root = os.path.join(base, "Dragon Ball")
+            os.makedirs(root)
+            with open(os.path.join(root, "Dragon Ball T01.cbz"), "wb") as f:
+                f.write(b"PK\x03\x04")
+
+        lib_a = client.post("/api/admin/libraries", json={"name": "LibA", "cbz_path": base_a, "is_public": False}, headers=auth()).json()["id"]
+        lib_b = client.post("/api/admin/libraries", json={"name": "LibB", "cbz_path": base_b, "is_public": False}, headers=auth()).json()["id"]
+
+        client.post(f"/api/admin/scan-folders?library_id={lib_a}", headers=auth())
+        client.post(f"/api/admin/scan-folders?library_id={lib_b}", headers=auth())
+
+        with get_db_ctx() as db:
+            rows = db.execute("SELECT id, library_id FROM manga_library WHERE cbz_folder = 'Dragon Ball' AND library_id IN (?, ?)", (lib_a, lib_b)).fetchall()
+            lib_ids = {r["library_id"] for r in rows}
+            assert lib_ids == {lib_a, lib_b}  # chaque bibliothèque a bien sa propre fiche
+            assert len(rows) == 2
+
+            vols_a = db.execute("SELECT COUNT(*) as c FROM manga_volumes WHERE cbz_folder = 'Dragon Ball' AND library_id = ?", (lib_a,)).fetchone()["c"]
+            vols_b = db.execute("SELECT COUNT(*) as c FROM manga_volumes WHERE cbz_folder = 'Dragon Ball' AND library_id = ?", (lib_b,)).fetchone()["c"]
+            assert vols_a == 1
+            assert vols_b == 1
+
+        # La liste principale (toutes bibliothèques confondues) ne doit PAS fusionner les
+        # deux -- elle doit renvoyer les 2 fiches séparément.
+        listing = client.get("/api/library", headers=auth()).json()
+        dragon_ball_items = [it for it in listing["items"] if it["cbz_folder"] == "Dragon Ball" and it["library_id"] in (lib_a, lib_b)]
+        assert len(dragon_ball_items) == 2
+
+
+class TestMigrateManualLibraryUnique:
+    """migrate_db() doit faire évoluer une base à l'ancien schéma (cbz_folder UNIQUE seul,
+    sans library_id dans la contrainte) vers UNIQUE(cbz_folder, library_id), sans perdre de
+    données ni changer les ids (référencés ailleurs par valeur : ratings, notes...)."""
+
+    def test_migration_upgrades_old_schema(self):
+        scratch_dir = tempfile.mkdtemp()
+        scratch_db = os.path.join(scratch_dir, "legacy.db")
+
+        # Construit une base minimale à l'ANCIEN schéma (avant migration).
+        conn = sqlite3.connect(scratch_db)
+        conn.executescript("""
+            CREATE TABLE manga_library (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cbz_folder TEXT UNIQUE NOT NULL,
+                nautiljon_url TEXT DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                cover_url TEXT DEFAULT '',
+                cover_blob BLOB,
+                synopsis TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                editions_json TEXT DEFAULT '[]',
+                match_status TEXT NOT NULL DEFAULT 'unmatched',
+                match_candidates_json TEXT DEFAULT '[]',
+                synced_at REAL NOT NULL DEFAULT (unixepoch()),
+                library_id INTEGER
+            );
+            CREATE TABLE libraries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                cbz_path TEXT NOT NULL DEFAULT '',
+                is_public INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE reading_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                manga_url TEXT NOT NULL,
+                volume_id TEXT NOT NULL DEFAULT '',
+                current_page INTEGER NOT NULL DEFAULT 0,
+                total_pages INTEGER NOT NULL DEFAULT 0,
+                title TEXT,
+                last_read REAL NOT NULL DEFAULT 0,
+                UNIQUE(user_id, manga_url, volume_id)
+            );
+            CREATE TABLE manga_volumes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cbz_folder TEXT NOT NULL,
+                library_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                filepath TEXT NOT NULL,
+                volume_num INTEGER,
+                volume_type TEXT,
+                volume_display TEXT,
+                source TEXT NOT NULL DEFAULT 'archive',
+                file_size INTEGER NOT NULL DEFAULT 0,
+                total_pages INTEGER NOT NULL DEFAULT 0,
+                thumbnail_blob BLOB,
+                chapters_json TEXT DEFAULT '[]',
+                scanned_at REAL NOT NULL DEFAULT (unixepoch())
+            );
+        """)
+        conn.execute("INSERT INTO libraries (id, name, cbz_path) VALUES (1, 'Principale', '/tmp/x')")
+        conn.execute("INSERT INTO manga_library (id, cbz_folder, title, match_status, library_id) VALUES (42, 'One Piece', 'One Piece', 'matched', 1)")
+        conn.commit()
+        conn.close()
+
+        original_db_path = main.DB_PATH
+        try:
+            main.DB_PATH = scratch_db
+            migrate_db()
+
+            conn = sqlite3.connect(scratch_db)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT id, cbz_folder, title, library_id FROM manga_library WHERE cbz_folder = 'One Piece'").fetchone()
+            assert row is not None
+            assert row["id"] == 42  # id préservé (référencé par ratings/notes/collections)
+            assert row["library_id"] == 1
+
+            # La contrainte doit maintenant être composite, pas seulement sur cbz_folder.
+            has_composite_unique = False
+            for idx in conn.execute("PRAGMA index_list(manga_library)").fetchall():
+                if idx["unique"]:
+                    cols = {r["name"] for r in conn.execute(f"PRAGMA index_info('{idx['name']}')").fetchall()}
+                    if cols == {"cbz_folder", "library_id"}:
+                        has_composite_unique = True
+            assert has_composite_unique
+
+            # Un second manga du même nom de dossier dans une AUTRE bibliothèque doit
+            # maintenant être accepté (c'était impossible avec l'ancien schéma).
+            conn.execute("INSERT INTO libraries (id, name, cbz_path) VALUES (2, 'Secondaire', '/tmp/y')")
+            conn.execute("INSERT INTO manga_library (cbz_folder, title, match_status, library_id) VALUES ('One Piece', 'One Piece', 'unmatched', 2)")
+            conn.commit()
+            count = conn.execute("SELECT COUNT(*) as c FROM manga_library WHERE cbz_folder = 'One Piece'").fetchone()["c"]
+            assert count == 2
+            conn.close()
+        finally:
+            main.DB_PATH = original_db_path
 
 
 class TestZChangePassword:

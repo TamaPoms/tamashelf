@@ -195,7 +195,11 @@ function groupLibraryMangas(items) {
   const groups = new Map();
   for (const item of (items || [])) {
     const { baseTitle, editionLabel } = splitEditionTitle(item?.title || '');
-    const key = normalizeSearchText(baseTitle || item?.title || item?.cbz_folder || '');
+    // La clé de groupement inclut TOUJOURS library_id : deux bibliothèques différentes
+    // peuvent avoir chacune un manga du même titre/nom de dossier (ex: "Dragon Ball" dans
+    // 2 bibliothèques) -- ce sont 2 fiches indépendantes, jamais fusionnées comme si
+    // c'étaient des éditions l'une de l'autre.
+    const key = normalizeSearchText(baseTitle || item?.title || item?.cbz_folder || '') + '::lib' + String(item?.library_id ?? '');
     // Libellé d'édition : on préfère le nom du sous-dossier (stable, ex:
     // "Dragon Ball/Dragon Ball - Édition Deluxe simple") au titre matché
     // Nautiljon quand il est disponible. Le titre matché est le même pour

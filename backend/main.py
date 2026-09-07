@@ -514,6 +514,62 @@ def migrate_db():
         db.execute("ALTER TABLE manga_library ADD COLUMN cover_blob BLOB")
         db.commit()
 
+    # Migration: UNIQUE(cbz_folder) → UNIQUE(cbz_folder, library_id).
+    # cbz_folder était unique sur TOUTE la base, donc deux bibliothèques ne pouvaient
+    # jamais avoir chacune leur propre fiche pour un dossier du même nom (ex: "Dragon
+    # Ball" présent dans 2 bibliothèques) : la deuxième bibliothèque à scanner ce nom de
+    # dossier n'obtenait jamais sa propre entrée (do_scan_cbz_folders trouvait déjà une
+    # ligne existante et n'y touchait pas), donc ses tomes n'étaient jamais indexés.
+    needs_ml_unique_migration = True
+    try:
+        for idx in db.execute("PRAGMA index_list(manga_library)").fetchall():
+            if idx["unique"]:
+                idx_cols = {r["name"] for r in db.execute(f"PRAGMA index_info('{idx['name']}')").fetchall()}
+                if idx_cols == {"cbz_folder", "library_id"}:
+                    needs_ml_unique_migration = False
+                    break
+    except Exception:
+        pass
+
+    if needs_ml_unique_migration:
+        try:
+            db.execute("DROP TABLE IF EXISTS manga_library_new")
+            db.execute("""
+                CREATE TABLE manga_library_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cbz_folder TEXT NOT NULL,
+                    nautiljon_url TEXT DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    cover_url TEXT DEFAULT '',
+                    cover_blob BLOB,
+                    synopsis TEXT DEFAULT '',
+                    metadata_json TEXT DEFAULT '{}',
+                    editions_json TEXT DEFAULT '[]',
+                    match_status TEXT NOT NULL DEFAULT 'unmatched',
+                    match_candidates_json TEXT DEFAULT '[]',
+                    synced_at REAL NOT NULL DEFAULT (unixepoch()),
+                    library_id INTEGER,
+                    UNIQUE(cbz_folder, library_id)
+                )
+            """)
+            db.execute("""
+                INSERT INTO manga_library_new
+                    (id, cbz_folder, nautiljon_url, title, cover_url, cover_blob, synopsis,
+                     metadata_json, editions_json, match_status, match_candidates_json, synced_at, library_id)
+                SELECT id, cbz_folder, nautiljon_url, title, cover_url, cover_blob, synopsis,
+                       metadata_json, editions_json, match_status, match_candidates_json, synced_at, library_id
+                FROM manga_library
+            """)
+            db.execute("DROP TABLE manga_library")
+            db.execute("ALTER TABLE manga_library_new RENAME TO manga_library")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_library_folder ON manga_library(cbz_folder)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_library_title ON manga_library(title COLLATE NOCASE)")
+            db.commit()
+        except Exception as e:
+            try: db.rollback()
+            except Exception: pass
+            print(f"[migrate_db] Échec migration UNIQUE(cbz_folder, library_id): {e}")
+
     # Migration: ajouter thumbnail_blob et total_pages à manga_volumes
     try:
         mv_cols = [row[1] for row in db.execute("PRAGMA table_info(manga_volumes)").fetchall()]
@@ -1604,14 +1660,17 @@ async def get_library(
 
         where_clause = " AND ".join(where_parts)
 
-        # Get total count (before pagination)
+        # Get total count (before pagination). COUNT(*) et non COUNT(DISTINCT cbz_folder) :
+        # deux bibliothèques différentes peuvent avoir chacune un dossier du même nom (ex:
+        # "Dragon Ball" dans 2 bibliothèques) -- ce sont 2 fiches distinctes à part entière,
+        # jamais fusionnées ni comptées comme une seule (voir aussi seen_folders plus bas).
         total = db.execute(
-            f"SELECT COUNT(DISTINCT cbz_folder) as c FROM manga_library WHERE {where_clause}", args
+            f"SELECT COUNT(*) as c FROM manga_library WHERE {where_clause}", args
         ).fetchone()["c"]
 
         # Alpha index (always computed on full set, ignoring pagination)
         alpha_rows = db.execute(
-            f"SELECT UPPER(SUBSTR(title,1,1)) as letter, COUNT(DISTINCT cbz_folder) as cnt "
+            f"SELECT UPPER(SUBSTR(title,1,1)) as letter, COUNT(*) as cnt "
             f"FROM manga_library WHERE {where_clause} GROUP BY letter",
             args
         ).fetchall()
@@ -1622,7 +1681,7 @@ async def get_library(
 
         # Status counts (full set)
         status_rows = db.execute(
-            f"SELECT match_status, COUNT(DISTINCT cbz_folder) as cnt FROM manga_library WHERE {where_clause} GROUP BY match_status",
+            f"SELECT match_status, COUNT(*) as cnt FROM manga_library WHERE {where_clause} GROUP BY match_status",
             args
         ).fetchall()
         unmatched = 0
@@ -1645,27 +1704,28 @@ async def get_library(
             args
         ).fetchall()
 
-        # Pre-compute volume types
+        # Pre-compute volume types -- clé (cbz_folder, library_id) : deux bibliothèques
+        # peuvent avoir un dossier du même nom avec des contenus différents, il ne faut
+        # jamais mélanger les types de volumes de l'une dans l'affichage de l'autre.
         vol_types = {}
         try:
-            vt_rows = db.execute("SELECT cbz_folder, volume_type FROM manga_volumes WHERE volume_type IS NOT NULL").fetchall()
+            vt_rows = db.execute("SELECT cbz_folder, library_id, volume_type FROM manga_volumes WHERE volume_type IS NOT NULL").fetchall()
             for vr in vt_rows:
-                vol_types.setdefault(vr["cbz_folder"], set()).add(vr["volume_type"])
+                vol_types.setdefault((vr["cbz_folder"], vr["library_id"]), set()).add(vr["volume_type"])
         except Exception:
             pass
 
-    # Build response (outside DB context)
+    # Build response (outside DB context). Chaque ligne manga_library est déjà unique par
+    # (cbz_folder, library_id) grâce à la contrainte de la table -- pas de dédoublonnage
+    # entre bibliothèques ici : deux bibliothèques avec un dossier du même nom restent 2
+    # fiches distinctes dans la grille (jamais fusionnées).
     items = []
-    seen_folders = set()
     for r in rows:
-        if library_id is None and r["cbz_folder"] in seen_folders:
-            continue
-        seen_folders.add(r["cbz_folder"])
         try:
             meta = json.loads(r["metadata_json"] or "{}")
         except Exception:
             meta = {}
-        folder_types = vol_types.get(r["cbz_folder"], set())
+        folder_types = vol_types.get((r["cbz_folder"], r["library_id"]), set())
         is_oneshot = "oneshot" in folder_types
         if not is_oneshot:
             type_str = str(meta.get("Type", "") or "").lower()
@@ -1844,9 +1904,13 @@ async def do_scan_cbz_folders(library_id: Optional[int] = None):
                 # Le titre affiche = le dernier segment du chemin
                 display_title = Path(rel_path).name
 
+                # Scopé par library_id : deux bibliothèques différentes peuvent chacune
+                # avoir un dossier du même nom (ex: "Dragon Ball" dans 2 bibliothèques) --
+                # elles doivent obtenir chacune leur propre fiche manga_library, jamais
+                # fusionnées (voir la migration UNIQUE(cbz_folder, library_id) plus haut).
                 existing = db2.execute(
-                    "SELECT id, library_id FROM manga_library WHERE cbz_folder = ?",
-                    (rel_path,),
+                    "SELECT id, library_id FROM manga_library WHERE cbz_folder = ? AND library_id = ?",
+                    (rel_path, lib_id_val),
                 ).fetchone()
 
                 if not existing:
@@ -1887,7 +1951,10 @@ def _scan_volumes_for_library(lib_id: int, cbz_path: str):
     img_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
     with get_db_ctx() as db:
     
-        all_mangas = db.execute("SELECT id, cbz_folder FROM manga_library").fetchall()
+        # Scopé à cette bibliothèque : une autre bibliothèque peut avoir un manga du même
+        # nom de dossier (voir la migration UNIQUE(cbz_folder, library_id)), il ne faut
+        # scanner ici que les fiches qui appartiennent réellement à cette bibliothèque.
+        all_mangas = db.execute("SELECT id, cbz_folder FROM manga_library WHERE library_id = ?", (lib_id,)).fetchall()
     
         count = 0
         for manga_row in all_mangas:
@@ -2110,10 +2177,15 @@ def merge_mangas(keep_id: int, merge_ids: str, admin=Depends(require_admin)):
             if not source:
                 continue
 
-            # Move volumes from source to keep
+            # Move volumes from source to keep -- scopé par library_id du source (deux
+            # bibliothèques peuvent avoir un dossier du même nom, on ne veut déplacer QUE
+            # les volumes de la fiche source qu'on fusionne, pas ceux d'une autre
+            # bibliothèque qui porterait coïncidemment le même nom de dossier), et on
+            # aligne library_id sur celui de "keep" pour rester cohérent avec son propre
+            # cbz_folder.
             db.execute(
-                "UPDATE manga_volumes SET cbz_folder = ? WHERE cbz_folder = ?",
-                (keep["cbz_folder"], source["cbz_folder"])
+                "UPDATE manga_volumes SET cbz_folder = ?, library_id = ? WHERE cbz_folder = ? AND library_id = ?",
+                (keep["cbz_folder"], keep["library_id"], source["cbz_folder"], source["library_id"])
             )
 
             # Delete the source manga entry
@@ -4704,12 +4776,12 @@ def opds_all(user=Depends(get_current_user)):
 def opds_manga(manga_id: int, user=Depends(get_current_user)):
     """OPDS: list volumes of a manga for download."""
     with get_db_ctx() as db:
-        manga = db.execute("SELECT id, cbz_folder, title, synopsis FROM manga_library WHERE id = ?", (manga_id,)).fetchone()
+        manga = db.execute("SELECT id, cbz_folder, library_id, title, synopsis FROM manga_library WHERE id = ?", (manga_id,)).fetchone()
         if not manga:
             raise HTTPException(404)
         volumes = db.execute(
-            "SELECT id, filename, filepath, volume_num, volume_display, file_size, total_pages FROM manga_volumes WHERE cbz_folder = ? ORDER BY volume_num ASC, filename ASC",
-            (manga["cbz_folder"],)
+            "SELECT id, filename, filepath, volume_num, volume_display, file_size, total_pages FROM manga_volumes WHERE cbz_folder = ? AND library_id = ? ORDER BY volume_num ASC, filename ASC",
+            (manga["cbz_folder"], manga["library_id"])
         ).fetchall()
 
     safe_title = (manga["title"] or "").replace("&", "&amp;").replace("<", "&lt;")
