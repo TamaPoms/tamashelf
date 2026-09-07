@@ -196,8 +196,25 @@ function groupLibraryMangas(items) {
   for (const item of (items || [])) {
     const { baseTitle, editionLabel } = splitEditionTitle(item?.title || '');
     const key = normalizeSearchText(baseTitle || item?.title || item?.cbz_folder || '');
+    // Libellé d'édition : on préfère le nom du sous-dossier (stable, ex:
+    // "Dragon Ball/Dragon Ball - Édition Deluxe simple") au titre matché
+    // Nautiljon quand il est disponible. Le titre matché est le même pour
+    // TOUTES les éditions d'une série ("Dragon Ball", sans suffixe) une fois
+    // le matching passé -- s'y fier ici ferait perdre le libellé d'édition de
+    // chaque sous-dossier dès qu'il est matché, et regrouperait par erreur
+    // tous les tomes de toutes les éditions sous un seul et même libellé
+    // (donc dédupliqués entre eux dans loadTomes comme s'ils étaient les
+    // mêmes tomes -- voir la déduplication par (édition, volume) plus bas).
+    const folder = String(item?.cbz_folder || '');
+    const slashIdx = folder.lastIndexOf('/');
+    let finalEditionLabel = editionLabel;
+    if (slashIdx > -1) {
+      const lastSegment = folder.slice(slashIdx + 1);
+      const folderSplit = splitEditionTitle(lastSegment);
+      finalEditionLabel = folderSplit.editionLabel || lastSegment;
+    }
     const current = groups.get(key) || [];
-    current.push({ ...item, __base_title: baseTitle || item?.title || '', __edition_label: editionLabel || '' });
+    current.push({ ...item, __base_title: baseTitle || item?.title || '', __edition_label: finalEditionLabel || '' });
     groups.set(key, current);
   }
   return [...groups.values()].map((variants) => {
@@ -439,12 +456,6 @@ function MainApp({ session, doLogout, show, toast }) {
   const [rBarVisible, setRBarVisible] = useState(false);
   const [rRTL, setRRTL] = useState(true); // right-to-left reading -- manga par défaut, basculer via le bouton ←/→ pour une série qui se lit à l'occidentale
   const [rNextVol, setRNextVol] = useState(null); // {tome, manga} for auto-advance
-  // Double-page "scannée en une seule image" (mode paginé uniquement) : on affiche
-  // d'abord 55% de l'image (léger chevauchement au centre pour ne rien manquer), puis
-  // les 55% restants, pour simuler deux pages simples au lieu d'une page écrasée.
-  const [rSpreadDims, setRSpreadDims] = useState(null); // {w,h} naturelles de la page rP une fois chargée
-  const [rSpreadHalf, setRSpreadHalf] = useState(null); // 'right' | 'left' -- moitié affichée si double-page détectée
-  const rNavDirRef = useRef('forward'); // dernière direction de navigation (pour savoir par quelle moitié entrer dans une double-page)
   const [rShowNextPrompt, setRShowNextPrompt] = useState(false);
   const [rBookmarks, setRBookmarks] = useState([]); // [pageIndex, ...]
   const [rShowThumbs, setRShowThumbs] = useState(false);
@@ -658,32 +669,8 @@ function MainApp({ session, doLogout, show, toast }) {
     }
   };
 
-  // Double-page scannée en une seule image (mode paginé) : tant qu'on est sur la
-  // première moitié, "suivant"/"précédent" bascule juste la moitié affichée au lieu de
-  // changer de page -- voir le rendu du mode 'paged' plus bas et handlePageImgLoad.
-  const isSpreadNow = rMode === 'paged' && !!rSpreadDims && rSpreadDims.w / rSpreadDims.h > 1.2;
-  const spreadFirstHalf = rRTL ? 'right' : 'left'; // lue en premier
-  const spreadLastHalf = rRTL ? 'left' : 'right';
-  const handlePageImgLoad = (e) => {
-    const w = e.target.naturalWidth, h = e.target.naturalHeight;
-    setRSpreadDims({ w, h });
-    if (w / h > 1.2) {
-      setRSpreadHalf(prev => prev || (rNavDirRef.current === 'backward' ? spreadLastHalf : spreadFirstHalf));
-    }
-  };
-
-  const rdrNext = () => {
-    if (isSpreadNow && rSpreadHalf === spreadFirstHalf) { setRSpreadHalf(spreadLastHalf); return; }
-    rNavDirRef.current = 'forward';
-    rdrGo(rP + (rMode === 'double' ? 2 : 1));
-  };
-  const rdrPrev = () => {
-    if (isSpreadNow && rSpreadHalf === spreadLastHalf) { setRSpreadHalf(spreadFirstHalf); return; }
-    rNavDirRef.current = 'backward';
-    rdrGo(rP - (rMode === 'double' ? 2 : 1));
-  };
-
-  useEffect(() => { setRSpreadDims(null); setRSpreadHalf(null); }, [rP]);
+  const rdrNext = () => rdrGo(rP + (rMode === 'double' ? 2 : 1));
+  const rdrPrev = () => rdrGo(rP - (rMode === 'double' ? 2 : 1));
 
   const toggleBookmark = (page) => {
     setRBookmarks(prev => prev.includes(page) ? prev.filter(p => p !== page) : [...prev, page].sort((a, b) => a - b));
@@ -866,8 +853,8 @@ function MainApp({ session, doLogout, show, toast }) {
       return;
     }
     if (rMode === 'paged' || rMode === 'double') {
-      if (cx <= 0.25) { rRTL ? rdrNext() : rdrPrev(); }
-      else if (cx >= 0.75) { rRTL ? rdrPrev() : rdrNext(); }
+      if (cx <= 0.25) rdrGo(rRTL ? rP + (rMode === 'double' ? 2 : 1) : rP - (rMode === 'double' ? 2 : 1));
+      else if (cx >= 0.75) rdrGo(rRTL ? rP - (rMode === 'double' ? 2 : 1) : rP + (rMode === 'double' ? 2 : 1));
     }
   };
 
@@ -1545,8 +1532,9 @@ function MainApp({ session, doLogout, show, toast }) {
                               ? api.imgVolPageUrl(t.cbz_folder || sel.cbz_folder, t.volume || 0, 0)
                               : api.cbzThumbnailUrl(t.path)}
                             alt="" loading="lazy"
-                            onError={e => { e.target.style.display = "none"; }}
+                            onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
                           />
+                          <div className="vcph" style={{ display: "none" }}>{t.volume_display || (t.volume ? `T${t.volume}` : "?")}</div>
                           <div className="vn">{t.volume_display || (t.volume ? `Tome ${t.volume}` : "Sans n°")}</div>
                           {!!t.__edition_label && <div style={{ fontSize: 9, color: 'var(--t3)' }}>{t.__edition_label}</div>}
                           <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
@@ -1688,26 +1676,7 @@ function MainApp({ session, doLogout, show, toast }) {
           </div>
         ) : (
           <div className="rdr-cv" onClick={handleReaderClick}>
-            {rPg[rP] && (isSpreadNow ? (
-              <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-                <img
-                  src={rPg[rP]}
-                  alt=""
-                  draggable={false}
-                  onLoad={handlePageImgLoad}
-                  style={{
-                    position: 'absolute', top: '50%',
-                    left: rSpreadHalf === 'left' ? 0 : undefined,
-                    right: rSpreadHalf === 'right' ? 0 : undefined,
-                    width: '181.82%', maxWidth: 'none', height: 'auto', maxHeight: 'none',
-                    transform: `translateY(-50%) scale(${rZoom})`,
-                    transformOrigin: rSpreadHalf === 'right' ? 'right center' : 'left center',
-                  }}
-                />
-              </div>
-            ) : (
-              <img src={rPg[rP]} alt="" draggable={false} onLoad={handlePageImgLoad} style={{ transform: `scale(${rZoom})` }} />
-            ))}
+            {rPg[rP] && <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} />}
           </div>
         )}
 

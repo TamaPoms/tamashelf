@@ -224,6 +224,47 @@ class TestImportExport:
         resp = client.post("/api/lists/import", json=exp, headers=auth())
         assert resp.status_code == 200
 
+class TestScanNestedEditions:
+    """Structure mixte : un dossier manga avec des tomes "en vrac" (édition
+    standard) ET des sous-dossiers d'édition contenant eux-mêmes des tomes
+    (ex: Dragon Ball/T01.cbz + Dragon Ball/Dragon Ball - Perfect Edition/T01.cbz).
+    Avant le fix, le dossier parent qualifiait à lui seul comme "manga profondeur
+    1" (il a des .cbz en vrac) et ses sous-dossiers n'étaient donc jamais
+    explorés -> les éditions imbriquées restaient invisibles."""
+
+    def _make_structure(self):
+        base = tempfile.mkdtemp()
+        root = os.path.join(base, "Dragon Ball")
+        os.makedirs(root)
+        for i in (1, 2):
+            with open(os.path.join(root, f"Dragon Ball T{i:02d}.cbz"), "wb") as f:
+                f.write(b"PK\x03\x04")  # en-tete zip minimal, suffisant pour le scan (pas l'ouverture)
+        edition = os.path.join(root, "Dragon Ball - Perfect Edition")
+        os.makedirs(edition)
+        for i in (1, 2):
+            with open(os.path.join(edition, f"Dragon Ball - Perfect Edition T{i:02d}.cbz"), "wb") as f:
+                f.write(b"PK\x03\x04")
+        return base
+
+    def test_nested_edition_is_scanned(self):
+        base = self._make_structure()
+        resp = client.post("/api/admin/libraries", json={"name": "DBTest", "cbz_path": base, "is_public": False}, headers=auth())
+        assert resp.status_code == 200
+        lib_id = resp.json()["id"]
+
+        resp = client.post(f"/api/admin/scan-folders?library_id={lib_id}", headers=auth())
+        assert resp.status_code == 200
+
+        with get_db_ctx() as db:
+            rows = db.execute("SELECT cbz_folder FROM manga_library WHERE library_id = ?", (lib_id,)).fetchall()
+            folders = {r["cbz_folder"] for r in rows}
+
+        # Le dossier standard ET l'édition imbriquée doivent chacun avoir leur
+        # propre entrée manga_library, pas seulement le dossier racine.
+        assert "Dragon Ball" in folders
+        assert "Dragon Ball/Dragon Ball - Perfect Edition" in folders
+
+
 class TestZChangePassword:
     def test_wrong_old(self):
         assert client.post("/api/change-password", json={"old_password": "wrong", "new_password": "x"}, headers=auth()).status_code in (400, 403)

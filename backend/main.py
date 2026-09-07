@@ -1690,11 +1690,18 @@ async def do_scan_cbz_folders(library_id: Optional[int] = None):
     des sous-dossiers chapitre (format 'y x z', ex: 1x5).
     
     Gere les structures :
-      - base/Manga/T01.cbz               (profondeur 1)
-      - base/Genre/Manga/T01.cbz         (profondeur 2)
-      - base/Manga/1x5/images...         (dossiers chapitres)
+      - base/Manga/T01.cbz                       (profondeur 1)
+      - base/Genre/Manga/T01.cbz                 (profondeur 2)
+      - base/Manga/1x5/images...                 (dossiers chapitres)
+      - base/Manga/Manga - Edition X/T01.cbz      (édition imbriquée, avec OU
+                                                    sans tomes "en vrac" aussi
+                                                    présents directement dans
+                                                    base/Manga/)
 
-    cbz_folder stocke le chemin relatif depuis la base : "Manga" ou "Genre/Manga"
+    cbz_folder stocke le chemin relatif depuis la base : "Manga", "Genre/Manga"
+    ou "Manga/Manga - Edition X" (chaque édition imbriquée devient sa propre
+    entrée manga_library, regroupée côté frontend avec l'édition standard du
+    même Manga -- voir groupLibraryMangas() dans App.jsx).
     """
     with get_db_ctx() as db:
 
@@ -1760,6 +1767,23 @@ async def do_scan_cbz_folders(library_id: Optional[int] = None):
                 if src:
                     # Profondeur 1: base/Manga/T01.cbz
                     manga_dirs.append((d.name, src))
+                    # Le dossier peut EN PLUS contenir des sous-dossiers d'édition
+                    # (ex: base/Dragon Ball/T01.cbz *et* base/Dragon Ball/Dragon
+                    # Ball - Perfect Edition/T01.cbz) : on les indexe aussi, sans
+                    # quoi ces éditions imbriquées deviennent invisibles dès que
+                    # le dossier parent contient également des tomes "en vrac"
+                    # (l'édition standard), qui suffisent à eux seuls à qualifier
+                    # le dossier parent comme "profondeur 1" et court-circuitaient
+                    # jusqu'ici l'exploration de ses sous-dossiers.
+                    try:
+                        for sub in sorted(d.iterdir()):
+                            if not sub.is_dir() or sub.name.startswith("."):
+                                continue
+                            sub_src = _is_manga_dir(sub)
+                            if sub_src:
+                                manga_dirs.append((f"{d.name}/{sub.name}", sub_src))
+                    except PermissionError:
+                        pass
                 else:
                     # Profondeur 2: base/Genre/Manga/T01.cbz
                     try:
@@ -2149,10 +2173,22 @@ async def auto_match(admin=Depends(require_admin)):
                             break
 
                 if exact_match:
-                    # Match 100% → fetch les détails et enregistrer
+                    # Match 100% → fetch les détails et enregistrer. IMPORTANT : ne compter
+                    # comme "matché" que si _store_details a réellement écrit en base — sinon
+                    # (app.py injoignable/erreur réseau au moment précis de ce fetch, alors
+                    # même que la recherche juste avant avait réussi) le manga restait
+                    # visuellement "trouvé" dans les logs mais sans aucune donnée enregistrée
+                    # (pas d'éditions, pas de synopsis...), et ne repassait jamais par le
+                    # matching auto ensuite puisqu'il n'était plus dans 'unmatched'/'pending'.
                     nautiljon_url = exact_match.get("url", "")
-                    _store_details(manga_id, nautiljon_url, exact_match.get("title", folder))
-                    auto_matched += 1
+                    if _store_details(manga_id, nautiljon_url, exact_match.get("title", folder)):
+                        auto_matched += 1
+                    else:
+                        db2 = get_db()
+                        db2.execute("UPDATE manga_library SET match_status = 'pending', match_candidates_json = '[]' WHERE id = ?", (manga_id,))
+                        db2.commit()
+                        db2.close()
+                        pending += 1
                 else:
                     # Pas exact → reste unmatched, l'admin cherchera manuellement
                     not_found += 1
