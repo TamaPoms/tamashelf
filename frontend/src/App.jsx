@@ -449,6 +449,7 @@ function MainApp({ session, doLogout, show, toast }) {
   const [tomesL, setTomesL] = useState(false);
   const [volFilter, setVolFilter] = useState(null); // null=all, "tome", "chapter"
   const [activeEditionLabel, setActiveEditionLabel] = useState(null); // normalized label or null for all
+  const [tomeSectionsOpen, setTomeSectionsOpen] = useState({}); // normLabel -> bool (repliable), édition standard ouverte par défaut
 
   // Reader
   const [rdr, setRdr] = useState(false);
@@ -592,6 +593,7 @@ function MainApp({ session, doLogout, show, toast }) {
     const primary = variants[0];
     setSel({ ...m, grouped_variants: variants }); setDtab("info"); setDet(null); setExpEd({}); setTomes([]); setDetL(true);
     setActiveEditionLabel(null);
+    setTomeSectionsOpen({}); // repart de l'état par défaut (édition standard ouverte) pour ce manga
     // Auto-set volume filter from library content filter
     setVolFilter(contentType);
     try {
@@ -601,7 +603,7 @@ function MainApp({ session, doLogout, show, toast }) {
     finally { setDetL(false); }
     loadTomes(variants);
   };
-  const closeDet = () => { setSel(null); setDet(null); setTomes([]); setVolFilter(null); setActiveEditionLabel(null); };
+  const closeDet = () => { setSel(null); setDet(null); setTomes([]); setVolFilter(null); setActiveEditionLabel(null); setTomeSectionsOpen({}); };
 
   const loadTomes = async (variants) => {
     setTomesL(true);
@@ -1573,18 +1575,27 @@ function MainApp({ session, doLogout, show, toast }) {
                           {hasChapters && <button className={`btn btn-s${volFilter === "chapter" ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setVolFilter("chapter")}>Chapitres ({editionFiltered.filter(t => t.volume_type === "chapter").length})</button>}
                         </div>
                       )}
-                      {/* Volumes — grouped by edition when "Tout" is selected and multiple editions */}
+                      {/* Volumes — grouped by edition when "Tout" is selected and multiple editions.
+                          Repliable : l'édition standard (sans libellé) est ouverte par défaut, les
+                          autres éditions démarrent repliées pour ne pas noyer l'utilisateur sous
+                          toutes les éditions d'un coup (voir tomeSectionsOpen, réinitialisé à
+                          chaque ouverture de manga dans openDet). */}
                       {activeEditionLabel == null && hasMultiEditions ? (
                         editionVariants.map((v, vi) => {
                           const normLabel = normalizeEditionLabel(v.__edition_label);
                           let edVols = shown.filter(t => normalizeEditionLabel(t.__edition_label || '') === normLabel);
                           if (!edVols.length) return null;
+                          const isOpen = tomeSectionsOpen[normLabel] ?? (normLabel === '');
                           return (
                             <div key={v.cbz_folder || vi} style={{ marginBottom: 16 }}>
-                              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)", marginBottom: 6, padding: "4px 8px", background: "var(--c2)", borderRadius: 6, borderLeft: "3px solid var(--ac)" }}>
+                              <div
+                                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, color: "var(--t1)", marginBottom: isOpen ? 6 : 0, padding: "4px 8px", background: "var(--c2)", borderRadius: 6, borderLeft: "3px solid var(--ac)", cursor: "pointer" }}
+                                onClick={() => setTomeSectionsOpen(p => ({ ...p, [normLabel]: !isOpen }))}
+                              >
+                                <span style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s", color: "var(--t3)", fontSize: 11 }}>▸</span>
                                 {v.__edition_label || "Édition standard"} <span style={{ color: "var(--t3)", fontWeight: 400 }}>({edVols.length})</span>
                               </div>
-                              {renderVolumeGrid(edVols)}
+                              {isOpen && renderVolumeGrid(edVols)}
                             </div>
                           );
                         })
