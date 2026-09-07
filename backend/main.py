@@ -1108,6 +1108,48 @@ def reset_library_match(lib_id: int, admin=Depends(require_admin)):
         db.commit()
         return {"ok": True, "reset": len(folders)}
 
+@app.post("/api/admin/libraries/{lib_id}/rebuild-index")
+async def rebuild_library_index(lib_id: int, admin=Depends(require_admin)):
+    """Reconstruit l'index des tomes CBZ d'une bibliothèque à partir de zéro.
+
+    Contrairement à reset-match (qui efface le matching Nautiljon), celle-ci ne touche
+    PAS au matching déjà fait : elle vide seulement manga_volumes (chemins de tomes
+    potentiellement périmés -- fichiers renommés/déplacés/supprimés depuis le dernier
+    scan, cause des erreurs "Fichier CBZ introuvable" pour certains tomes seulement) et
+    retire les fiches manga_library dont le dossier n'existe plus DU TOUT sur le disque,
+    puis relance un scan complet (nouveaux dossiers -- y compris les éditions imbriquées,
+    voir do_scan_cbz_folders -- + réindexation de tous les tomes depuis zéro). Les fiches
+    dont le dossier existe encore gardent leur titre/jaquette/synopsis/éditions Nautiljon
+    intacts."""
+    with get_db_ctx() as db:
+        lib = db.execute("SELECT id, name, cbz_path FROM libraries WHERE id = ?", (lib_id,)).fetchone()
+        if not lib:
+            raise HTTPException(404, "Bibliothèque introuvable")
+        cbz_path = lib["cbz_path"]
+        if not cbz_path or not Path(cbz_path).exists():
+            raise HTTPException(400, f"Chemin CBZ introuvable ou non monté : {cbz_path}")
+
+        # 1) Vide l'index des tomes -- entièrement reconstruit par le scan ci-dessous.
+        db.execute("DELETE FROM manga_volumes WHERE library_id = ?", (lib_id,))
+
+        # 2) Retire les fiches dont le dossier n'existe plus du tout sur le disque.
+        rows = db.execute("SELECT id, cbz_folder FROM manga_library WHERE library_id = ?", (lib_id,)).fetchall()
+        base_path = Path(cbz_path)
+        removed = 0
+        for r in rows:
+            if not (base_path / r["cbz_folder"]).exists():
+                db.execute("DELETE FROM manga_library WHERE id = ?", (r["id"],))
+                db.execute("DELETE FROM matches WHERE cbz_folder = ?", (r["cbz_folder"],))
+                removed += 1
+        db.commit()
+
+    # 3) Relance le scan complet (nouveaux dossiers + tomes) sur cette bibliothèque.
+    added = await do_scan_cbz_folders(library_id=lib_id)
+    vol_count = _scan_volumes_for_library(lib_id, cbz_path)
+
+    return {"ok": True, "removed_stale": removed, "added": added, "volumes_indexed": vol_count}
+
+
 @app.get("/api/admin/libraries/{lib_id}/access")
 def get_library_access(lib_id: int, admin=Depends(require_admin)):
     with get_db_ctx() as db:

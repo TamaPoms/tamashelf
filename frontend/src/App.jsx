@@ -2902,6 +2902,14 @@ function AdminLibraryManager({ show, users, loadUsers }) {
       show(`${r.reset} manga(s) remis à "non matché"`);
     } catch (e) { show(e.message); }
   };
+  const rebuildLibIndex = async (lib) => {
+    if (!window.confirm(`Reconstruire l'index des tomes CBZ de « ${lib.name} » à partir de zéro ? Nettoie les chemins de tomes périmés (fichiers renommés/déplacés/supprimés) et les fiches dont le dossier n'existe plus, puis rescanne tout le disque (y compris les éditions imbriquées). Le matching Nautiljon déjà fait est conservé.`)) return;
+    try {
+      const r = await api.adminRebuildLibraryIndex(lib.id);
+      loadLibs();
+      show(`✅ ${r.removed_stale} fiche(s) périmée(s) supprimée(s), ${r.added} ajoutée(s), ${r.volumes_indexed} tome(s) indexé(s)`);
+    } catch (e) { show(`❌ ${e.message}`); }
+  };
   const openAccess = async (lib) => {
     setAccessLibId(lib.id);
     try { const r = await api.adminGetLibraryAccess(lib.id); setAccessUserIds(r.user_ids || []); } catch {}
@@ -2975,6 +2983,7 @@ function AdminLibraryManager({ show, users, loadUsers }) {
                 <button className="btn btn-s" onClick={() => openEdit(lib)}>Modifier</button>
                 <button className="btn btn-s" onClick={() => openAccess(lib)}>Accès</button>
                 <button className="btn btn-s" title="Effacer le matching Nautiljon de cette bibliothèque pour tout rematcher" onClick={() => resetLibMatch(lib)}>Réinit. matching</button>
+                <button className="btn btn-s" title="Nettoyer les tomes périmés et rescanner le disque depuis zéro (garde le matching Nautiljon)" onClick={() => rebuildLibIndex(lib)}>🔄 Reconstruire l'index</button>
                 <button className="btn btn-s btn-d" onClick={() => delLib(lib)}>Suppr</button>
               </div>
             </div>

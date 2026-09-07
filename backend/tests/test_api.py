@@ -265,6 +265,60 @@ class TestScanNestedEditions:
         assert "Dragon Ball/Dragon Ball - Perfect Edition" in folders
 
 
+class TestRebuildLibraryIndex:
+    """rebuild-index doit : 1) nettoyer les tomes/fiches périmés (dossier disparu du
+    disque), 2) garder intact le matching Nautiljon déjà fait des mangas dont le dossier
+    existe toujours, 3) redécouvrir les dossiers réellement présents (dont les éditions
+    imbriquées)."""
+
+    def test_rebuild(self):
+        base = tempfile.mkdtemp()
+        keep = os.path.join(base, "One Piece")
+        os.makedirs(keep)
+        with open(os.path.join(keep, "One Piece T01.cbz"), "wb") as f:
+            f.write(b"PK\x03\x04")
+
+        resp = client.post("/api/admin/libraries", json={"name": "RebuildTest", "cbz_path": base, "is_public": False}, headers=auth())
+        lib_id = resp.json()["id"]
+
+        # Fiche "fantôme" : dossier qui n'existe plus du tout sur le disque -- simule un
+        # renommage/déplacement/suppression survenu depuis le dernier scan.
+        with get_db_ctx() as db:
+            db.execute(
+                "INSERT INTO manga_library (cbz_folder, title, match_status, library_id, nautiljon_url) "
+                "VALUES (?, ?, 'matched', ?, ?)",
+                ("Dossier Disparu", "Dossier Disparu", lib_id, "https://example.com/disparu")
+            )
+            db.commit()
+
+        # Scan initial + on simule un matching déjà fait sur "One Piece" (doit survivre au
+        # rebuild) et un tome à un chemin périmé qui doit disparaître (fichier renommé).
+        client.post(f"/api/admin/scan-folders?library_id={lib_id}", headers=auth())
+        with get_db_ctx() as db:
+            db.execute("UPDATE manga_library SET match_status = 'matched', nautiljon_url = 'https://example.com/op', synopsis = 'Un trésor...' WHERE cbz_folder = 'One Piece' AND library_id = ?", (lib_id,))
+            db.execute(
+                "INSERT INTO manga_volumes (cbz_folder, library_id, filename, filepath, volume_num, source) "
+                "VALUES ('One Piece', ?, 'One Piece T99-perime.cbz', 'One Piece/One Piece T99-perime.cbz', 99, 'archive')",
+                (lib_id,)
+            )
+            db.commit()
+
+        resp = client.post(f"/api/admin/libraries/{lib_id}/rebuild-index", headers=auth())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed_stale"] == 1  # "Dossier Disparu"
+
+        with get_db_ctx() as db:
+            folders = {r["cbz_folder"] for r in db.execute("SELECT cbz_folder FROM manga_library WHERE library_id = ?", (lib_id,)).fetchall()}
+            assert "Dossier Disparu" not in folders
+            op = db.execute("SELECT match_status, nautiljon_url, synopsis FROM manga_library WHERE cbz_folder = 'One Piece' AND library_id = ?", (lib_id,)).fetchone()
+            assert op["match_status"] == "matched"  # matching Nautiljon conservé
+            assert op["synopsis"] == "Un trésor..."
+            vols = {r["filename"] for r in db.execute("SELECT filename FROM manga_volumes WHERE cbz_folder = 'One Piece' AND library_id = ?", (lib_id,)).fetchall()}
+            assert "One Piece T99-perime.cbz" not in vols  # tome périmé nettoyé
+            assert "One Piece T01.cbz" in vols  # vrai fichier réindexé
+
+
 class TestZChangePassword:
     def test_wrong_old(self):
         assert client.post("/api/change-password", json={"old_password": "wrong", "new_password": "x"}, headers=auth()).status_code in (400, 403)
