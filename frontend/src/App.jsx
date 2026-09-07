@@ -419,7 +419,7 @@ function MainApp({ session, doLogout, show, toast }) {
   const [rCbz, setRCbz] = useState(null);
   const [rMode, setRMode] = useState("paged"); // paged | webtoon | double
   const [rBarVisible, setRBarVisible] = useState(false);
-  const [rRTL, setRRTL] = useState(false); // right-to-left reading
+  const [rRTL, setRRTL] = useState(true); // right-to-left reading -- manga par défaut, basculer via le bouton ←/→ pour une série qui se lit à l'occidentale
   const [rNextVol, setRNextVol] = useState(null); // {tome, manga} for auto-advance
   const [rShowNextPrompt, setRShowNextPrompt] = useState(false);
   const [rBookmarks, setRBookmarks] = useState([]); // [pageIndex, ...]
@@ -2853,6 +2853,14 @@ function AdminLibraryManager({ show, users, loadUsers }) {
     if (!window.confirm(`Supprimer « ${lib.name} » et tous ses mangas ?`)) return;
     try { await api.adminDeleteLibrary(lib.id); loadLibs(); show("Supprimée"); } catch (e) { show(e.message); }
   };
+  const resetLibMatch = async (lib) => {
+    if (!window.confirm(`Effacer les données Nautiljon (titre matché, jaquette, synopsis…) de tous les mangas de « ${lib.name} » ? Les CBZ eux-mêmes ne sont pas touchés, seul le matching est remis à zéro pour pouvoir le relancer.`)) return;
+    try {
+      const r = await api.adminResetLibraryMatch(lib.id);
+      loadLibs();
+      show(`${r.reset} manga(s) remis à "non matché"`);
+    } catch (e) { show(e.message); }
+  };
   const openAccess = async (lib) => {
     setAccessLibId(lib.id);
     try { const r = await api.adminGetLibraryAccess(lib.id); setAccessUserIds(r.user_ids || []); } catch {}
@@ -2925,6 +2933,7 @@ function AdminLibraryManager({ show, users, loadUsers }) {
               <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                 <button className="btn btn-s" onClick={() => openEdit(lib)}>Modifier</button>
                 <button className="btn btn-s" onClick={() => openAccess(lib)}>Accès</button>
+                <button className="btn btn-s" title="Effacer le matching Nautiljon de cette bibliothèque pour tout rematcher" onClick={() => resetLibMatch(lib)}>Réinit. matching</button>
                 <button className="btn btn-s btn-d" onClick={() => delLib(lib)}>Suppr</button>
               </div>
             </div>

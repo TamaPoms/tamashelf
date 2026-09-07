@@ -107,6 +107,7 @@ export const api = {
   adminCreateLibrary: (data) => request("/admin/libraries", { method: "POST", body: JSON.stringify(data) }),
   adminUpdateLibrary: (id, data) => request(`/admin/libraries/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   adminDeleteLibrary: (id) => request(`/admin/libraries/${id}`, { method: "DELETE" }),
+  adminResetLibraryMatch: (id) => request(`/admin/libraries/${id}/reset-match`, { method: "POST" }),
   adminGetLibraryAccess: (id) => request(`/admin/libraries/${id}/access`),
   adminSetLibraryAccess: (id, userIds) => request(`/admin/libraries/${id}/access`, { method: "PUT", body: JSON.stringify({ user_ids: userIds }) }),
   adminCompareLibraries: (libA, libB) => request(`/admin/libraries/compare?lib_a=${libA}&lib_b=${libB}`),

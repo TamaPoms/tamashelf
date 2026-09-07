@@ -48,6 +48,12 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "mangashelf.db"
 STATIC_DIR = Path(os.getenv("TAMASHELF_STATIC", os.getenv("MANGASHELF_STATIC", "/app/static")))
 
+# Cache local des jaquettes Nautiljon récupérées via app.py (voir la route
+# /api/nautiljon/img plus bas) -- persiste dans TAMASHELF_DATA comme le reste, donc
+# survit aux redéploiements. But : n'appeler app.py qu'une fois par image.
+IMG_CACHE_DIR = DATA_DIR / "nautiljon_img_cache"
+IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 # Accès à la vraie base Nautiljon (recherche, détails, images) via l'API HTTP publique
 # de app.py — voir nautiljon_db.py (APP_PY_URL). TamaShelf n'ouvre plus jamais
 # nautiljon_mangas.db ni le dossier qui le contient directement : aucun accès disque à
@@ -1050,6 +1056,36 @@ def delete_library(lib_id: int, admin=Depends(require_admin)):
         db.execute("DELETE FROM library_access WHERE library_id = ?", (lib_id,))
         db.commit()
         return {"ok": True, "reassigned": reassigned, "deleted": deleted}
+
+@app.post("/api/admin/libraries/{lib_id}/reset-match")
+def reset_library_match(lib_id: int, admin=Depends(require_admin)):
+    """Efface les données de matching (Nautiljon) de tous les mangas d'une bibliothèque
+    pour pouvoir relancer le matching à neuf -- garde les mangas eux-mêmes (cbz_folder,
+    volumes) et le titre affiché (utile en attendant le rematch), remet juste
+    match_status à 'unmatched' et vide tout ce qui vient de Nautiljon."""
+    with get_db_ctx() as db:
+        lib = db.execute("SELECT id, name FROM libraries WHERE id = ?", (lib_id,)).fetchone()
+        if not lib:
+            raise HTTPException(404, "Bibliothèque introuvable")
+
+        folders = [r["cbz_folder"] for r in db.execute(
+            "SELECT cbz_folder FROM manga_library WHERE library_id = ?", (lib_id,)
+        ).fetchall()]
+
+        db.execute("""
+            UPDATE manga_library
+            SET nautiljon_url = '', cover_url = '', cover_blob = NULL, synopsis = '',
+                metadata_json = '{}', editions_json = '[]', match_status = 'unmatched',
+                match_candidates_json = '[]'
+            WHERE library_id = ?
+        """, (lib_id,))
+
+        if folders:
+            placeholders = ",".join("?" for _ in folders)
+            db.execute(f"DELETE FROM matches WHERE cbz_folder IN ({placeholders})", folders)
+
+        db.commit()
+        return {"ok": True, "reset": len(folders)}
 
 @app.get("/api/admin/libraries/{lib_id}/access")
 def get_library_access(lib_id: int, admin=Depends(require_admin)):
@@ -2481,14 +2517,28 @@ async def nautiljon_manga(url: str, user=Depends(get_current_user)):
 
 @app.get("/api/nautiljon/img/{chemin:path}")
 async def nautiljon_img(chemin: str):
-    """Sert les images (couvertures série/volume) en proxy HTTP depuis app.py (sa route
-    publique /<chemin>, qui lit le fichier sur le disque partagé par scrapersql.py) --
-    TamaShelf n'a donc plus besoin d'un accès disque direct à ce dossier, seulement de
-    pouvoir joindre APP_PY_URL. Volontairement sans authentification : les balises <img>
-    ne peuvent pas envoyer d'en-tête Authorization, et ce contenu (jaquettes de mangas)
-    est aussi peu sensible que les anciens hotlinks directs vers nautiljon.com que ça
-    remplace."""
-    url = f"{nautiljon_db.APP_PY_URL}/{chemin.lstrip('/')}"
+    """Sert les images (couvertures série/volume). D'abord depuis le cache local
+    (IMG_CACHE_DIR, dans TAMASHELF_DATA) si déjà téléchargée -- sinon en proxy HTTP
+    depuis app.py (sa route publique /<chemin>, qui lit le fichier sur le disque
+    partagé par scrapersql.py), et on la sauve dans le cache pour les prochaines fois.
+    TamaShelf n'a donc besoin de joindre app.py qu'une seule fois par image. Volontairement
+    sans authentification : les balises <img> ne peuvent pas envoyer d'en-tête
+    Authorization, et ce contenu (jaquettes de mangas) est aussi peu sensible que les
+    anciens hotlinks directs vers nautiljon.com que ça remplace."""
+    chemin_propre = chemin.lstrip("/")
+    ext = Path(chemin_propre).suffix.lower().lstrip(".")
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/jpeg")
+
+    cache_root = IMG_CACHE_DIR.resolve()
+    cache_path = (cache_root / chemin_propre).resolve()
+    if cache_root != cache_path and cache_root not in cache_path.parents:
+        raise HTTPException(400, "Chemin invalide")
+
+    if cache_path.is_file():
+        return FileResponse(str(cache_path), media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+
+    url = f"{nautiljon_db.APP_PY_URL}/{chemin_propre}"
     try:
         async with httpx.AsyncClient(timeout=nautiljon_db.APP_PY_TIMEOUT) as client:
             r = await client.get(url)
@@ -2496,9 +2546,13 @@ async def nautiljon_img(chemin: str):
         raise HTTPException(502, "app.py injoignable")
     if r.status_code != 200:
         raise HTTPException(404, "Image introuvable")
-    ext = Path(chemin).suffix.lower().lstrip(".")
-    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-            "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/jpeg")
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except OSError:
+        pass  # le cache est un bonus -- une écriture ratée n'empêche pas de servir l'image
+
     return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
 
 
