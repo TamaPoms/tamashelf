@@ -195,11 +195,14 @@ function groupLibraryMangas(items) {
   const groups = new Map();
   for (const item of (items || [])) {
     const { baseTitle, editionLabel } = splitEditionTitle(item?.title || '');
-    // La clé de groupement inclut TOUJOURS library_id : deux bibliothèques différentes
-    // peuvent avoir chacune un manga du même titre/nom de dossier (ex: "Dragon Ball" dans
-    // 2 bibliothèques) -- ce sont 2 fiches indépendantes, jamais fusionnées comme si
-    // c'étaient des éditions l'une de l'autre.
-    const key = normalizeSearchText(baseTitle || item?.title || item?.cbz_folder || '') + '::lib' + String(item?.library_id ?? '');
+    // Regroupement PAR TITRE, toutes bibliothèques confondues : un même manga présent
+    // dans 2 bibliothèques (ex: "Dragon Ball" à la fois dans "principale" et "Poms") reste
+    // UNE seule fiche -- l'utilisateur voit tout au même endroit et peut choisir la
+    // bibliothèque à consulter dans la fiche (voir __library_ids plus bas et le sélecteur
+    // de bibliothèque dans l'onglet Tomes). /api/cbz/list fusionne déjà les tomes de toutes
+    // les bibliothèques accessibles pour un même nom de dossier, donc ce regroupement
+    // n'invente rien côté données -- il rend juste ce qui existe déjà visible et filtrable.
+    const key = normalizeSearchText(baseTitle || item?.title || item?.cbz_folder || '');
     // Libellé d'édition : on préfère le nom du sous-dossier (stable, ex:
     // "Dragon Ball/Dragon Ball - Édition Deluxe simple") au titre matché
     // Nautiljon quand il est disponible. Le titre matché est le même pour
@@ -250,10 +253,14 @@ function groupLibraryMangas(items) {
       return String(a.title || '').length - String(b.title || '').length;
     });
     const primary = dedupedVariants[0];
+    // Bibliothèques distinctes où ce manga existe (pour le badge + le sélecteur de
+    // bibliothèque dans la fiche).
+    const libraryIds = [...new Set(variants.map(v => v.library_id).filter(id => id != null))];
     return {
       ...primary,
       title: primary.__base_title || primary.title,
       grouped_variants: dedupedVariants,
+      __library_ids: libraryIds,
       _all_cbz_folders: variants.map(v => v.cbz_folder),
       has_tomes: variants.some(v => v.has_tomes),
       has_chapters: variants.some(v => v.has_chapters),
@@ -450,6 +457,7 @@ function MainApp({ session, doLogout, show, toast }) {
   const [volFilter, setVolFilter] = useState(null); // null=all, "tome", "chapter"
   const [activeEditionLabel, setActiveEditionLabel] = useState(null); // normalized label or null for all
   const [tomeSectionsOpen, setTomeSectionsOpen] = useState({}); // normLabel -> bool (repliable), édition standard ouverte par défaut
+  const [activeLibraryFilter, setActiveLibraryFilter] = useState(null); // library_id ou null pour "toutes"
 
   // Reader
   const [rdr, setRdr] = useState(false);
@@ -594,6 +602,7 @@ function MainApp({ session, doLogout, show, toast }) {
     setSel({ ...m, grouped_variants: variants }); setDtab("info"); setDet(null); setExpEd({}); setTomes([]); setDetL(true);
     setActiveEditionLabel(null);
     setTomeSectionsOpen({}); // repart de l'état par défaut (édition standard ouverte) pour ce manga
+    setActiveLibraryFilter(null);
     // Auto-set volume filter from library content filter
     setVolFilter(contentType);
     try {
@@ -603,7 +612,7 @@ function MainApp({ session, doLogout, show, toast }) {
     finally { setDetL(false); }
     loadTomes(variants);
   };
-  const closeDet = () => { setSel(null); setDet(null); setTomes([]); setVolFilter(null); setActiveEditionLabel(null); setTomeSectionsOpen({}); };
+  const closeDet = () => { setSel(null); setDet(null); setTomes([]); setVolFilter(null); setActiveEditionLabel(null); setTomeSectionsOpen({}); setActiveLibraryFilter(null); };
 
   const loadTomes = async (variants) => {
     setTomesL(true);
@@ -1478,6 +1487,16 @@ function MainApp({ session, doLogout, show, toast }) {
                   </div>
                   {det?.nautiljon_url && <a className="nlink" href={det.nautiljon_url.startsWith("http") ? det.nautiljon_url : `https://www.nautiljon.com${det.nautiljon_url}`} target="_blank" rel="noreferrer">🌐 Nautiljon</a>}
                   {sel?.grouped_variants?.length > 1 && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>{sel.grouped_variants.map((v, i) => <span key={v.cbz_folder || i} className="genre-badge genre-badge-outline" style={{ fontSize: 10, color: "var(--t2)", borderColor: "var(--brd)" }}>{v.__edition_label || "Édition standard"}</span>)}</div>}
+                  {sel?.__library_ids?.length > 1 && (
+                    <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: "var(--t3)" }}>📚 Présent dans :</span>
+                      {sel.__library_ids.map(lid => (
+                        <span key={lid} className="genre-badge genre-badge-outline" style={{ fontSize: 10, color: "var(--t2)", borderColor: "var(--brd)" }}>
+                          {libraries.find(l => l.id === lid)?.name || `Bibliothèque #${lid}`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                     <button className={`btn btn-s${isInList(toReadItems, sel.cbz_folder, '', 'manga') ? ' btn-p' : ''}`} onClick={() => toggleListItem({ listName: 'to_read', mangaUrl: sel.cbz_folder, itemType: 'manga', title: det?.title || sel.title })}>🕒 {isInList(toReadItems, sel.cbz_folder, '', 'manga') ? 'Retirer de À lire' : 'Ajouter à À lire'}</button>
                   </div>
@@ -1518,10 +1537,16 @@ function MainApp({ session, doLogout, show, toast }) {
                   {tomesL ? <div className="loading"><div className="spinner" /></div> : tomes.length === 0 ? <div className="empty" style={{ padding: 20 }}><p>Aucun CBZ</p></div> : (() => {
                     const editionVariants = sel?.grouped_variants?.length ? sel.grouped_variants : [{ cbz_folder: sel?.cbz_folder, __edition_label: '', __edition_cbz_folders: [sel?.cbz_folder] }];
                     const hasMultiEditions = editionVariants.length > 1;
+                    // Un même manga peut exister dans plusieurs bibliothèques (fusionnées
+                    // dans la même fiche) -- filtre optionnel par bibliothèque.
+                    const presentLibraryIds = [...new Set(tomes.map(t => t.lib_id).filter(id => id != null))];
+                    const libraryFiltered = activeLibraryFilter != null
+                      ? tomes.filter(t => t.lib_id === activeLibraryFilter)
+                      : tomes;
                     // Filter by normalized edition label
                     const editionFiltered = activeEditionLabel != null
-                      ? tomes.filter(t => normalizeEditionLabel(t.__edition_label || '') === activeEditionLabel)
-                      : tomes;
+                      ? libraryFiltered.filter(t => normalizeEditionLabel(t.__edition_label || '') === activeEditionLabel)
+                      : libraryFiltered;
                     const hasTomes = editionFiltered.some(t => t.volume_type === "tome");
                     const hasChapters = editionFiltered.some(t => t.volume_type === "chapter");
                     const hasOneshots = editionFiltered.some(t => t.volume_type === "oneshot");
@@ -1555,13 +1580,25 @@ function MainApp({ session, doLogout, show, toast }) {
                     );
 
                     return <>
+                      {/* Filtre par bibliothèque, quand ce manga existe dans plusieurs */}
+                      {presentLibraryIds.length > 1 && (
+                        <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
+                          <button className={`btn btn-s${activeLibraryFilter == null ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setActiveLibraryFilter(null)}>📚 Toutes ({tomes.length})</button>
+                          {presentLibraryIds.map(lid => {
+                            const count = tomes.filter(t => t.lib_id === lid).length;
+                            const name = libraries.find(l => l.id === lid)?.name || `Bibliothèque #${lid}`;
+                            return <button key={lid} className={`btn btn-s${activeLibraryFilter === lid ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setActiveLibraryFilter(lid)}>{name} ({count})</button>;
+                          })}
+                        </div>
+                      )}
                       {/* Edition filter buttons */}
                       {hasMultiEditions && (
                         <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
-                          <button className={`btn btn-s${activeEditionLabel == null ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setActiveEditionLabel(null)}>Tout ({tomes.length})</button>
+                          <button className={`btn btn-s${activeEditionLabel == null ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setActiveEditionLabel(null)}>Tout ({libraryFiltered.length})</button>
                           {editionVariants.map((v, i) => {
                             const normLabel = normalizeEditionLabel(v.__edition_label);
-                            const count = tomes.filter(t => normalizeEditionLabel(t.__edition_label || '') === normLabel).length;
+                            const count = libraryFiltered.filter(t => normalizeEditionLabel(t.__edition_label || '') === normLabel).length;
+                            if (count === 0) return null;
                             return <button key={normLabel || i} className={`btn btn-s${activeEditionLabel === normLabel ? " btn-p" : ""}`} style={{ fontSize: 10 }} onClick={() => setActiveEditionLabel(normLabel)}>{v.__edition_label || "Édition standard"} ({count})</button>;
                           })}
                         </div>
