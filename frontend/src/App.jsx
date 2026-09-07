@@ -2233,12 +2233,12 @@ function AdminCbzCoverManager({ allMangas, show, onRefresh }) {
 
 /* ═══ Carte de matching manuel avec recherche ═══ */
 function UnmatchedCard({ manga, show, onDone }) {
-  const [sq, setSq] = useState(manga.cbz_folder);
+  const [sq, setSq] = useState(manga.title || manga.cbz_folder);
   const [directUrl, setDirectUrl] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState("search"); // search | manual
-  const [manual, setManual] = useState({ title: manga.cbz_folder, synopsis: "", type: "", genres: "", auteur: "" });
+  const [manual, setManual] = useState({ title: manga.title || manga.cbz_folder, synopsis: "", type: "", genres: "", auteur: "" });
   // Use authenticated CBZ cover endpoint (token query param), otherwise the image 401s and won't render
   const folderCoverSrc = api.cbzFolderCoverUrl(manga.cbz_folder);
 
@@ -2256,7 +2256,7 @@ function UnmatchedCard({ manga, show, onDone }) {
     const cleanUrl = String(url || '').trim();
     if (!cleanUrl) return;
     setLoading(true);
-    try { await api.validateMatch(manga.id, cleanUrl); show(`✅ ${manga.cbz_folder} associé`); onDone(); } catch (e) { show(`❌ ${e.message}`); }
+    try { await api.validateMatch(manga.id, cleanUrl); show(`✅ ${manga.title || manga.cbz_folder} associé`); onDone(); } catch (e) { show(`❌ ${e.message}`); }
     setLoading(false);
   };
 
@@ -2287,7 +2287,12 @@ function UnmatchedCard({ manga, show, onDone }) {
   return (
     <div style={{ padding: 10, background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", flex: 1 }}>📁 {manga.cbz_folder}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>📁 {manga.title || manga.cbz_folder}</div>
+          {manga.cbz_folder && manga.cbz_folder !== manga.title && (
+            <div style={{ fontSize: 10, color: "var(--t3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={manga.cbz_folder}>{manga.cbz_folder}</div>
+          )}
+        </div>
         <button className={`btn btn-s ${mode === "search" ? "btn-p" : ""}`} style={{ fontSize: 9 }} onClick={() => setMode("search")}>🔍 Rechercher</button>
         <button className={`btn btn-s ${mode === "manual" ? "btn-p" : ""}`} style={{ fontSize: 9 }} onClick={() => setMode("manual")}>✏️ Manuel</button>
       </div>

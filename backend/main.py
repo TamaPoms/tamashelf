@@ -182,6 +182,27 @@ def _match_query_variants(text: str) -> list[str]:
     return variants
 
 
+_EDITION_SUFFIXES = [
+    " - edition", " - édition", " edition", " édition",
+    " - version", " - deluxe", " - perfect", " - ultimate", " - collector",
+]
+
+
+def _strip_edition_suffix(name: str) -> str:
+    """Retire un suffixe d'édition connu (ex: '20th Century Boys - Perfect Edition' ->
+    '20th Century Boys') pour retrouver le titre de la série tel qu'il apparaît sur
+    Nautiljon, indépendamment de l'édition physique choisie sur le disque. Même liste de
+    suffixes que detect_duplicates (voir plus bas), pour rester cohérent."""
+    n = (name or "").strip()
+    low = n.lower()
+    best = -1
+    for sep in _EDITION_SUFFIXES:
+        idx = low.find(sep)
+        if idx > 0 and (best == -1 or idx < best):
+            best = idx
+    return n[:best].strip() if best > 0 else n
+
+
 def _copytree_merge(src: Path, dst: Path) -> list[str]:
     """Copy a folder into another, merging contents.
 
@@ -2063,10 +2084,24 @@ async def auto_match(admin=Depends(require_admin)):
         for row in unmatched:
             manga_id = row["id"]
             folder = row["cbz_folder"]
+            # Le titre (dernier segment du chemin, ex: "20th Century Boys - Perfect
+            # Edition") -- PAS le chemin complet (folder), qui contient un "/" pour les
+            # mangas rangés dans un sous-dossier (édition, genre...) et donnerait une
+            # requête de recherche absurde ("Genre/Manga") ne matchant jamais rien.
+            titre_base = (row["title"] or Path(folder).name or folder).strip()
 
             try:
                 results = []
-                queries = _match_query_variants(folder)
+                queries = _match_query_variants(titre_base)
+                # Variante sans suffixe d'édition (ex: "20th Century Boys - Perfect
+                # Edition" -> "20th Century Boys") : Nautiljon référence la série une
+                # seule fois, les éditions physiques sur le disque n'ont pas forcément de
+                # fiche à leur propre nom.
+                titre_sans_edition = _strip_edition_suffix(titre_base)
+                if titre_sans_edition and titre_sans_edition != titre_base:
+                    for q in _match_query_variants(titre_sans_edition):
+                        if q not in queries:
+                            queries.append(q)
                 folder_keys = {k for k in (_normalize_match_key(v) for v in queries) if k}
 
                 def _append_unique(rows):
