@@ -594,7 +594,8 @@ class ApkBuilderApp:
                     self.log(f"Suppression de l'ancien {APK_ASSET_NAME} sur cette release...")
                     gh_request(f"{api_base}/releases/assets/{asset['id']}", token, method="DELETE")
 
-            self.log(f"Envoi de {APK_ASSET_NAME} ({self.last_apk_path.stat().st_size / (1024*1024):.1f} Mo)...")
+            local_size = self.last_apk_path.stat().st_size
+            self.log(f"Envoi de {APK_ASSET_NAME} ({local_size / (1024*1024):.1f} Mo)...")
             upload_url = f"https://uploads.github.com/repos/{owner}/{name}/releases/{release_id}/assets?name={APK_ASSET_NAME}"
             asset = gh_request(
                 upload_url,
@@ -604,6 +605,19 @@ class ApkBuilderApp:
                 raw_content_type="application/vnd.android.package-archive",
                 timeout=180,
             )
+
+            # GitHub peut répondre avec succès (201) même si l'upload a été
+            # interrompu en cours de route côté serveur, en ne stockant que le
+            # début du fichier : on vérifie que la taille annoncée par GitHub
+            # correspond bien à celle de l'APK local avant de crier victoire,
+            # pour ne pas publier silencieusement un .apk tronqué que
+            # personne ne pourra installer.
+            remote_size = asset.get("size")
+            if remote_size != local_size:
+                raise RuntimeError(
+                    f"L'upload semble incomplet : GitHub a stocké {remote_size} octets, "
+                    f"attendu {local_size}. Réessaie la publication."
+                )
 
             self.log(f"✅ Publié avec succès : {asset.get('browser_download_url')}")
             self.root.after(
