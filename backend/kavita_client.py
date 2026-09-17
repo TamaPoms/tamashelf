@@ -169,7 +169,15 @@ class KavitaClient:
         return resp.json()
 
     async def page_bytes(self, chapter_id: int, page: int) -> tuple[bytes, str]:
-        resp = await self._request("GET", "/api/Reader/image", params={"chapterId": chapter_id, "page": page})
+        # Contrairement aux autres endpoints, /api/Reader/image exige la clé
+        # API en paramètre de requête même avec un Bearer JWT valide --
+        # confirmé en conditions réelles (400 "The apiKey field is required"
+        # sinon), probablement pour rester utilisable par des clients qui ne
+        # posent pas de header Authorization (liseuses e-reader, OPDS, etc.).
+        resp = await self._request(
+            "GET", "/api/Reader/image",
+            params={"chapterId": chapter_id, "page": page, "apiKey": self.api_key},
+        )
         return resp.content, resp.headers.get("content-type", "image/jpeg")
 
     async def series_cover_bytes(self, series_id: int) -> tuple[bytes, str]:
