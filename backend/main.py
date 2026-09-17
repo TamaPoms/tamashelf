@@ -1698,6 +1698,16 @@ async def kavita_cover(series_id: int, user=Depends(get_current_user)):
         raise HTTPException(502, str(e))
     return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
 
+@app.get("/api/kavita/chapter-cover/{chapter_id}")
+async def kavita_chapter_cover(chapter_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.chapter_cover_bytes(chapter_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
 @app.get("/api/kavita/read/{chapter_id}")
 async def kavita_read_page(chapter_id: int, page: int = Query(0, ge=0), user=Depends(get_current_user)):
     with get_db_ctx() as db:

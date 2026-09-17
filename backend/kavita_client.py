@@ -184,6 +184,10 @@ class KavitaClient:
         resp = await self._request("GET", "/api/Image/series-cover", params={"seriesId": series_id})
         return resp.content, resp.headers.get("content-type", "image/jpeg")
 
+    async def chapter_cover_bytes(self, chapter_id: int) -> tuple[bytes, str]:
+        resp = await self._request("GET", "/api/Image/chapter-cover", params={"chapterId": chapter_id})
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
 
 _client_cache: dict[tuple[str, str], KavitaClient] = {}
 

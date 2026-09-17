@@ -2289,7 +2289,13 @@ function KavitaBrowser({ onOpenChapter, show }) {
                   }}
                   title={c.title || (noChapNum ? `Volume ${v.number}` : `Chapitre ${c.number}`)}
                 >
-                  <div className="vcph" style={{ display: "flex" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
+                  <img
+                    className="vcov"
+                    src={api.kavitaChapterCoverUrl(c.id)}
+                    alt="" loading="lazy"
+                    onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
+                  />
+                  <div className="vcph" style={{ display: "none" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
                   <div className="vn">{v.number > 0 ? (noChapNum ? `Volume ${v.number}` : `Volume ${v.number} — Ch. ${c.number}`) : (noChapNum ? (c.title || "Chapitre") : `Chapitre ${c.number}`)}</div>
                 </div>
               );

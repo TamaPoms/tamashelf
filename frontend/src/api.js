@@ -187,6 +187,10 @@ export const api = {
     const token = getToken();
     return `/api/kavita/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
   },
+  kavitaChapterCoverUrl: (chapterId) => {
+    const token = getToken();
+    return `/api/kavita/chapter-cover/${encodeURIComponent(chapterId)}?token=${encodeURIComponent(token)}`;
+  },
   kavitaPageUrl: (chapterId, page) => {
     const token = getToken();
     return `/api/kavita/read/${encodeURIComponent(chapterId)}?page=${page}&token=${encodeURIComponent(token)}`;
