@@ -176,6 +176,22 @@ export const api = {
     return `/api/imgvol/page/${encodedFolder}?volume=${encodeURIComponent(volume)}&page=${page}&token=${encodeURIComponent(token)}`;
   },
 
+  // Kavita (serveur externe, lecture seule -- voir kavita_client.py)
+  kavitaHealth: () => request("/kavita/health"),
+  kavitaLibraries: () => request("/kavita/libraries"),
+  kavitaSeries: (libraryId) => request(`/kavita/series?libraryId=${encodeURIComponent(libraryId)}`),
+  kavitaSeriesDetail: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}`),
+  kavitaVolumes: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}/volumes`),
+  kavitaChapterInfo: (chapterId) => request(`/kavita/chapter-info/${encodeURIComponent(chapterId)}`),
+  kavitaCoverUrl: (seriesId) => {
+    const token = getToken();
+    return `/api/kavita/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
+  },
+  kavitaPageUrl: (chapterId, page) => {
+    const token = getToken();
+    return `/api/kavita/read/${encodeURIComponent(chapterId)}?page=${page}&token=${encodeURIComponent(token)}`;
+  },
+
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),
 

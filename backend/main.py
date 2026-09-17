@@ -29,6 +29,7 @@ from pydantic import BaseModel
 import httpx
 
 import nautiljon_db
+from kavita_client import KavitaError, get_kavita_client
 
 # Optional (used for cover thumbnails). Added to requirements.
 try:
@@ -806,6 +807,8 @@ class ConfigUpdateRequest(BaseModel):
     tome_keywords: Optional[str] = None
     chapter_keywords: Optional[str] = None
     oneshot_keywords: Optional[str] = None
+    kavita_url: Optional[str] = None
+    kavita_api_key: Optional[str] = None
 
 class SaveProgressRequest(BaseModel):
     manga_url: str
@@ -1008,6 +1011,10 @@ def get_config(admin=Depends(require_admin)):
             "tome_keywords": get_config_val(db, "tome_keywords", "Tome,T,Vol,Volume"),
             "chapter_keywords": get_config_val(db, "chapter_keywords", "Chapitre,Chapter,Ch,Ep,Episode"),
             "oneshot_keywords": get_config_val(db, "oneshot_keywords", "OS,One Shot,One-Shot,Oneshot"),
+            "kavita_url": get_config_val(db, "kavita_url", ""),
+            # La clé API elle-même n'est jamais renvoyée une fois enregistrée,
+            # seulement si une est configurée (comme un mot de passe).
+            "kavita_configured": bool(get_config_val(db, "kavita_api_key", "")),
         }
         return result
 
@@ -1022,6 +1029,10 @@ def update_config(req: ConfigUpdateRequest, admin=Depends(require_admin)):
             set_config_val(db, "chapter_keywords", req.chapter_keywords.strip())
         if hasattr(req, 'oneshot_keywords') and req.oneshot_keywords is not None:
             set_config_val(db, "oneshot_keywords", req.oneshot_keywords.strip())
+        if req.kavita_url is not None:
+            set_config_val(db, "kavita_url", req.kavita_url.strip())
+        if req.kavita_api_key is not None:
+            set_config_val(db, "kavita_api_key", req.kavita_api_key.strip())
         # Invalidate keyword cache
         _kw_cache["tome"] = None
         _kw_cache["ts"] = 0
@@ -1606,6 +1617,96 @@ async def nautiljon_list(
     user=Depends(get_current_user)
 ):
     return nautiljon_db.list_series(limit=limit, offset=offset)
+
+
+    # ═══════════════════════════════════════════
+    #  Routes: Kavita (serveur externe, lecture seule)
+    # ═══════════════════════════════════════════
+
+def _get_kavita_client(db):
+    url = get_config_val(db, "kavita_url", "").strip()
+    api_key = get_config_val(db, "kavita_api_key", "").strip()
+    if not url or not api_key:
+        raise HTTPException(400, "Serveur Kavita non configuré (Admin -> Configuration).")
+    return get_kavita_client(url, api_key)
+
+@app.get("/api/kavita/health")
+async def kavita_health(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        url = get_config_val(db, "kavita_url", "").strip()
+        api_key = get_config_val(db, "kavita_api_key", "").strip()
+    if not url or not api_key:
+        return {"available": False}
+    try:
+        await get_kavita_client(url, api_key).libraries()
+        return {"available": True}
+    except KavitaError as e:
+        return {"available": False, "error": str(e)}
+
+@app.get("/api/kavita/libraries")
+async def kavita_libraries(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.libraries()
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series")
+async def kavita_series(library_id: int = Query(..., alias="libraryId"), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.series_in_library(library_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series/{series_id}")
+async def kavita_series_detail(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.series_detail(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series/{series_id}/volumes")
+async def kavita_series_volumes(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.volumes(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/chapter-info/{chapter_id}")
+async def kavita_chapter_info(chapter_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.chapter_info(chapter_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/cover/{series_id}")
+async def kavita_cover(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.series_cover_bytes(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
+@app.get("/api/kavita/read/{chapter_id}")
+async def kavita_read_page(chapter_id: int, page: int = Query(0, ge=0), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.page_bytes(chapter_id, page)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type)
 
 
 @app.get("/api/library")

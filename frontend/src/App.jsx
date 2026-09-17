@@ -783,8 +783,38 @@ function MainApp({ session, doLogout, show, toast }) {
     } catch (e) { show(`Erreur: ${e.message}`); }
   };
 
+  // Ouvre un chapitre d'une série d'un serveur Kavita externe (voir
+  // KavitaBrowser) dans le lecteur existant -- celui-ci ne connaît que
+  // rPg (un tableau d'URLs d'images), donc aucune modification du lecteur
+  // n'est nécessaire pour cette source. manga_url/volume_id suivent le même
+  // principe de préfixe que "imgvol:" pour rester compatibles avec la table
+  // de progression existante (voir resumeReading ci-dessous).
+  const openKavitaChapter = (seriesId, seriesName, chapterId, totalPages, startPage = 0) => {
+    const pages = Array.from({ length: totalPages }, (_, i) => api.kavitaPageUrl(chapterId, i));
+    setRPg(pages);
+    setRTitle(seriesName);
+    setRUrl(`kavita:series:${seriesId}`);
+    setRVol(`kavita:chapter:${chapterId}`);
+    setRMode('paged');
+    setRAutoWebtoonChecked(false);
+    setRP(Math.max(0, Math.min(startPage, totalPages - 1)));
+    setRZoom(1);
+    setRCbz(null);
+    setRNextVol(null); // pas d'auto-avance "tome suivant" pour Kavita dans cette première version
+    setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false);
+    enterFullscreen();
+  };
+
   const resumeReading = async (p) => {
-    // Resume supports both CBZ and "imgvol:".
+    // Resume supports CBZ, "imgvol:" and "kavita:chapter:".
+    if (String(p.volume_id || '').startsWith('kavita:chapter:')) {
+      const chapterId = String(p.volume_id).split(':')[2];
+      try {
+        const info = await api.kavitaChapterInfo(chapterId);
+        openKavitaChapter(info.seriesId, p.title || info.seriesName || 'Kavita', chapterId, info.pages, p.current_page);
+      } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+      return;
+    }
     if (String(p.volume_id || '').startsWith('imgvol:')) {
       const parts = String(p.volume_id).split(':');
       const folder = parts.slice(1, -1).join(':');
@@ -968,7 +998,17 @@ function MainApp({ session, doLogout, show, toast }) {
   const openEditU = (u) => { setEditU(u); setUf({ name: u.username, pass: "", role: u.role, readOnly: !!u.perm_read_only, canDownload: !!u.perm_can_download, canChangePassword: u.perm_can_change_password !== 0 }); setUe(""); setShowUM(true); };
   const saveUser = async () => { try { if (editU) await api.updateUser(editU.id, { username: uf.name.trim(), password: uf.pass || undefined, role: uf.role, perm_read_only: uf.readOnly, perm_can_download: uf.canDownload, perm_can_change_password: uf.canChangePassword }); else { if (!uf.name.trim() || !uf.pass) { setUe("Champs requis"); return; } await api.createUser({ username: uf.name.trim(), password: uf.pass, role: uf.role, perm_read_only: uf.readOnly, perm_can_download: uf.canDownload, perm_can_change_password: uf.canChangePassword }); } setShowUM(false); loadUsers(); show(editU ? "Modifié" : "Créé"); } catch (e) { setUe(e.message); } };
   const delUser = async (u) => { try { await api.deleteUser(u.id); loadUsers(); } catch (e) { show(e.message); } };
-  const saveCfg = async () => { try { await api.updateConfig(cfg); show("Sauvegardé"); } catch (e) { show(e.message); } };
+  const saveCfg = async () => {
+    try {
+      const payload = { ...cfg };
+      // Le champ clé API reste vide au chargement (jamais renvoyée par le
+      // serveur) : ne l'envoyer que si l'admin y a tapé une nouvelle valeur,
+      // sinon on écraserait la clé déjà enregistrée avec une chaîne vide.
+      if (!payload.kavita_api_key) delete payload.kavita_api_key;
+      await api.updateConfig(payload);
+      show("Sauvegardé");
+    } catch (e) { show(e.message); }
+  };
 
   const runAutoMatch = async () => {
     setAmRun(true); setAmLog(["🚀 Matching des dossiers CBZ…"]);
@@ -1013,6 +1053,7 @@ function MainApp({ session, doLogout, show, toast }) {
           <div className={`sb-item ${nav === "stats" ? "on" : ""}`} onClick={() => setNav("stats")}>📊 <span>Stats</span></div>
           <div className={`sb-item ${nav === "activity" ? "on" : ""}`} onClick={() => { setNav("activity"); api.getActivity().then(setActivity).catch(() => {}); }}>👥 <span>Activité</span></div>
           <div className={`sb-item ${nav === "app-android" ? "on" : ""}`} onClick={() => setNav("app-android")}>📱 <span>App Android</span></div>
+          <div className={`sb-item ${nav === "kavita" ? "on" : ""}`} onClick={() => setNav("kavita")}>🌐 <span>Kavita</span></div>
           {isAdmin && <><div className="sb-sep" /><div className="sb-label">Admin</div>
             <div className={`sb-item ${nav === "admin-users" ? "on" : ""}`} onClick={() => setNav("admin-users")}>👥 <span>Utilisateurs</span></div>
             <div className={`sb-item ${nav === "admin-config" ? "on" : ""}`} onClick={() => setNav("admin-config")}>⚙️ <span>Config</span></div>
@@ -1173,6 +1214,9 @@ function MainApp({ session, doLogout, show, toast }) {
 
           {/* ══ APP ANDROID ══ */}
           {nav === "app-android" && <AppAndroidView />}
+
+          {/* ══ KAVITA (serveur externe) ══ */}
+          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -1469,6 +1513,22 @@ function MainApp({ session, doLogout, show, toast }) {
                   <div className="hint" style={{ marginTop: 2 }}>⚡ "OS" est sensible à la casse (majuscules uniquement). Les autres sont insensibles.</div>
                 </div>
                 <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 4 }}>⚠️ Après modification, relancez un scan pour que les changements prennent effet.</div>
+              </div>
+
+              <div style={{ marginTop: 16, padding: 14, background: "var(--c1)", borderRadius: "var(--r)", border: "1px solid var(--brd)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "var(--t1)" }}>📚 Serveur Kavita (optionnel)</div>
+                <div style={{ fontSize: 10, color: "var(--t3)", marginBottom: 10 }}>
+                  Parcourir et lire les séries d'un serveur <a href="https://www.kavitareader.com/" target="_blank" rel="noreferrer" style={{ color: "var(--ac)" }}>Kavita</a> externe depuis TamaShelf, sans dupliquer les fichiers. La clé API se génère dans Kavita, Compte → Clés API.
+                </div>
+                <div className="fld">
+                  <label>URL du serveur</label>
+                  <input value={cfg.kavita_url || ""} onChange={e => setCfg(c => ({ ...c, kavita_url: e.target.value }))} placeholder="http://192.168.1.50:5000" />
+                </div>
+                <div className="fld">
+                  <label>Clé API</label>
+                  <input type="password" value={cfg.kavita_api_key || ""} onChange={e => setCfg(c => ({ ...c, kavita_api_key: e.target.value }))} placeholder={cfg.kavita_configured ? "Déjà configurée — laisser vide pour ne pas la changer" : "Coller la clé API ici"} />
+                </div>
+                {cfg.kavita_configured && <div className="hint" style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="dot d-on" />Clé API enregistrée</div>}
               </div>
 
               <button className="btn btn-p" style={{ marginTop: 16 }} onClick={saveCfg}>Sauvegarder</button>
@@ -2125,6 +2185,122 @@ function AppAndroidView() {
         <p style={{ color: "var(--t2)", fontSize: 12, marginTop: 6 }}>App Android native (Flutter), distribuée via GitHub Releases.</p>
         <a className="btn btn-p" style={{ marginTop: 12, textDecoration: "none", display: "inline-block" }} href={APK_DOWNLOAD_URL}>⬇️ Télécharger le .apk</a>
       </div>
+    </>
+  );
+}
+
+// Parcourt un serveur Kavita externe (configuré par l'admin dans
+// Admin -> Config) et ouvre les chapitres dans le lecteur existant via
+// onOpenChapter (voir App.openKavitaChapter). Lecture seule : aucune
+// tentative de fusion avec les mangas CBZ locaux ou leur matching Nautiljon
+// -- volontairement une source à part pour cette première version.
+function KavitaBrowser({ onOpenChapter, show }) {
+  const [available, setAvailable] = useState(null); // null = vérification en cours
+  const [libraries, setLibraries] = useState([]);
+  const [libId, setLibId] = useState(null);
+  const [seriesList, setSeriesList] = useState([]);
+  const [loadingSeries, setLoadingSeries] = useState(false);
+  const [sel, setSel] = useState(null); // série sélectionnée (SeriesDto Kavita)
+  const [volumes, setVolumes] = useState([]);
+  const [loadingVolumes, setLoadingVolumes] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await api.kavitaHealth();
+        setAvailable(h.available);
+        if (h.available) {
+          const libs = await api.kavitaLibraries();
+          setLibraries(libs);
+          if (libs.length) setLibId(libs[0].id);
+        }
+      } catch {
+        setAvailable(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (libId == null) return;
+    let cancelled = false;
+    setLoadingSeries(true);
+    setSel(null);
+    api.kavitaSeries(libId)
+      .then(list => { if (!cancelled) setSeriesList(list); })
+      .catch(e => show(e.message))
+      .finally(() => { if (!cancelled) setLoadingSeries(false); });
+    return () => { cancelled = true; };
+  }, [libId]);
+
+  const openSeries = async (series) => {
+    setSel(series);
+    setVolumes([]);
+    setLoadingVolumes(true);
+    try {
+      setVolumes(await api.kavitaVolumes(series.id));
+    } catch (e) {
+      show(e.message);
+    } finally {
+      setLoadingVolumes(false);
+    }
+  };
+
+  if (available === null) return <div className="empty"><p>Chargement…</p></div>;
+  if (available === false) return (
+    <div className="empty">
+      <div className="ei">🌐</div>
+      <p>Aucun serveur Kavita configuré.</p>
+      <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>
+    </div>
+  );
+
+  if (sel) {
+    return (
+      <>
+        <div className="sec-h">
+          <button className="btn btn-s" onClick={() => setSel(null)}>← Retour</button>
+          <span className="sec-t" style={{ marginLeft: 8 }}>{sel.name}</span>
+        </div>
+        {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
+          <div className="vg">
+            {volumes.flatMap(v => (v.chapters || []).map(c => (
+              <div
+                key={c.id}
+                className="vc"
+                onClick={() => onOpenChapter(sel.id, sel.name, c.id, c.pages, 0)}
+                title={c.title || `Chapitre ${c.number}`}
+              >
+                <div className="vcph" style={{ display: "flex" }}>{v.number > 0 ? `T${v.number}` : "Ch."} {c.number}</div>
+                <div className="vn">{v.number > 0 ? `Volume ${v.number} — Ch. ${c.number}` : `Chapitre ${c.number}`}</div>
+              </div>
+            )))}
+            {!loadingVolumes && volumes.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun volume/chapitre.</p>}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {libraries.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+          {libraries.map(l => (
+            <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
+          ))}
+        </div>
+      )}
+      {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
+        seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
+        <div className="mg">
+          {seriesList.map(s => (
+            <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+              <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
+              <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
+            </div>
+          ))}
+        </div>
+      }
     </>
   );
 }
