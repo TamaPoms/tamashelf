@@ -186,5 +186,10 @@ directement la release GitHub, voir son README).
 
 L'appli vérifie elle-même au démarrage si une version plus récente est
 publiée sur GitHub Releases (comparaison avec la version installée) et
-affiche un bandeau avec un lien de téléchargement si c'est le cas (voir
+affiche un bandeau si c'est le cas. Le téléchargement et l'installation se
+font directement dans l'appli (bouton "Installer" du bandeau, ou Réglages →
+Application → "Vérifier" pour une vérification manuelle et voir la version
+installée) — pas besoin de passer par le navigateur, sauf si le
+téléchargement ou l'ouverture de l'installateur échoue, auquel cas l'appli
+retombe sur le lien de téléchargement classique (voir
 `flutter/lib/services/update_service.dart`).

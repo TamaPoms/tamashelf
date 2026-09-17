@@ -3,11 +3,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_filex/open_filex.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../app_state.dart';
+import '../services/update_service.dart';
 import '../theme.dart';
 import 'manga_detail_screen.dart';
 import 'downloads_screen.dart';
@@ -32,11 +35,19 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showSearch = false;
   int _viewMode = 0; // 0=grid, 1=compact, 2=list, 3=coverflow
   bool _keepScreenOn = false;
+  String _appVersion = '';
+  bool _checkingUpdate = false;
 
   @override
   void initState() {
     super.initState();
     _loadKeepScreenOn();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (mounted) setState(() => _appVersion = info.version);
   }
 
   Future<void> _loadKeepScreenOn() async {
@@ -818,6 +829,8 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            _buildAppInfoCard(state),
+            const SizedBox(height: 12),
             _settingsTile('Serveur', state.db.serverUrl, Icons.dns),
             _settingsTile('Compte', username, Icons.person),
             _settingsTile('Base locale', state.db.hasLocalDb ? '${state.mangaCount} mangas' : 'Non synchro', Icons.storage),
@@ -844,6 +857,73 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         );
       },
+    );
+  }
+
+  Widget _buildAppInfoCard(AppState state) {
+    final info = state.updateInfo;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.c1,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.brd, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, color: MangaColors.accent, size: 22),
+              const SizedBox(width: 10),
+              Text('Application', style: TextStyle(color: AppTheme.t1, fontSize: 14, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _appVersion.isEmpty ? 'Version installee : ...' : 'Version installee : $_appVersion',
+            style: TextStyle(color: AppTheme.t2, fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            info != null ? 'Nouvelle version disponible : ${info.version}' : 'A jour',
+            style: TextStyle(
+              color: info != null ? AppTheme.ac : AppTheme.t3,
+              fontSize: 12,
+              fontWeight: info != null ? FontWeight.w700 : FontWeight.w400,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              if (info != null) ...[
+                ElevatedButton.icon(
+                  onPressed: () => _downloadAndInstallApk(context, info.downloadUrl),
+                  icon: const Icon(Icons.system_update_rounded, size: 16),
+                  label: const Text('Installer'),
+                ),
+                const SizedBox(width: 12),
+              ],
+              _checkingUpdate
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : OutlinedButton.icon(
+                      onPressed: () async {
+                        setState(() => _checkingUpdate = true);
+                        await state.checkForUpdate();
+                        if (!mounted) return;
+                        setState(() => _checkingUpdate = false);
+                        if (state.updateInfo == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deja a jour')));
+                        }
+                      },
+                      icon: Icon(Icons.refresh, color: AppTheme.ac, size: 16),
+                      label: Text('Verifier', style: TextStyle(color: AppTheme.ac)),
+                      style: OutlinedButton.styleFrom(side: BorderSide(color: AppTheme.ac)),
+                    ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1534,6 +1614,58 @@ class _FilterSheetState extends State<_FilterSheet> {
   }
 }
 
+// Télécharge l'APK de mise à jour dans l'appli (barre de progression modale)
+// puis l'ouvre pour déclencher l'installateur Android. Si le téléchargement
+// ou l'ouverture échoue (pas de permission "sources inconnues", stockage
+// plein...), on retombe sur l'ouverture du lien dans le navigateur, comme
+// avant. Utilisé à la fois par le bandeau et par l'écran Réglages.
+Future<void> _downloadAndInstallApk(BuildContext context, String url) async {
+  final progress = ValueNotifier<double>(0);
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: AppTheme.bg,
+      title: Text('Telechargement de la mise a jour', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+      content: ValueListenableBuilder<double>(
+        valueListenable: progress,
+        builder: (ctx, value, _) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: value > 0 ? value : null,
+                minHeight: 6,
+                backgroundColor: AppTheme.ac.withValues(alpha: 0.15),
+                valueColor: AlwaysStoppedAnimation(AppTheme.ac),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(value > 0 ? '${(value * 100).toStringAsFixed(0)}%' : 'Connexion...',
+                style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  final path = await UpdateService().downloadApk(url, onProgress: (p) => progress.value = p);
+  if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+
+  if (path == null) {
+    // Échec du téléchargement (réseau, stockage...) : on retombe sur le navigateur.
+    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    return;
+  }
+  final result = await OpenFilex.open(path, type: 'application/vnd.android.package-archive');
+  if (result.type != ResultType.done) {
+    // Ex: permission "installer depuis des sources inconnues" refusée -- on
+    // laisse quand même une porte de sortie via le navigateur.
+    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  }
+}
+
 // Bandeau discret affiché en haut de l'écran quand une nouvelle version de
 // l'appli est disponible sur GitHub Releases (voir AppState.checkForUpdate).
 // La fermeture (X) mémorise la version pour ne pas re-notifier pour la même.
@@ -1591,8 +1723,8 @@ class _UpdateBannerState extends State<_UpdateBanner> {
                 ),
               ),
               TextButton(
-                onPressed: () => launchUrl(Uri.parse(info.downloadUrl), mode: LaunchMode.externalApplication),
-                child: const Text('Télécharger'),
+                onPressed: () => _downloadAndInstallApk(context, info.downloadUrl),
+                child: const Text('Installer'),
               ),
               IconButton(
                 icon: Icon(Icons.close, color: AppTheme.t3, size: 18),

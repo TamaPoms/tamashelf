@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Installer directement l'APK de mise à jour téléchargé dans l'appli
+         (bandeau "Nouvelle version disponible" / bouton "Vérifier" des
+         réglages) sans passer par un navigateur. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="TamaShelf"
         android:name="${applicationName}"

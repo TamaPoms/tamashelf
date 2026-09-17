@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 
 class UpdateInfo {
   final String version;
@@ -52,6 +54,34 @@ class UpdateService {
       // Pas de réseau, GitHub inaccessible, réponse inattendue... on ignore
       // silencieusement : ce n'est qu'une notification optionnelle.
       return null;
+    }
+  }
+
+  // Télécharge l'APK vers un fichier temporaire et retourne son chemin, ou
+  // null en cas d'échec. `onProgress` reçoit une valeur entre 0 et 1 (ou
+  // n'est jamais appelé si le serveur ne renvoie pas de taille de contenu).
+  Future<String?> downloadApk(String url, {void Function(double progress)? onProgress}) async {
+    final client = http.Client();
+    try {
+      final response = await client.send(http.Request('GET', Uri.parse(url))).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) return null;
+
+      final total = response.contentLength ?? 0;
+      var received = 0;
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/tamashelf-update.apk');
+      final sink = file.openWrite();
+      await for (final chunk in response.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) onProgress?.call(received / total);
+      }
+      await sink.close();
+      return file.path;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
     }
   }
 
