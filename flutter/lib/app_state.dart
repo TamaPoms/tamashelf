@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'services/db_service.dart';
 import 'services/download_service.dart';
 import 'services/progress_service.dart';
+import 'services/update_service.dart';
 import 'models/manga.dart';
 
 class AppState extends ChangeNotifier {
   final DbService db = DbService();
   late final DownloadService downloads;
   late final ProgressService progress;
-  
+  final UpdateService _updateService = UpdateService();
+  UpdateInfo? updateInfo;
+
   bool isLoading = false;
   bool isSyncing = false;
   String? error;
@@ -241,6 +244,14 @@ class AppState extends ChangeNotifier {
   }
 
   int get activeFilterCount => tagFilters.values.fold(0, (sum, v) => sum + v.length);
+
+  Future<void> checkForUpdate() async {
+    final info = await _updateService.checkForUpdate();
+    if (info != null) {
+      updateInfo = info;
+      notifyListeners();
+    }
+  }
 
   @override
   void dispose() {

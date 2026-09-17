@@ -25,6 +25,8 @@ tamashelf/
 │   ├── index.html
 │   ├── vite.config.js
 │   └── package.json
+├── flutter/              ← App Android native (voir "Application Android")
+├── tools/apk-builder/    ← Outil Windows : build + publication GitHub de l'APK
 ├── Dockerfile           ← Multi-stage build
 ├── docker-compose.yml   ← Déploiement
 └── README.md
@@ -168,7 +170,7 @@ tamashelf.mondomaine.fr {
 
 ## Application Android
 
-Une app Android native (Flutter) existe déjà, voir `../flutter/` — lecteur
+Une app Android native (Flutter) existe déjà, voir `flutter/` — lecteur
 hors-ligne qui se connecte à cette même API REST (authentification par token
 Bearer, `/api/cbz/read/`, progression synchronisée via `/api/progress`).
 
@@ -178,4 +180,11 @@ d'upload/téléchargement de l'APK depuis le site lui-même. Pour publier une
 nouvelle version : créer une release sur GitHub avec un fichier joint nommé
 exactement `tamashelf.apk` (le lien utilisé est l'URL stable
 `.../releases/latest/download/tamashelf.apk`, qui ne change jamais tant que ce
-nom de fichier reste identique d'une release à l'autre).
+nom de fichier reste identique d'une release à l'autre) — soit à la main,
+soit via `tools/apk-builder/` (outil Windows qui build l'APK puis publie
+directement la release GitHub, voir son README).
+
+L'appli vérifie elle-même au démarrage si une version plus récente est
+publiée sur GitHub Releases (comparaison avec la version installée) et
+affiche un bandeau avec un lien de téléchargement si c'est le cas (voir
+`flutter/lib/services/update_service.dart`).

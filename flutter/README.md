@@ -20,7 +20,8 @@ flutter/
 │   │   └── reader_screen.dart # Lecteur CBZ (paged/webtoon)
 │   └── services/
 │       ├── db_service.dart    # SQLite local + sync serveur
-│       └── download_service.dart  # Téléchargement + extraction CBZ
+│       ├── download_service.dart  # Téléchargement + extraction CBZ
+│       └── update_service.dart    # Vérifie la dernière version sur GitHub Releases
 └── pubspec.yaml
 ```
 

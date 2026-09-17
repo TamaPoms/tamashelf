@@ -91,7 +91,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     final state = context.read<AppState>();
     await state.init();
     await context.read<AppTheme>().initForUser(state.db.currentUsername);
-    
+    state.checkForUpdate(); // fire-and-forget, non bloquant pour la navigation
+
     // Wait at least for animation
     await Future.delayed(const Duration(milliseconds: 2200));
 

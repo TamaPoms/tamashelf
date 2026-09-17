@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../app_state.dart';
 import '../theme.dart';
@@ -55,25 +56,32 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: AppTheme.d,
       body: SafeArea(
-        child: Consumer<AppState>(
-          builder: (ctx, state, _) {
-            final isAdmin = state.db.isAdmin;
-            // Main pages for bottom nav
-            if (_navIdx == 4) {
-              // "More" sub-pages
-              return _buildMorePage(state, isAdmin);
-            }
-            final pages = <Widget>[
-              const HomepageScreen(),
-              _buildLibrary(),
-              const ReadingScreen(),
-              const CollectionsScreen(),
-            ];
-            return IndexedStack(
-              index: _navIdx.clamp(0, pages.length - 1),
-              children: pages,
-            );
-          },
+        child: Column(
+          children: [
+            const _UpdateBanner(),
+            Expanded(
+              child: Consumer<AppState>(
+                builder: (ctx, state, _) {
+                  final isAdmin = state.db.isAdmin;
+                  // Main pages for bottom nav
+                  if (_navIdx == 4) {
+                    // "More" sub-pages
+                    return _buildMorePage(state, isAdmin);
+                  }
+                  final pages = <Widget>[
+                    const HomepageScreen(),
+                    _buildLibrary(),
+                    const ReadingScreen(),
+                    const CollectionsScreen(),
+                  ];
+                  return IndexedStack(
+                    index: _navIdx.clamp(0, pages.length - 1),
+                    children: pages,
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
       bottomNavigationBar: Consumer<AppState>(
@@ -1522,6 +1530,79 @@ class _FilterSheetState extends State<_FilterSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// Bandeau discret affiché en haut de l'écran quand une nouvelle version de
+// l'appli est disponible sur GitHub Releases (voir AppState.checkForUpdate).
+// La fermeture (X) mémorise la version pour ne pas re-notifier pour la même.
+class _UpdateBanner extends StatefulWidget {
+  const _UpdateBanner();
+
+  @override
+  State<_UpdateBanner> createState() => _UpdateBannerState();
+}
+
+class _UpdateBannerState extends State<_UpdateBanner> {
+  String? _dismissedVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDismissed();
+  }
+
+  Future<void> _loadDismissed() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() => _dismissedVersion = prefs.getString('dismissed_update_version'));
+  }
+
+  Future<void> _dismiss(String version) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('dismissed_update_version', version);
+    if (!mounted) return;
+    setState(() => _dismissedVersion = version);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (ctx, state, _) {
+        final info = state.updateInfo;
+        if (info == null || info.version == _dismissedVersion) return const SizedBox.shrink();
+        return Container(
+          margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.ac.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.ac.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.system_update_rounded, color: AppTheme.ac, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Nouvelle version ${info.version} disponible',
+                  style: TextStyle(color: AppTheme.t1, fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+              TextButton(
+                onPressed: () => launchUrl(Uri.parse(info.downloadUrl), mode: LaunchMode.externalApplication),
+                child: const Text('Télécharger'),
+              ),
+              IconButton(
+                icon: Icon(Icons.close, color: AppTheme.t3, size: 18),
+                onPressed: () => _dismiss(info.version),
+                tooltip: 'Ignorer cette version',
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
