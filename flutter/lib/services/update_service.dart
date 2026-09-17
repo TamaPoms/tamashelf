@@ -77,11 +77,47 @@ class UpdateService {
         if (total > 0) onProgress?.call(received / total);
       }
       await sink.close();
+
+      if (!await _looksLikeValidZip(file)) {
+        try { await file.delete(); } catch (_) {}
+        return null;
+      }
       return file.path;
     } catch (_) {
       return null;
     } finally {
       client.close();
+    }
+  }
+
+  // Le serveur peut couper la connexion en cours de route sans que ça lève
+  // d'erreur côté client (le flux se termine juste plus tôt que prévu),
+  // laissant un .apk tronqué qu'Android refuse d'installer en silence
+  // ("le package semble ne pas être valide"). On vérifie donc que le
+  // fichier a bien la structure d'une archive ZIP complète : signature
+  // "PK" au début, et signature de fin de répertoire central ("PK\x05\x06")
+  // vers la fin -- absente si le téléchargement s'est arrêté en chemin.
+  // (Ne compare pas à Content-Length : ce header peut refléter une taille
+  // compressée différente des octets réellement reçus une fois décodés.)
+  Future<bool> _looksLikeValidZip(File file) async {
+    final length = await file.length();
+    if (length < 22) return false; // plus petit que l'en-tête de fin de répertoire central
+    final raf = await file.open();
+    try {
+      final header = await raf.read(4);
+      if (header.length < 2 || header[0] != 0x50 || header[1] != 0x4B) return false;
+
+      final tailSize = length < 65536 ? length : 65536;
+      await raf.setPosition(length - tailSize);
+      final tail = await raf.read(tailSize);
+      for (var i = tail.length - 4; i >= 0; i--) {
+        if (tail[i] == 0x50 && tail[i + 1] == 0x4B && tail[i + 2] == 0x05 && tail[i + 3] == 0x06) {
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      await raf.close();
     }
   }
 
