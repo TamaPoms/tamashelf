@@ -204,6 +204,8 @@ body {
 .vc { text-align: center; padding: 5px; border-radius: var(--rs); background: var(--c2); cursor: pointer; transition: border-color .1s; border: 1px solid transparent; }
 .vc:hover { border-color: var(--brd); }
 .vcov { width: 64px; height: 90px; object-fit: cover; border-radius: 3px; margin: 0 auto 3px; display: block; background: var(--c1); }
+.vg-lg { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.vg-lg .vcov, .vg-lg .vcph { width: 110px; height: 155px; }
 .vcph { width: 64px; height: 90px; border-radius: 3px; margin: 0 auto 3px; display: flex; align-items: center; justify-content: center; background: var(--c1); color: var(--t3); font-size: 10px; }
 .vn { font-size: 10px; font-weight: 600; }
 .vup { opacity: .4; }

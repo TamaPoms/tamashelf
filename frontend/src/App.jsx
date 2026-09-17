@@ -2204,6 +2204,8 @@ function KavitaBrowser({ onOpenChapter, show }) {
   const [sel, setSel] = useState(null); // série sélectionnée (SeriesDto Kavita)
   const [volumes, setVolumes] = useState([]);
   const [loadingVolumes, setLoadingVolumes] = useState(false);
+  const [nautMatch, setNautMatch] = useState(null); // fiche Nautiljon trouvée pour sel.name (simple recherche, pas de matching persistant)
+  const [loadingNaut, setLoadingNaut] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -2239,6 +2241,7 @@ function KavitaBrowser({ onOpenChapter, show }) {
     setSel(series);
     setVolumes([]);
     setLoadingVolumes(true);
+    setNautMatch(null);
     try {
       setVolumes(await api.kavitaVolumes(series.id));
     } catch (e) {
@@ -2246,6 +2249,17 @@ function KavitaBrowser({ onOpenChapter, show }) {
     } finally {
       setLoadingVolumes(false);
     }
+    // Simple recherche Nautiljon par titre pour afficher synopsis/infos --
+    // aucune persistance, aucun lien avec le système de matching CBZ (voir
+    // le commentaire en tête de KavitaBrowser). Échec silencieux : cette
+    // fiche est un bonus, pas un pré-requis pour lire.
+    setLoadingNaut(true);
+    try {
+      const r = await api.nautiljonSearch(series.name, 1);
+      const best = (r.results || r.rows || [])[0];
+      if (best?.url) setNautMatch(await api.nautiljonManga(best.url));
+    } catch { /* pas grave, pas de fiche affichée */ }
+    setLoadingNaut(false);
   };
 
   if (available === null) return <div className="empty"><p>Chargement…</p></div>;
@@ -2266,8 +2280,22 @@ function KavitaBrowser({ onOpenChapter, show }) {
           <button className="btn btn-s" onClick={() => setSel(null)}>← Retour</button>
           <span className="sec-t" style={{ marginLeft: 8 }}>{sel.name}</span>
         </div>
+        {loadingNaut && <p style={{ fontSize: 11, color: "var(--t3)", padding: "0 12px 8px" }}>Recherche Nautiljon…</p>}
+        {nautMatch && (() => {
+          let cov = nautMatch.cover_url || nautMatch.image_url || "";
+          if (cov) cov = nautiljonMiniUrl(cov);
+          return (
+            <div style={{ display: "flex", gap: 12, padding: "0 12px 14px", alignItems: "flex-start" }}>
+              {cov && <img src={cov} alt="" style={{ width: 70, height: 98, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>📚 {nautMatch.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span></div>
+                {nautMatch.synopsis && <p style={{ fontSize: 11, color: "var(--t2)", marginTop: 4, display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{nautMatch.synopsis}</p>}
+              </div>
+            </div>
+          );
+        })()}
         {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
-          <div className="vg">
+          <div className="vg vg-lg">
             {volumes.flatMap(v => (v.chapters || []).map(c => {
               // Kavita utilise le nombre sentinelle -100000 pour "pas de
               // numéro de chapitre applicable" (volume à chapitre unique) --
