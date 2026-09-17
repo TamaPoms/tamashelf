@@ -17,7 +17,12 @@ l'archive `tamashelf-flutter.tar.gz`, sans rien avoir à extraire ou configurer
    Android SDK sont bien installés et détectés (voir "Prérequis" ci-dessous).
 4. Vérifie/modifie le numéro de **version** (format obligatoire `X.Y.Z`, par
    exemple `1.2.0` — utiliser une date sous la forme `2026.09.02` fonctionne
-   aussi, mais **pas** `20260902` qui n'a qu'un seul nombre).
+   aussi, mais **pas** `20260902` qui n'a qu'un seul nombre). Le bouton
+   **"Aujourd'hui (avec l'heure)"** remplit automatiquement version et
+   numéro de build à partir de la date/heure actuelles (ex :
+   `1.2026.09171836`) : pratique pour dater ses builds, et ça garantit que
+   deux builds le même jour restent distincts (voir "Deux builds le même
+   jour" plus bas).
 5. Clique sur **"Construire l'APK"**. Ça peut prendre plusieurs minutes la
    première fois (téléchargement de dépendances Flutter).
 6. Une fois le build terminé, renseigne un **jeton d'accès personnel GitHub**
@@ -39,9 +44,15 @@ l'archive `tamashelf-flutter.tar.gz`, sans rien avoir à extraire ou configurer
    write** (c'est ce qui autorise la création de releases et l'upload
    d'assets).
 5. Génère le jeton et colle-le dans le champ "Jeton d'accès GitHub" de
-   l'outil — il n'est **jamais** sauvegardé sur le disque, il faut le
-   recoller à chaque lancement de l'outil (seul le nom du dépôt est
-   mémorisé, pour te faire gagner du temps la prochaine fois).
+   l'outil. Par défaut il n'est **jamais** sauvegardé sur le disque (il faut
+   le recoller à chaque lancement) — coche "Mémoriser ce jeton sur cet
+   ordinateur" si tu préfères ne pas avoir à le retaper à chaque fois ; il
+   est alors écrit **en clair** dans `settings.json` à côté de l'outil, donc
+   à éviter sur un PC partagé ou synchronisé dans le cloud.
+6. Le bouton **"Tester le jeton"** vérifie qu'il est valide et que le compte
+   associé a accès au dépôt indiqué, sans rien publier — pratique pour
+   savoir si un jeton a expiré ou n'a pas les bonnes permissions avant de
+   lancer un vrai build.
 
 ## Ce que fait exactement l'outil (transparence)
 
@@ -58,9 +69,9 @@ l'archive `tamashelf-flutter.tar.gz`, sans rien avoir à extraire ou configurer
   taguée `v<version>` sur le dépôt indiqué, et y attache `tamashelf.apk` (en
   remplaçant l'ancien fichier du même nom s'il y en avait un) via l'API
   REST de GitHub, en HTTPS, avec le jeton fourni.
-- Ton jeton GitHub n'est **jamais** sauvegardé sur le disque (seul le nom du
-  dépôt owner/repo est mémorisé, pour te faire gagner du temps la prochaine
-  fois).
+- Le nom du dépôt owner/repo est mémorisé, pour te faire gagner du temps la
+  prochaine fois. Ton jeton GitHub n'est sauvegardé sur le disque que si tu
+  coches "Mémoriser ce jeton" -- sinon il n'est jamais écrit nulle part.
 
 ## Prérequis
 
@@ -94,3 +105,19 @@ déplacer où tu veux.
   n'est pas au format `X.Y.Z`. L'outil bloque normalement ce cas avant même
   de lancer le build ; si tu vois quand même cette erreur, vérifie le champ
   "Version".
+- **Erreur "flutterVersionCode must be an integer"** → le numéro de *build*
+  (devient le `versionCode` Android) doit être un entier tenant sur 32 bits
+  (2 147 483 647 maximum) ; un format du genre `AAAAMMJJHHmm` (12 chiffres)
+  le dépasse. L'outil bloque ce cas avant de lancer le build ; le bouton
+  "Aujourd'hui (avec l'heure)" génère toujours une valeur valide.
+
+## Deux builds le même jour
+
+Avec un numéro de version `X.AAAA.MMJJ` (juste la date), deux builds
+publiés le même jour ont le même nom de version, donc l'appli (dont la
+vérification de mise à jour ne compare que ce nom-là) ne peut pas détecter
+que le second existe. Le bouton "Aujourd'hui (avec l'heure)" évite ça en
+ajoutant l'heure et la minute dans le nom de version (ex : `1.2026.09171836`),
+tout en gardant un numéro de build simple (juste la date, ex : `20260917`) —
+il n'a pas besoin d'être unique puisque seul le nom de version sert à la
+détection.

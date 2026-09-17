@@ -68,10 +68,11 @@ def load_settings() -> dict:
 
 
 def save_settings(data: dict) -> None:
-    # On ne sauvegarde jamais le jeton d'accès GitHub.
-    safe = {k: v for k, v in data.items() if k != "github_token"}
+    # Le jeton d'accès GitHub n'est inclus dans `data` que si l'utilisateur a
+    # coché "Mémoriser ce jeton" (voir _save_current_settings) : par défaut
+    # il n'est jamais écrit sur le disque.
     try:
-        SETTINGS_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+        SETTINGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
@@ -173,6 +174,17 @@ def is_valid_pubspec_version(version_name: str) -> bool:
     validé ici, mais fait planter `flutter pub get` / `flutter build apk` bien
     plus tard avec un message cryptique."""
     return bool(PUBSPEC_SEMVER_RE.match((version_name or "").strip()))
+
+
+ANDROID_MAX_VERSION_CODE = 2_147_483_647  # limite d'un entier 32 bits
+
+
+def is_valid_android_version_code(build_number: str) -> bool:
+    """Le numéro de build devient le "versionCode" Android (entier 32 bits
+    positif). Un format comme AAAAMMJJHHmm (12 chiffres) le dépasse et fait
+    échouer le build Gradle avec "flutterVersionCode must be an integer"."""
+    s = (build_number or "").strip()
+    return s.isdigit() and 0 < int(s) <= ANDROID_MAX_VERSION_CODE
 
 
 def read_pubspec_version(project_dir: Path):
@@ -343,12 +355,23 @@ class ApkBuilderApp:
         ttk.Entry(grid, textvariable=self.repo_var, width=40).grid(row=0, column=1, sticky="w", padx=6)
 
         ttk.Label(grid, text="Jeton d'accès GitHub :").grid(row=1, column=0, sticky="w")
-        self.token_var = tk.StringVar(value="")
+        self.token_var = tk.StringVar(value=self.settings.get("github_token", ""))
         ttk.Entry(grid, textvariable=self.token_var, width=40, show="*").grid(row=1, column=1, sticky="w", padx=6)
 
         ttk.Label(grid, text="Notes (optionnel) :").grid(row=2, column=0, sticky="w")
         self.notes_var = tk.StringVar(value="")
         ttk.Entry(grid, textvariable=self.notes_var, width=40).grid(row=2, column=1, sticky="w", padx=6)
+
+        trow = ttk.Frame(f4)
+        trow.pack(fill="x", padx=8, pady=(0, 4))
+        self.remember_token_var = tk.BooleanVar(value=bool(self.settings.get("github_token")))
+        ttk.Checkbutton(
+            trow,
+            text="Mémoriser ce jeton sur cet ordinateur (stocké en clair -- déconseillé sur un PC partagé)",
+            variable=self.remember_token_var,
+        ).pack(side="left")
+        self.test_token_btn = ttk.Button(trow, text="Tester le jeton", command=self._start_test_token)
+        self.test_token_btn.pack(side="left", padx=(16, 0))
 
         ttk.Label(
             f4,
@@ -468,15 +491,21 @@ class ApkBuilderApp:
             self.log(f"Version rechargée depuis pubspec.yaml : {version_name}+{build_number}")
 
     def _on_fill_today(self):
-        # Inclut l'heure et la minute (pas juste la date) : deux builds le
-        # même jour obtiennent des numéros différents, ce qui compte pour
-        # que l'appli détecte correctement laquelle est la plus récente
-        # (UpdateService compare ce numéro de version, pas le numéro de
-        # build) et pour que la release GitHub associée (tag "v<version>")
-        # ne rentre pas en conflit avec celle du build précédent.
+        # Le NOM de version inclut l'heure et la minute (pas juste la date) :
+        # deux builds le même jour obtiennent des noms différents, ce qui
+        # suffit pour qu'UpdateService (qui ne compare que ce nom, jamais le
+        # numéro de build) détecte correctement lequel est le plus récent, et
+        # pour que la release GitHub associée (tag "v<version>") ne rentre
+        # pas en conflit avec celle du build précédent.
         now = datetime.datetime.now()
         version_name = f"1.{now.year}.{now.month:02d}{now.day:02d}{now.hour:02d}{now.minute:02d}"
-        build_number = now.strftime("%Y%m%d%H%M")
+        # Le numéro de BUILD devient lui le "versionCode" Android, un entier
+        # 32 bits (max ~2,1 milliards) : AAAAMMJJHHmm (12 chiffres) le
+        # dépasserait largement ("flutterVersionCode must be an integer"
+        # côté Gradle). Comme lui n'a pas besoin d'être unique à la minute
+        # près (seul le nom de version ci-dessus sert à détecter une mise à
+        # jour), la date seule (AAAAMMJJ, 8 chiffres) suffit et reste lisible.
+        build_number = now.strftime("%Y%m%d")
         self.version_var.set(version_name)
         self.build_number_var.set(build_number)
         self.log(f"Version pré-remplie avec la date/heure actuelles : {version_name}+{build_number}")
@@ -500,6 +529,17 @@ class ApkBuilderApp:
                 "par exemple : 1.2.0\n\n"
                 "(Astuce : utilise la date sous forme AAAA.MM.JJ, par exemple 2026.09.02, "
                 "plutôt que AAAAMMJJ qui ne contient que 2 nombres.)",
+            )
+            return
+
+        if build_number and not is_valid_android_version_code(build_number):
+            messagebox.showerror(
+                "Numéro de build invalide",
+                f"'{build_number}' n'est pas utilisable comme numéro de build.\n\n"
+                "Android exige un entier positif tenant sur 32 bits "
+                "(2 147 483 647 maximum) -- un format comme AAAAMMJJHHmm "
+                "(12 chiffres) le dépasse. Utilise le bouton \"Aujourd'hui "
+                "(avec l'heure)\" pour un numéro toujours valide.",
             )
             return
 
@@ -662,9 +702,64 @@ class ApkBuilderApp:
 
     def _save_current_settings(self):
         self.settings["github_repo"] = self.repo_var.get().strip()
+        if self.remember_token_var.get():
+            self.settings["github_token"] = self.token_var.get().strip()
+        else:
+            self.settings.pop("github_token", None)
         if self.archive_path:
             self.settings["last_archive"] = str(self.archive_path)
         save_settings(self.settings)
+
+    # ---- Test du jeton GitHub ----
+
+    def _start_test_token(self):
+        repo = self.repo_var.get().strip().strip("/")
+        token = self.token_var.get().strip()
+        if not repo or "/" not in repo:
+            messagebox.showerror("Dépôt invalide", "Indique le dépôt au format owner/repo (ex: TamaPoms/tamashelf).")
+            return
+        if not token:
+            messagebox.showerror("Jeton manquant", "Renseigne un jeton d'accès personnel GitHub à tester.")
+            return
+        self._save_current_settings()
+        self.test_token_btn.state(["disabled"])
+        threading.Thread(target=self._test_token_worker, args=(repo, token), daemon=True).start()
+
+    def _test_token_worker(self, repo, token):
+        try:
+            owner, name = repo.split("/", 1)
+            self.log(f"Test du jeton sur {repo}...")
+            data = gh_request(f"https://api.github.com/repos/{owner}/{name}", token)
+            perms = data.get("permissions") or {}
+            can_push = perms.get("push", False)
+            private = data.get("private", False)
+            msg = f"Jeton valide, accès confirmé à {repo} ({'privé' if private else 'public'})."
+            if can_push:
+                msg += "\nLe compte associé a les droits d'écriture sur ce dépôt."
+            else:
+                msg += (
+                    "\n⚠️ Le compte associé à ce jeton n'a PAS les droits d'écriture sur ce "
+                    "dépôt -- la publication échouera même si le jeton lui-même est valide."
+                )
+            # Un jeton "fine-grained" peut être valide et pointer vers un
+            # compte qui a les droits d'écriture sans que le jeton LUI-MÊME
+            # ait la permission "Contents: Read and write" -- cette requête
+            # de lecture ne permet pas de le vérifier directement, seule une
+            # vraie publication (ou GitHub Settings -> Tokens) le confirme.
+            msg += (
+                "\n\nNote : ce test vérifie que le jeton est valide et que le compte a accès au "
+                "dépôt, mais pas que le jeton lui-même a la permission d'écriture "
+                "(\"Contents: Read and write\") -- seule une publication réelle le confirme "
+                "totalement pour un jeton \"fine-grained\"."
+            )
+            self.log(f"✅ {msg}".splitlines()[0])
+            self.root.after(0, lambda: messagebox.showinfo("Test du jeton", msg))
+        except Exception as e:
+            msg = github_error_message(e) if isinstance(e, (urllib.error.HTTPError, urllib.error.URLError)) else str(e)
+            self.log(f"❌ Test du jeton échoué : {msg}")
+            self.root.after(0, lambda: messagebox.showerror("Test du jeton échoué", msg))
+        finally:
+            self.root.after(0, lambda: self.test_token_btn.state(["!disabled"]))
 
 
 def main():
