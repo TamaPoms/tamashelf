@@ -45,7 +45,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int _currentPage = 0;
   bool _loading = true;
   bool _barVisible = false;
-  bool _rtl = false;
+  bool _rtl = true; // manga : lecture droite → gauche par défaut
   bool _webtoon = false;
   bool _doublePage = false;
   bool _showThumbnails = false;
@@ -756,9 +756,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final image = _isOnline
         ? _buildOnlinePage(_currentPage, naturalHeight: height)
         : Image.file(File(_localPages[_currentPage]), fit: BoxFit.contain, height: height);
+    // _subPage suit l'ordre de LECTURE (0 = première moitié lue, 1 = seconde),
+    // indépendant de l'écran : en RTL on lit la moitié droite en premier.
+    final showLeftHalf = _rtl ? _subPage == 1 : _subPage == 0;
     return ClipRect(
       child: Align(
-        alignment: _subPage == 0 ? Alignment.centerLeft : Alignment.centerRight,
+        alignment: showLeftHalf ? Alignment.centerLeft : Alignment.centerRight,
         widthFactor: 0.5,
         child: image,
       ),
@@ -768,20 +771,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _buildDoublePageView() {
     final leftPage = _currentPage;
     final rightPage = _currentPage + 1 < _totalPages ? _currentPage + 1 : null;
+    Widget pageWidget(int page) => _isOnline
+        ? _buildOnlinePage(page)
+        : Image.file(File(_localPages[page]), fit: BoxFit.contain);
+
+    // En RTL (manga), la page la plus ancienne (celle qu'on vient d'atteindre)
+    // se lit en premier donc à droite : on inverse l'ordre d'affichage.
+    final int showFirst;
+    final int? showSecond;
+    if (_rtl && rightPage != null) {
+      showFirst = rightPage;
+      showSecond = leftPage;
+    } else {
+      showFirst = leftPage;
+      showSecond = rightPage;
+    }
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Expanded(
-          child: _isOnline
-              ? _buildOnlinePage(leftPage)
-              : Image.file(File(_localPages[leftPage]), fit: BoxFit.contain),
-        ),
-        if (rightPage != null)
-          Expanded(
-            child: _isOnline
-                ? _buildOnlinePage(rightPage)
-                : Image.file(File(_localPages[rightPage]), fit: BoxFit.contain),
-          ),
+        Expanded(child: pageWidget(showFirst)),
+        if (showSecond != null) Expanded(child: pageWidget(showSecond)),
       ],
     );
   }

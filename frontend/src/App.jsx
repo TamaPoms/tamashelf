@@ -1776,7 +1776,10 @@ function MainApp({ session, doLogout, show, toast }) {
                   onLoad={(e) => recordPageDims(rPg[rP], e)}
                   style={{
                     position: 'absolute', top: 0,
-                    left: rSubPage === 0 ? '0%' : '-100%',
+                    // rSubPage suit l'ordre de LECTURE (0 = première moitié lue,
+                    // 1 = seconde), indépendant de l'écran : en RTL on lit la
+                    // moitié droite en premier.
+                    left: (rRTL ? rSubPage === 1 : rSubPage === 0) ? '0%' : '-100%',
                     height: '100%', width: '200%', maxWidth: 'none',
                     objectFit: 'cover',
                   }}
