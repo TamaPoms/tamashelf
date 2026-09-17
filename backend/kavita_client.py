@@ -23,6 +23,8 @@ Endpoints utilisés (confirmés dans l'OpenAPI, pas juste la doc générale) :
     GET  /api/Reader/image?chapterId=&page=              -> bytes image
     GET  /api/Image/series-cover?seriesId=                -> bytes image
 """
+import base64
+import json
 import time
 from typing import Optional
 
@@ -40,6 +42,21 @@ _FILTER_COMPARISON_EQUAL = 0
 
 class KavitaError(Exception):
     pass
+
+
+def _jwt_user_id(token: str) -> Optional[int]:
+    """Le champ "id" renvoyé par /api/Plugin/authenticate reste à 0 en
+    pratique (API "pas encore complètement finalisée" selon Kavita) -- le
+    vrai id utilisateur se trouve dans la claim "nameid" du JWT lui-même.
+    On ne vérifie pas la signature : le token vient d'être reçu du serveur
+    auquel on vient de s'authentifier, sur une connexion qu'on contrôle."""
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return int(claims["nameid"])
+    except Exception:
+        return None
 
 
 class KavitaClient:
@@ -72,7 +89,7 @@ class KavitaClient:
         if not token:
             raise KavitaError("Réponse d'authentification Kavita invalide (pas de jeton).")
         self._token = token
-        self._user_id = data.get("id")
+        self._user_id = data.get("id") or _jwt_user_id(token)
         self._token_expires_at = time.time() + TOKEN_ASSUMED_LIFETIME - TOKEN_TTL_SAFETY_MARGIN
         return token
 
