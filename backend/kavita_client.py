@@ -52,6 +52,7 @@ class KavitaClient:
         self.api_key = api_key
         self._token: Optional[str] = None
         self._token_expires_at: float = 0
+        self._user_id: Optional[int] = None
 
     async def _authenticate(self, client: httpx.AsyncClient) -> str:
         try:
@@ -71,6 +72,7 @@ class KavitaClient:
         if not token:
             raise KavitaError("Réponse d'authentification Kavita invalide (pas de jeton).")
         self._token = token
+        self._user_id = data.get("id")
         self._token_expires_at = time.time() + TOKEN_ASSUMED_LIFETIME - TOKEN_TTL_SAFETY_MARGIN
         return token
 
@@ -99,7 +101,16 @@ class KavitaClient:
             return resp
 
     async def libraries(self) -> list[dict]:
-        resp = await self._request("GET", "/api/Library/user-libraries")
+        # userId est un paramètre requis côté serveur (int non-nullable) même
+        # si l'OpenAPI ne le marque pas "required" -- sans lui, Kavita répond
+        # 400. On s'assure d'être authentifié (et donc de connaître
+        # self._user_id, rempli par _authenticate) avant de construire la
+        # requête.
+        if self._user_id is None:
+            async with httpx.AsyncClient() as client:
+                await self._auth_headers(client)
+        params = {"userId": self._user_id} if self._user_id is not None else {}
+        resp = await self._request("GET", "/api/Library/user-libraries", params=params)
         return resp.json()
 
     async def series_in_library(self, library_id: int, page_size: int = 500) -> list[dict]:
