@@ -472,6 +472,11 @@ function MainApp({ session, doLogout, show, toast }) {
   const [rShowNextPrompt, setRShowNextPrompt] = useState(false);
   const [rBookmarks, setRBookmarks] = useState([]); // [pageIndex, ...]
   const [rShowThumbs, setRShowThumbs] = useState(false);
+  // Mode page à page : scinder une planche double (scannée en une seule
+  // image large) en deux pages successives.
+  const [rSplitWide, setRSplitWide] = useState(false);
+  const [rSubPage, setRSubPage] = useState(0); // 0 = première moitié, 1 = seconde
+  const [rPageDims, setRPageDims] = useState({}); // url -> {w, h} des pages déjà chargées
   const rScrollRef = useRef(null);
   const rImgRefs = useRef([]);
   const rTouchStart = useRef(null);
@@ -678,14 +683,41 @@ function MainApp({ session, doLogout, show, toast }) {
       return;
     }
     setRP(c);
+    setRSubPage(0);
     if (rUrl) {
       await saveProg(rUrl, rVol, c, rPg.length, rTitle);
       if (c % 5 === 0) try { setProgress(await api.getProgress()); } catch {}
     }
   };
 
-  const rdrNext = () => rdrGo(rP + (rMode === 'double' ? 2 : 1));
-  const rdrPrev = () => rdrGo(rP - (rMode === 'double' ? 2 : 1));
+  // Une page est "large" (probable planche double scannée en une seule
+  // image) une fois ses dimensions naturelles connues (après chargement).
+  const isWidePage = (url) => {
+    const d = rPageDims[url];
+    return !!d && d.w > d.h * 1.2;
+  };
+  const splitActive = rMode === 'paged' && rSplitWide;
+  const rCurWide = splitActive && isWidePage(rPg[rP]);
+
+  const recordPageDims = (url, e) => {
+    const w = e.target.naturalWidth, h = e.target.naturalHeight;
+    if (!w || !h) return;
+    setRPageDims(prev => (prev[url]?.w === w && prev[url]?.h === h) ? prev : { ...prev, [url]: { w, h } });
+  };
+
+  const rdrNext = () => {
+    if (splitActive && isWidePage(rPg[rP]) && rSubPage === 0) { setRSubPage(1); return; }
+    rdrGo(rP + (rMode === 'double' ? 2 : 1));
+  };
+  const rdrPrev = () => {
+    if (splitActive && isWidePage(rPg[rP]) && rSubPage === 1) { setRSubPage(0); return; }
+    const target = Math.max(0, rP - (rMode === 'double' ? 2 : 1));
+    const changed = target !== rP;
+    rdrGo(target);
+    // En revenant en arrière sur une planche double, on arrive par sa
+    // seconde moitié (celle qui touche la page suivante).
+    if (changed && splitActive && isWidePage(rPg[target])) setRSubPage(1);
+  };
 
   const toggleBookmark = (page) => {
     setRBookmarks(prev => prev.includes(page) ? prev.filter(p => p !== page) : [...prev, page].sort((a, b) => a - b));
@@ -868,8 +900,8 @@ function MainApp({ session, doLogout, show, toast }) {
       return;
     }
     if (rMode === 'paged' || rMode === 'double') {
-      if (cx <= 0.25) rdrGo(rRTL ? rP + (rMode === 'double' ? 2 : 1) : rP - (rMode === 'double' ? 2 : 1));
-      else if (cx >= 0.75) rdrGo(rRTL ? rP - (rMode === 'double' ? 2 : 1) : rP + (rMode === 'double' ? 2 : 1));
+      if (cx <= 0.25) rRTL ? rdrNext() : rdrPrev();
+      else if (cx >= 0.75) rRTL ? rdrPrev() : rdrNext();
     }
   };
 
@@ -1678,8 +1710,9 @@ function MainApp({ session, doLogout, show, toast }) {
             <button className="ib" onClick={closeReader}>✕</button>
             <div className="tit">{rTitle}</div>
             <span className="pg">{rP + 1}{rMode === 'double' && rP + 1 < rPg.length ? `-${rP + 2}` : ''}/{rPg.length}</span>
-            <button className="ib" title="Mode webtoon" onClick={() => setRMode(m => m === 'webtoon' ? 'paged' : 'webtoon')} style={{ color: rMode === 'webtoon' ? 'var(--ac)' : undefined }}>{rMode === 'webtoon' ? '📄' : '📜'}</button>
-            <button className="ib" title="Double page" onClick={() => setRMode(m => m === 'double' ? 'paged' : 'double')} style={{ color: rMode === 'double' ? 'var(--ac)' : undefined }}>📖</button>
+            <button className="ib" title="Mode webtoon" onClick={() => { setRMode(m => m === 'webtoon' ? 'paged' : 'webtoon'); setRSubPage(0); }} style={{ color: rMode === 'webtoon' ? 'var(--ac)' : undefined }}>{rMode === 'webtoon' ? '📄' : '📜'}</button>
+            <button className="ib" title="Double page" onClick={() => { setRMode(m => m === 'double' ? 'paged' : 'double'); setRSubPage(0); }} style={{ color: rMode === 'double' ? 'var(--ac)' : undefined }}>📖</button>
+            {rMode === 'paged' && <button className="ib" title="Scinder les planches doubles" onClick={() => { setRSplitWide(v => !v); setRSubPage(0); }} style={{ color: rSplitWide ? 'var(--ac)' : undefined }}>✂️</button>}
             <button className="ib" title={rRTL ? "Lecture ← (manga)" : "Lecture → (occidental)"} onClick={() => setRRTL(r => !r)}>{rRTL ? '←' : '→'}</button>
             <button className="ib" onClick={() => setRZoom(z => Math.max(z - .2, .4))}>−</button>
             <span style={{ fontSize: 10, color: "#aaa" }}>{Math.round(rZoom * 100)}%</span>
@@ -1728,7 +1761,30 @@ function MainApp({ session, doLogout, show, toast }) {
           </div>
         ) : (
           <div className="rdr-cv" onClick={handleReaderClick}>
-            {rPg[rP] && <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} />}
+            {rPg[rP] && (rCurWide ? (
+              <div style={{
+                height: '100vh',
+                aspectRatio: `${rPageDims[rPg[rP]].w / 2} / ${rPageDims[rPg[rP]].h}`,
+                overflow: 'hidden',
+                position: 'relative',
+                transform: rZoom !== 1 ? `scale(${rZoom})` : undefined,
+              }}>
+                <img
+                  src={rPg[rP]}
+                  alt=""
+                  draggable={false}
+                  onLoad={(e) => recordPageDims(rPg[rP], e)}
+                  style={{
+                    position: 'absolute', top: 0,
+                    left: rSubPage === 0 ? '0%' : '-100%',
+                    height: '100%', width: '200%', maxWidth: 'none',
+                    objectFit: 'cover',
+                  }}
+                />
+              </div>
+            ) : (
+              <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} onLoad={(e) => recordPageDims(rPg[rP], e)} />
+            ))}
           </div>
         )}
 

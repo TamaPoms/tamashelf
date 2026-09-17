@@ -64,6 +64,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   List<GlobalKey> _webtoonKeys = [];
   bool _webtoonScrollUpdateScheduled = false;
   bool _nextVolumePromptShown = false;
+  // Mode page à page : option pour scinder une planche double (scannée en
+  // une seule image large) en deux pages successives.
+  bool _splitWide = false;
+  int _subPage = 0; // 0 = première moitié, 1 = seconde (page large + option active seulement)
+  final Map<int, Size> _pageSizes = {}; // dimensions naturelles des pages déjà résolues
 
   bool get _isOnline => widget.online && widget.localPath == null;
 
@@ -203,7 +208,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final p = page.clamp(0, _totalPages - 1);
     if (p == _currentPage) return;
     _zoomCtrl.value = Matrix4.identity();
-    setState(() => _currentPage = p);
+    setState(() { _currentPage = p; _subPage = 0; });
     _saveProgress();
     if (_isOnline) _preloadNearby();
   }
@@ -220,14 +225,70 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  bool get _splitActive => !_doublePage && _splitWide;
+
   void _nextPage() {
+    if (_splitActive && _isWidePage(_currentPage) && _subPage == 0) {
+      setState(() => _subPage = 1);
+      return;
+    }
     if (_currentPage >= _totalPages - 1 && _nextVolume != null) {
       _proposeNextVolume();
       return;
     }
     _goToPage(_currentPage + (_doublePage ? 2 : 1));
   }
-  void _prevPage() => _goToPage(_currentPage - (_doublePage ? 2 : 1));
+
+  void _prevPage() {
+    if (_splitActive && _isWidePage(_currentPage) && _subPage == 1) {
+      setState(() => _subPage = 0);
+      return;
+    }
+    final target = (_currentPage - (_doublePage ? 2 : 1)).clamp(0, _totalPages - 1);
+    final changed = target != _currentPage;
+    _goToPage(target);
+    // En revenant en arrière sur une planche double, on arrive par sa
+    // seconde moitié (celle qui touche la page suivante).
+    if (changed && _splitActive && _isWidePage(target)) {
+      setState(() => _subPage = 1);
+    }
+  }
+
+  // Une page est "large" (probable planche double scannée en une image)
+  // quand ses dimensions naturelles, une fois connues, ont un ratio
+  // largeur/hauteur nettement supérieur à celui d'une page simple.
+  bool _isWidePage(int page) {
+    final size = _pageSizes[page];
+    if (size == null) return false;
+    return size.width > size.height * 1.2;
+  }
+
+  // Résout et mémorise les dimensions naturelles d'une page (une fois) pour
+  // savoir si elle est "large" ; sans effet si déjà connue ou pas encore
+  // disponible (page en ligne pas encore chargée).
+  void _ensurePageSize(int page) {
+    if (_pageSizes.containsKey(page)) return;
+    final ImageProvider provider;
+    if (_isOnline) {
+      final bytes = _onlineCache[page];
+      if (bytes == null) return;
+      provider = MemoryImage(bytes);
+    } else {
+      if (page < 0 || page >= _localPages.length) return;
+      provider = FileImage(File(_localPages[page]));
+    }
+    final stream = provider.resolve(const ImageConfiguration());
+    late ImageStreamListener listener;
+    listener = ImageStreamListener((info, _) {
+      stream.removeListener(listener);
+      if (mounted) {
+        setState(() => _pageSizes[page] = Size(info.image.width.toDouble(), info.image.height.toDouble()));
+      }
+    }, onError: (error, stack) {
+      stream.removeListener(listener);
+    });
+    stream.addListener(listener);
+  }
 
   // En mode webtoon, la page "courante" ne change pas via _goToPage/_nextPage
   // (pas de tap/swipe de page à page) : on la déduit du scroll, en retrouvant
@@ -515,18 +576,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       onPressed: () => setState(() {
                         _webtoon = !_webtoon;
                         _doublePage = false;
+                        _subPage = 0;
                         _nextVolumePromptShown = false;
                         if (_webtoon) {
                           WidgetsBinding.instance.addPostFrameCallback((_) => _onWebtoonScroll());
                         }
                       }),
                     ),
-                    if (!_webtoon)
+                    if (!_webtoon) ...[
                       IconButton(
                         icon: Icon(_doublePage ? Icons.chrome_reader_mode : Icons.chrome_reader_mode_outlined, color: _doublePage ? AppTheme.ac : Colors.white70, size: 20),
-                        onPressed: () => setState(() => _doublePage = !_doublePage),
+                        onPressed: () => setState(() { _doublePage = !_doublePage; _subPage = 0; }),
                         tooltip: 'Double page',
                       ),
+                      if (!_doublePage)
+                        IconButton(
+                          icon: Icon(_splitWide ? Icons.splitscreen : Icons.splitscreen_outlined, color: _splitWide ? AppTheme.ac : Colors.white70, size: 20),
+                          onPressed: () => setState(() { _splitWide = !_splitWide; _subPage = 0; }),
+                          tooltip: 'Scinder les planches doubles',
+                        ),
+                    ],
                     IconButton(
                       icon: Icon(_rtl ? Icons.arrow_back : Icons.arrow_forward, color: Colors.white70, size: 20),
                       onPressed: () => setState(() => _rtl = !_rtl),
@@ -667,12 +736,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Widget _buildSinglePageView() {
-    if (_isOnline) return _buildOnlinePage(_currentPage);
-    return Image.file(
-      File(_localPages[_currentPage]),
-      fit: BoxFit.contain,
-      width: double.infinity,
-      height: double.infinity,
+    _ensurePageSize(_currentPage); // asynchrone, met à jour _pageSizes et redéclenche un build
+
+    final wide = _splitActive && _isWidePage(_currentPage);
+    if (!wide) {
+      if (_isOnline) return _buildOnlinePage(_currentPage);
+      return Image.file(
+        File(_localPages[_currentPage]),
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: double.infinity,
+      );
+    }
+
+    // Planche double : l'image occupe toute la hauteur disponible à sa
+    // taille naturelle (pas de width:infinity ici, Align a besoin de
+    // mesurer sa largeur réelle pour n'en garder que la moitié).
+    final height = MediaQuery.of(context).size.height;
+    final image = _isOnline
+        ? _buildOnlinePage(_currentPage, naturalHeight: height)
+        : Image.file(File(_localPages[_currentPage]), fit: BoxFit.contain, height: height);
+    return ClipRect(
+      child: Align(
+        alignment: _subPage == 0 ? Alignment.centerLeft : Alignment.centerRight,
+        widthFactor: 0.5,
+        child: image,
+      ),
     );
   }
 
@@ -711,17 +800,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return Center(child: Text('${page + 1}', style: const TextStyle(color: Colors.white38, fontSize: 10)));
   }
 
-  Widget _buildOnlinePage(int page) {
+  // `naturalHeight` : rendu utilisé pour le découpage en demi-planche
+  // (_buildSinglePageView + Align/widthFactor), qui a besoin de connaître la
+  // largeur réellement occupée par l'image plutôt qu'un `width: infinity`
+  // qui remplirait tout l'espace disponible sans rien laisser à mesurer.
+  Widget _buildOnlinePage(int page, {double? naturalHeight}) {
     final cached = _onlineCache[page];
     if (cached != null) {
-      return Center(
-        child: Image.memory(
-          cached,
-          fit: BoxFit.contain,
-          width: double.infinity,
-          height: double.infinity,
-        ),
+      final image = Image.memory(
+        cached,
+        fit: BoxFit.contain,
+        width: naturalHeight == null ? double.infinity : null,
+        height: naturalHeight ?? double.infinity,
       );
+      return naturalHeight != null ? image : Center(child: image);
     }
 
     // Loading
@@ -729,37 +821,38 @@ class _ReaderScreenState extends State<ReaderScreen> {
       future: _loadOnlinePage(page),
       builder: (ctx, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
-          return Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(color: AppTheme.ac),
-                SizedBox(height: 12),
-                Text('Chargement...', style: TextStyle(color: Colors.white54, fontSize: 12)),
-              ],
-            ),
-          );
-        }
-        if (snap.hasData && snap.data != null) {
-          return Center(
-            child: Image.memory(
-              snap.data!,
-              fit: BoxFit.contain,
-              width: double.infinity,
-              height: double.infinity,
-            ),
-          );
-        }
-        return Center(
-          child: Column(
+          final placeholder = Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.wifi_off, color: Colors.white38, size: 48),
-              SizedBox(height: 8),
-              Text('Impossible de charger', style: TextStyle(color: Colors.white38)),
+              CircularProgressIndicator(color: AppTheme.ac),
+              SizedBox(height: 12),
+              Text('Chargement...', style: TextStyle(color: Colors.white54, fontSize: 12)),
             ],
-          ),
+          );
+          return naturalHeight != null
+              ? SizedBox(height: naturalHeight, child: Center(child: placeholder))
+              : Center(child: placeholder);
+        }
+        if (snap.hasData && snap.data != null) {
+          final image = Image.memory(
+            snap.data!,
+            fit: BoxFit.contain,
+            width: naturalHeight == null ? double.infinity : null,
+            height: naturalHeight ?? double.infinity,
+          );
+          return naturalHeight != null ? image : Center(child: image);
+        }
+        final placeholder = Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.wifi_off, color: Colors.white38, size: 48),
+            SizedBox(height: 8),
+            Text('Impossible de charger', style: TextStyle(color: Colors.white38)),
+          ],
         );
+        return naturalHeight != null
+            ? SizedBox(height: naturalHeight, child: Center(child: placeholder))
+            : Center(child: placeholder);
       },
     );
   }
