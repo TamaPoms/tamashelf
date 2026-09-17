@@ -59,6 +59,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   // Next volume for auto-advance
   List<Volume>? _allVolumes;
   Volume? _nextVolume;
+  // Webtoon: une clé par page pour retrouver sa position à l'écran pendant
+  // le scroll (pour suivre la page courante et détecter la fin du tome).
+  List<GlobalKey> _webtoonKeys = [];
+  bool _webtoonScrollUpdateScheduled = false;
+  bool _nextVolumePromptShown = false;
 
   bool get _isOnline => widget.online && widget.localPath == null;
 
@@ -67,6 +72,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.initState();
     _enterFullscreen();
     _loadPages();
+    _scrollCtrl.addListener(_onWebtoonScroll);
     _barVisible = true;
     Future.delayed(const Duration(seconds: 2), () {
       if (mounted) setState(() => _barVisible = false);
@@ -146,6 +152,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _totalPages = pages.length;
     }
 
+    _webtoonKeys = List.generate(_totalPages, (_) => GlobalKey());
+
     // Restore saved position
     final saved = state.progress.getProgress(widget.volume.cbzFolder, widget.volume.filepath);
     final startPage = widget.startPage > 0
@@ -220,6 +228,55 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _goToPage(_currentPage + (_doublePage ? 2 : 1));
   }
   void _prevPage() => _goToPage(_currentPage - (_doublePage ? 2 : 1));
+
+  // En mode webtoon, la page "courante" ne change pas via _goToPage/_nextPage
+  // (pas de tap/swipe de page à page) : on la déduit du scroll, en retrouvant
+  // quelle page est affichée en haut de l'écran, et on détecte la fin du
+  // tome pour proposer le suivant — jetée au frame suivant (throttle façon
+  // requestAnimationFrame) pour ne pas recalculer à chaque pixel scrollé.
+  void _onWebtoonScroll() {
+    if (!_webtoon || !_scrollCtrl.hasClients || _webtoonScrollUpdateScheduled) return;
+    _webtoonScrollUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _webtoonScrollUpdateScheduled = false;
+      if (!mounted || !_webtoon) return;
+      _updateCurrentPageFromScroll();
+      _checkWebtoonEnd();
+    });
+  }
+
+  void _updateCurrentPageFromScroll() {
+    if (_webtoonKeys.isEmpty) return;
+    const topThreshold = 100.0;
+    int? bestIdx;
+    double bestDist = double.infinity;
+    for (var i = 0; i < _webtoonKeys.length; i++) {
+      final renderObject = _webtoonKeys[i].currentContext?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.attached) continue;
+      final top = renderObject.localToGlobal(Offset.zero).dy;
+      final dist = (top - topThreshold).abs();
+      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    if (bestIdx != null && bestIdx != _currentPage) {
+      setState(() => _currentPage = bestIdx!);
+      _saveProgress();
+      if (_isOnline) _preloadNearby();
+    }
+  }
+
+  void _checkWebtoonEnd() {
+    if (!_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    final atBottom = pos.maxScrollExtent <= 0 || pos.pixels >= pos.maxScrollExtent - 40;
+    if (!atBottom) {
+      _nextVolumePromptShown = false;
+      return;
+    }
+    if (!_nextVolumePromptShown && _nextVolume != null) {
+      _nextVolumePromptShown = true;
+      _proposeNextVolume();
+    }
+  }
 
   Future<void> _findNextVolume() async {
     try {
@@ -388,6 +445,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _saveProgress();
     _volumeKeySub?.cancel();
     _exitFullscreen();
+    _scrollCtrl.removeListener(_onWebtoonScroll);
     _scrollCtrl.dispose();
     _thumbScrollCtrl.dispose();
     _zoomCtrl.dispose();
@@ -454,7 +512,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     const SizedBox(width: 8),
                     IconButton(
                       icon: Icon(_webtoon ? Icons.view_agenda : Icons.view_day, color: Colors.white70, size: 20),
-                      onPressed: () => setState(() { _webtoon = !_webtoon; _doublePage = false; }),
+                      onPressed: () => setState(() {
+                        _webtoon = !_webtoon;
+                        _doublePage = false;
+                        _nextVolumePromptShown = false;
+                        if (_webtoon) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) => _onWebtoonScroll());
+                        }
+                      }),
                     ),
                     if (!_webtoon)
                       IconButton(
@@ -704,17 +769,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return ListView.builder(
         controller: _scrollCtrl,
         itemCount: _totalPages,
-        itemBuilder: (ctx, i) => _buildOnlineWebtoonPage(i),
+        itemBuilder: (ctx, i) => KeyedSubtree(
+          key: _webtoonKeys[i],
+          child: _buildOnlineWebtoonPage(i),
+        ),
       );
     }
 
     return ListView.builder(
       controller: _scrollCtrl,
       itemCount: _localPages.length,
-      itemBuilder: (ctx, i) => Image.file(
-        File(_localPages[i]),
-        fit: BoxFit.fitWidth,
-        width: double.infinity,
+      itemBuilder: (ctx, i) => KeyedSubtree(
+        key: _webtoonKeys[i],
+        child: Image.file(
+          File(_localPages[i]),
+          fit: BoxFit.fitWidth,
+          width: double.infinity,
+        ),
       ),
     );
   }
