@@ -98,6 +98,7 @@ function nautiljonMiniUrl(raw) {
 }
 
 const SEARCH_TAG_KEYS = ["Type", "Types", "Genres", "Thème", "Thèmes", "Auteur", "Scénariste", "Dessinateur"];
+const ALPHA_LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
 
 const TAG_COLORS = [
   "#FF6B6B", "#FFB347", "#6BCB77", "#4ECDC4", "#45B7D1",
@@ -592,7 +593,7 @@ function MainApp({ session, doLogout, show, toast }) {
   const filtered = getFiltered();
   const allTags = extractAllTags(groupedMangas);
   const activeTagCount = Object.values(tagFilters).reduce((s, v) => s + (v?.length || 0), 0);
-  const alphaLetters = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
+  const alphaLetters = ALPHA_LETTERS;
 
   const toggleTag = (cat, tag) => {
     setTagFilters(prev => {
@@ -2206,6 +2207,7 @@ function KavitaBrowser({ onOpenChapter, show }) {
   const [loadingVolumes, setLoadingVolumes] = useState(false);
   const [nautMatch, setNautMatch] = useState(null); // fiche Nautiljon trouvée pour sel.name (simple recherche, pas de matching persistant)
   const [loadingNaut, setLoadingNaut] = useState(false);
+  const [alphaFilter, setAlphaFilter] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -2230,6 +2232,7 @@ function KavitaBrowser({ onOpenChapter, show }) {
     let cancelled = false;
     setLoadingSeries(true);
     setSel(null);
+    setAlphaFilter(null);
     api.kavitaSeries(libId)
       .then(list => { if (!cancelled) setSeriesList(list); })
       .catch(e => show(e.message))
@@ -2346,14 +2349,33 @@ function KavitaBrowser({ onOpenChapter, show }) {
       )}
       {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
         seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
-        <div className="mg">
-          {seriesList.map(s => (
-            <div key={s.id} className="mc" onClick={() => openSeries(s)}>
-              <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
-              <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
+        (() => {
+          const alphaIndex = {};
+          for (const s of seriesList) {
+            const first = (s.name || "?")[0]?.toUpperCase?.() || "#";
+            const key = /[A-Z]/.test(first) ? first : "#";
+            alphaIndex[key] = (alphaIndex[key] || 0) + 1;
+          }
+          const filtered = alphaFilter
+            ? seriesList.filter(s => { const f = (s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
+            : seriesList;
+          return (
+            <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0, position: "sticky", top: 0, alignSelf: "flex-start" }}>
+                <button onClick={() => setAlphaFilter(null)} style={{ padding: "3px 6px", fontSize: 9, fontWeight: !alphaFilter ? 700 : 400, background: !alphaFilter ? "var(--ac)" : "var(--c2)", color: !alphaFilter ? "#fff" : "var(--t3)", border: "1px solid var(--brd)", borderRadius: 3, cursor: "pointer" }}>All</button>
+                {ALPHA_LETTERS.map(l => <button key={l} onClick={() => setAlphaFilter(l === alphaFilter ? null : l)} disabled={!alphaIndex[l]} style={{ padding: "2px 6px", fontSize: 9, fontWeight: l === alphaFilter ? 700 : 400, background: l === alphaFilter ? "var(--ac)" : "transparent", color: !alphaIndex[l] ? "var(--brd)" : l === alphaFilter ? "#fff" : "var(--t3)", border: "none", borderRadius: 2, cursor: alphaIndex[l] ? "pointer" : "default", fontFamily: "monospace", lineHeight: 1.4 }}>{l}</button>)}
+              </div>
+              <div className="mg" style={{ flex: 1 }}>
+                {filtered.map(s => (
+                  <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+                    <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
+                    <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+          );
+        })()
       }
     </>
   );

@@ -146,12 +146,28 @@ class KavitaClient:
             ],
             "combination": 1,  # And (sans effet ici, une seule condition)
         }
-        resp = await self._request(
-            "POST", "/api/Series/v2",
-            params={"PageNumber": 1, "PageSize": page_size},
-            json=body,
-        )
-        return resp.json()
+        # Kavita peut plafonner PageSize plus bas que ce qu'on demande --
+        # confirmé en conditions réelles (une bibliothèque de plusieurs
+        # centaines de séries n'en renvoyait qu'une partie avec un seul
+        # appel). On boucle donc jusqu'à obtenir une page incomplète.
+        all_series: list[dict] = []
+        page = 1
+        while True:
+            resp = await self._request(
+                "POST", "/api/Series/v2",
+                params={"PageNumber": page, "PageSize": page_size},
+                json=body,
+            )
+            batch = resp.json()
+            if not batch:
+                break
+            all_series.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+            if page > 50:  # garde-fou anti-boucle-infinie
+                break
+        return all_series
 
     async def series_detail(self, series_id: int) -> dict:
         resp = await self._request("GET", f"/api/Series/{series_id}")
