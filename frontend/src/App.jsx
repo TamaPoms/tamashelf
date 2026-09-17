@@ -477,6 +477,9 @@ function MainApp({ session, doLogout, show, toast }) {
   const [rSplitWide, setRSplitWide] = useState(false);
   const [rSubPage, setRSubPage] = useState(0); // 0 = première moitié, 1 = seconde
   const [rPageDims, setRPageDims] = useState({}); // url -> {w, h} des pages déjà chargées
+  // Empêche la détection auto du mode webtoon (voir plus bas) de se
+  // redéclencher à chaque page tournée -- une seule tentative par ouverture.
+  const [rAutoWebtoonChecked, setRAutoWebtoonChecked] = useState(false);
   const rScrollRef = useRef(null);
   const rImgRefs = useRef([]);
   const rTouchStart = useRef(null);
@@ -756,6 +759,7 @@ function MainApp({ session, doLogout, show, toast }) {
         const meta = (det?.metadata_json && typeof det.metadata_json === 'object') ? det.metadata_json : (manga?.metadata_json || {});
         const metaTxt = normalizeSearchText([meta?.Type, meta?.Types, meta?.Format, meta?.ReadingMode, meta?.reading_mode].filter(Boolean).join(' '));
         setRMode(metaTxt.includes('webtoon') ? 'webtoon' : 'paged');
+        setRAutoWebtoonChecked(metaTxt.includes('webtoon'));
         setRP(Math.max(0, Math.min(startPage, info.total_pages - 1)));
         setRZoom(1);
         setRCbz(null);
@@ -773,6 +777,7 @@ function MainApp({ session, doLogout, show, toast }) {
       const meta = (det?.metadata_json && typeof det.metadata_json === 'object') ? det.metadata_json : (manga?.metadata_json || {});
       const metaTxt = normalizeSearchText([meta?.Type, meta?.Types, meta?.Format, meta?.ReadingMode, meta?.reading_mode].filter(Boolean).join(' '));
       setRMode(metaTxt.includes('webtoon') ? 'webtoon' : 'paged');
+      setRAutoWebtoonChecked(metaTxt.includes('webtoon'));
       setRP(Math.max(0, Math.min(startPage, info.total_pages - 1))); setRZoom(1); setRCbz({ filepath: tome.path }); setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false); enterFullscreen();
       findNextVolume(manga, tome);
     } catch (e) { show(`Erreur: ${e.message}`); }
@@ -791,6 +796,7 @@ function MainApp({ session, doLogout, show, toast }) {
       setRUrl(p.manga_url);
       setRVol(p.volume_id);
       setRMode('paged');
+      setRAutoWebtoonChecked(false);
       setRZoom(1);
       setRP(Math.max(0, Math.min(p.current_page, info.total_pages - 1)));
       setRCbz(null);
@@ -803,6 +809,7 @@ function MainApp({ session, doLogout, show, toast }) {
     setRUrl(p.manga_url);
     setRVol(p.volume_id);
     setRMode('paged');
+    setRAutoWebtoonChecked(false);
     setRZoom(1);
     setRP(Math.max(0, Math.min(p.current_page, p.total_pages - 1)));
     setRCbz({ filepath: p.volume_id });
@@ -810,6 +817,20 @@ function MainApp({ session, doLogout, show, toast }) {
   };
 
   useEffect(() => { rImgRefs.current = []; }, [rdr, rMode, rPg.length]);
+
+  // Détection auto du mode webtoon (repli quand les métadonnées ne le
+  // précisent pas) : une fois les dimensions réelles de la page affichée
+  // connues, si elle est bien plus haute que large (planche webtoon
+  // découpée en bande verticale plutôt qu'une page de manga classique),
+  // on bascule automatiquement en mode défilement. Une seule tentative par
+  // ouverture (rAutoWebtoonChecked), pour ne pas re-décider à chaque page.
+  useEffect(() => {
+    if (!rdr || rMode !== 'paged' || rAutoWebtoonChecked) return;
+    const dims = rPageDims[rPg[rP]];
+    if (!dims) return;
+    setRAutoWebtoonChecked(true);
+    if (dims.h > dims.w * 2.5) setRMode('webtoon');
+  }, [rdr, rMode, rPg, rP, rPageDims, rAutoWebtoonChecked]);
 
   const rdrScrollBy = (dy) => {
     const el = rScrollRef.current;

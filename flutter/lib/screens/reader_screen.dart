@@ -69,6 +69,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _splitWide = false;
   int _subPage = 0; // 0 = première moitié, 1 = seconde (page large + option active seulement)
   final Map<int, Size> _pageSizes = {}; // dimensions naturelles des pages déjà résolues
+  // Une seule tentative de détection auto du mode webtoon par ouverture du
+  // lecteur (voir _maybeAutoEnableWebtoon).
+  bool _autoWebtoonChecked = false;
 
   bool get _isOnline => widget.online && widget.localPath == null;
 
@@ -281,13 +284,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
     late ImageStreamListener listener;
     listener = ImageStreamListener((info, _) {
       stream.removeListener(listener);
-      if (mounted) {
-        setState(() => _pageSizes[page] = Size(info.image.width.toDouble(), info.image.height.toDouble()));
-      }
+      if (!mounted) return;
+      final size = Size(info.image.width.toDouble(), info.image.height.toDouble());
+      setState(() => _pageSizes[page] = size);
+      _maybeAutoEnableWebtoon(page, size);
     }, onError: (error, stack) {
       stream.removeListener(listener);
     });
     stream.addListener(listener);
+  }
+
+  // Aucune métadonnée de mode de lecture côté Android (contrairement au
+  // site) : une fois la page affichée connue, si elle est bien plus haute
+  // que large (planche webtoon en bande verticale plutôt qu'une page de
+  // manga classique), on bascule automatiquement en mode défilement. Une
+  // seule tentative par ouverture du lecteur.
+  void _maybeAutoEnableWebtoon(int page, Size size) {
+    if (_autoWebtoonChecked || _webtoon || page != _currentPage) return;
+    _autoWebtoonChecked = true;
+    if (size.height > size.width * 2.5) {
+      setState(() => _webtoon = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onWebtoonScroll());
+    }
   }
 
   // En mode webtoon, la page "courante" ne change pas via _goToPage/_nextPage

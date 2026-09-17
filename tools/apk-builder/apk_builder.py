@@ -20,6 +20,7 @@ Ce fichier est volontairement autonome : aucune dépendance externe (uniquement
 la bibliothèque standard de Python), pour pouvoir être livré seul, en dehors
 de l'archive du projet Flutter.
 """
+import datetime
 import json
 import os
 import re
@@ -311,11 +312,21 @@ class ApkBuilderApp:
         vrow.pack(fill="x", padx=8, pady=4)
         ttk.Label(vrow, text="Version (ex: 1.2.0) :").pack(side="left")
         self.version_var = tk.StringVar(value="1.0.0")
-        ttk.Entry(vrow, textvariable=self.version_var, width=16).pack(side="left", padx=6)
+        ttk.Entry(vrow, textvariable=self.version_var, width=20).pack(side="left", padx=6)
         ttk.Label(vrow, text="Numéro de build :").pack(side="left", padx=(16, 0))
         self.build_number_var = tk.StringVar(value="1")
-        ttk.Entry(vrow, textvariable=self.build_number_var, width=8).pack(side="left", padx=6)
+        ttk.Entry(vrow, textvariable=self.build_number_var, width=12).pack(side="left", padx=6)
         ttk.Button(vrow, text="Recharger depuis pubspec.yaml", command=self._on_reload_version).pack(side="left", padx=(16, 0))
+
+        vrow2 = ttk.Frame(f3)
+        vrow2.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Button(vrow2, text="Aujourd'hui (avec l'heure)", command=self._on_fill_today).pack(side="left")
+        ttk.Label(
+            vrow2,
+            text="Remplit version/build avec la date ET l'heure actuelles, pour que deux builds "
+                 "le même jour aient des numéros différents.",
+            foreground="#777",
+        ).pack(side="left", padx=(8, 0))
 
         self.build_btn = ttk.Button(f3, text="Construire l'APK", command=self._start_build)
         self.build_btn.pack(anchor="w", padx=8, pady=8)
@@ -455,6 +466,20 @@ class ApkBuilderApp:
             self.version_var.set(version_name)
             self.build_number_var.set(build_number or "")
             self.log(f"Version rechargée depuis pubspec.yaml : {version_name}+{build_number}")
+
+    def _on_fill_today(self):
+        # Inclut l'heure et la minute (pas juste la date) : deux builds le
+        # même jour obtiennent des numéros différents, ce qui compte pour
+        # que l'appli détecte correctement laquelle est la plus récente
+        # (UpdateService compare ce numéro de version, pas le numéro de
+        # build) et pour que la release GitHub associée (tag "v<version>")
+        # ne rentre pas en conflit avec celle du build précédent.
+        now = datetime.datetime.now()
+        version_name = f"1.{now.year}.{now.month:02d}{now.day:02d}{now.hour:02d}{now.minute:02d}"
+        build_number = now.strftime("%Y%m%d%H%M")
+        self.version_var.set(version_name)
+        self.build_number_var.set(build_number)
+        self.log(f"Version pré-remplie avec la date/heure actuelles : {version_name}+{build_number}")
 
     def _start_build(self):
         if not self.project_dir:
