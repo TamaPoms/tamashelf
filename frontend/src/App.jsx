@@ -2268,17 +2268,32 @@ function KavitaBrowser({ onOpenChapter, show }) {
         </div>
         {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
           <div className="vg">
-            {volumes.flatMap(v => (v.chapters || []).map(c => (
-              <div
-                key={c.id}
-                className="vc"
-                onClick={() => onOpenChapter(sel.id, sel.name, c.id, c.pages, 0)}
-                title={c.title || `Chapitre ${c.number}`}
-              >
-                <div className="vcph" style={{ display: "flex" }}>{v.number > 0 ? `T${v.number}` : "Ch."} {c.number}</div>
-                <div className="vn">{v.number > 0 ? `Volume ${v.number} — Ch. ${c.number}` : `Chapitre ${c.number}`}</div>
-              </div>
-            )))}
+            {volumes.flatMap(v => (v.chapters || []).map(c => {
+              // Kavita utilise le nombre sentinelle -100000 pour "pas de
+              // numéro de chapitre applicable" (volume à chapitre unique) --
+              // l'afficher tel quel donnerait "Ch. -100000".
+              const noChapNum = String(c.number) === "-100000";
+              return (
+                <div
+                  key={c.id}
+                  className="vc"
+                  onClick={async () => {
+                    // Déclenche la mise en cache des pages côté Kavita avant
+                    // de demander les images -- sans cet appel préalable, la
+                    // première lecture d'un chapitre renvoie des pages
+                    // vides/noires.
+                    try {
+                      const info = await api.kavitaChapterInfo(c.id);
+                      onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0);
+                    } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+                  }}
+                  title={c.title || (noChapNum ? `Volume ${v.number}` : `Chapitre ${c.number}`)}
+                >
+                  <div className="vcph" style={{ display: "flex" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
+                  <div className="vn">{v.number > 0 ? (noChapNum ? `Volume ${v.number}` : `Volume ${v.number} — Ch. ${c.number}`) : (noChapNum ? (c.title || "Chapitre") : `Chapitre ${c.number}`)}</div>
+                </div>
+              );
+            }))}
             {!loadingVolumes && volumes.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun volume/chapitre.</p>}
           </div>
         )}
