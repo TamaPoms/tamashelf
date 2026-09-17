@@ -2196,6 +2196,7 @@ function AppAndroidView() {
 // -- volontairement une source à part pour cette première version.
 function KavitaBrowser({ onOpenChapter, show }) {
   const [available, setAvailable] = useState(null); // null = vérification en cours
+  const [errMsg, setErrMsg] = useState(null);
   const [libraries, setLibraries] = useState([]);
   const [libId, setLibId] = useState(null);
   const [seriesList, setSeriesList] = useState([]);
@@ -2209,13 +2210,15 @@ function KavitaBrowser({ onOpenChapter, show }) {
       try {
         const h = await api.kavitaHealth();
         setAvailable(h.available);
+        setErrMsg(h.error || null);
         if (h.available) {
           const libs = await api.kavitaLibraries();
           setLibraries(libs);
           if (libs.length) setLibId(libs[0].id);
         }
-      } catch {
+      } catch (e) {
         setAvailable(false);
+        setErrMsg(e.message || null);
       }
     })();
   }, []);
@@ -2249,8 +2252,10 @@ function KavitaBrowser({ onOpenChapter, show }) {
   if (available === false) return (
     <div className="empty">
       <div className="ei">🌐</div>
-      <p>Aucun serveur Kavita configuré.</p>
-      <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>
+      <p>{errMsg ? "Connexion au serveur Kavita impossible." : "Aucun serveur Kavita configuré."}</p>
+      {errMsg
+        ? <p style={{ fontSize: 11, color: "var(--t3)" }}>{errMsg}</p>
+        : <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>}
     </div>
   );
 
