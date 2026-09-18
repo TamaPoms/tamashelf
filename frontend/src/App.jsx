@@ -2223,6 +2223,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [reviewQueue, setReviewQueue] = useState([]); // suggestions du matching auto sans correspondance exacte, à valider/refuser une par une
   const [reviewIndex, setReviewIndex] = useState(0);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [showMatchAll, setShowMatchAll] = useState(false); // fenêtre "Match" : toutes les séries, recherche manuelle par ligne
+  const [matchingSeriesId, setMatchingSeriesId] = useState(null); // ligne dont le panneau de recherche est ouvert dans cette fenêtre
 
   const refreshMatchesMap = useCallback(() => {
     api.kavitaMatches().then(setMatchesMap).catch(() => {});
@@ -2257,6 +2259,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     setMatchStatusFilter(null);
     setTagFilters({});
     setShowTagPanel(false);
+    setShowMatchAll(false);
+    setMatchingSeriesId(null);
     api.kavitaSeries(libId)
       .then(list => { if (!cancelled) setSeriesList(list); })
       .catch(e => show(e.message))
@@ -2280,16 +2284,15 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     setAutoMatching(false);
   };
 
-  // Revue des suggestions du matching auto : une série + un candidat à la
-  // fois, Valider/Refuser avance à la suivante, Annuler vide toute la file.
-  const reviewAccept = async () => {
+  // Revue des suggestions du matching auto : une série + ses candidats à la
+  // fois (plusieurs si l'auto-match en a trouvé plusieurs), on choisit celui
+  // qui correspond -- ou aucun (Refuser) -- puis on avance. Annuler vide
+  // toute la file.
+  const reviewAccept = async (url) => {
     const item = reviewQueue[reviewIndex];
     if (!item) return;
     setReviewBusy(true);
-    try {
-      await api.kavitaSaveMatch(item.series_id, item.candidate_url);
-      refreshMatchesMap();
-    } catch (e) { show(`❌ ${e.message}`); }
+    await saveMatchFor(item.series_id, url);
     setReviewBusy(false);
     const next = reviewIndex + 1;
     setReviewIndex(next);
@@ -2355,25 +2358,44 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     setMatchSearching(false);
   };
 
-  const saveMatch = async (url) => {
-    if (!sel || !url) return;
+  // Save "brut", sans dépendre de sel/rafraîchir la fiche détail -- utilisé
+  // par la revue du matching auto et le "Match" en masse, qui agissent sur
+  // n'importe quelle série de la liste, pas forcément celle ouverte (sel).
+  const saveMatchFor = async (seriesId, url) => {
+    if (!seriesId || !url) return false;
     try {
-      await api.kavitaSaveMatch(sel.id, url);
-      show("✅ Associé");
-      await loadMatchFor(sel);
+      await api.kavitaSaveMatch(seriesId, url);
       refreshMatchesMap();
-    } catch (e) { show(`❌ ${e.message}`); }
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
+  };
+
+  const saveMatch = async (url) => {
+    if (!sel) return;
+    const ok = await saveMatchFor(sel.id, url);
+    if (ok) { show("✅ Associé"); await loadMatchFor(sel); }
+  };
+
+  const unmatchFor = async (seriesId) => {
+    if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return false;
+    try {
+      await api.kavitaDeleteMatch(seriesId);
+      refreshMatchesMap();
+      show("Dissocié");
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
   };
 
   const unmatch = async () => {
     if (!sel) return;
-    if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return;
-    try {
-      await api.kavitaDeleteMatch(sel.id);
-      refreshMatchesMap();
-      show("Dissocié");
-      await loadMatchFor(sel);
-    } catch (e) { show(`❌ ${e.message}`); }
+    if (await unmatchFor(sel.id)) await loadMatchFor(sel);
+  };
+
+  // Utilisé par la fenêtre "Match" en masse : sélectionner un candidat pour
+  // la ligne en cours de recherche referme son panneau une fois enregistré.
+  const bulkPickMatch = async (seriesId, url) => {
+    const ok = await saveMatchFor(seriesId, url);
+    if (ok) { setMatchingSeriesId(null); show("✅ Associé"); }
   };
 
   if (available === null) return <div className="empty"><p>Chargement…</p></div>;
@@ -2528,6 +2550,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
             {autoMatching ? "…" : "🪄 Matching auto"}
           </button>
         )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={() => setShowMatchAll(true)}>🔍 Match</button>
+        )}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         <input
@@ -2624,40 +2649,103 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       }
       {reviewQueue.length > 0 && reviewIndex < reviewQueue.length && (() => {
         const item = reviewQueue[reviewIndex];
-        let nautCov = item.candidate_cover || "";
-        if (nautCov) nautCov = nautiljonMiniUrl(nautCov);
+        const candidates = item.candidates || [];
         return (
           <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
-            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 460, width: "90%" }}>
-              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
-              <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-start" }}>
-                <div style={{ flex: 1, textAlign: "center" }}>
-                  <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", position: "relative" }}>
-                    <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
-                    <div style={{ display: "none", width: "100%", height: "100%", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
-                  </div>
-                  <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Série Kavita</div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
-                </div>
-                <div style={{ fontSize: 20, color: "var(--t3)", marginTop: 50 }}>→</div>
-                <div style={{ flex: 1, textAlign: "center" }}>
-                  <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", position: "relative" }}>
-                    {nautCov && <img src={nautCov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
-                    <div style={{ display: nautCov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
-                  </div>
-                  <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Suggestion Nautiljon</div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.candidate_title}</div>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 520, width: "90%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 4 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 36, height: 50, objectFit: "cover", borderRadius: 4, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} />
+                <div>
+                  <div style={{ fontSize: 10, color: "var(--t3)" }}>Série Kavita</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
                 </div>
               </div>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 8 }}>
+                {candidates.length > 1 ? `${candidates.length} suggestions Nautiljon -- choisis celle qui correspond :` : "Suggestion Nautiljon :"}
+              </div>
+              <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+                {candidates.map((c, i) => {
+                  let cov = c.cover || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", background: "var(--c2)", borderRadius: 6, cursor: reviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: reviewBusy ? .5 : 1 }} onClick={() => !reviewBusy && reviewAccept(c.url)}>
+                      <div style={{ width: 40, height: 56, flexShrink: 0, position: "relative" }}>
+                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 4, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 4, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 16 }}>📖</div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600 }}>{c.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-p" style={{ flex: 1 }} onClick={reviewAccept} disabled={reviewBusy}>✅ Valider</button>
-                <button className="btn btn-s" style={{ flex: 1 }} onClick={reviewReject} disabled={reviewBusy}>❌ Refuser</button>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={reviewReject} disabled={reviewBusy}>❌ Aucun ne correspond</button>
                 <button className="btn btn-s" onClick={reviewCancel} disabled={reviewBusy}>🛑 Annuler</button>
               </div>
             </div>
           </div>
         );
       })()}
+      {showMatchAll && (
+        <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) { setShowMatchAll(false); setMatchingSeriesId(null); } }}>
+          <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 640, width: "92%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>Matcher les séries</span>
+              <button className="ib" style={{ marginLeft: "auto" }} onClick={() => { setShowMatchAll(false); setMatchingSeriesId(null); }}>✕</button>
+            </div>
+            <input style={{ fontSize: 12, padding: "5px 8px", marginBottom: 10 }} value={seriesSearch} onChange={e => setSeriesSearch(e.target.value)} placeholder="Filtrer par titre…" />
+            <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+              {seriesList
+                .filter(s => !seriesSearch.trim() || String(s.name || "").toLowerCase().includes(seriesSearch.trim().toLowerCase()))
+                .map(s => {
+                  const matched = !!matchesMap[s.id];
+                  const open = matchingSeriesId === s.id;
+                  return (
+                    <div key={s.id} style={{ border: "1px solid var(--brd)", borderRadius: 6, overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", background: "var(--c2)" }}>
+                        <img src={api.kavitaCoverUrl(s.id)} alt="" style={{ width: 30, height: 42, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                          <div style={{ fontSize: 10, color: matched ? "#4caf50" : "var(--t3)" }}>{matched ? "✓ Associé" : "Non associé"}</div>
+                        </div>
+                        <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => {
+                          if (open) { setMatchingSeriesId(null); return; }
+                          setMatchingSeriesId(s.id); setMatchQuery(s.name || ""); setMatchResults([]); setMatchDirectUrl("");
+                        }}>{matched ? "🔁 Changer" : "🔍 Matcher"}</button>
+                        {matched && <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => unmatchFor(s.id)}>✕</button>}
+                      </div>
+                      {open && (
+                        <div style={{ padding: 8 }}>
+                          <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                            <input style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+                            <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+                          </div>
+                          <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                            <input style={{ flex: 1, fontSize: 10, padding: "4px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && matchDirectUrl.trim() && bulkPickMatch(s.id, matchDirectUrl.trim())} />
+                            <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => bulkPickMatch(s.id, matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗</button>
+                          </div>
+                          {matchResults.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+                            {matchResults.map((r, i) => {
+                              let cov = r.cover_url || r.image_url || "";
+                              if (cov) cov = nautiljonMiniUrl(cov);
+                              return (
+                                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", background: "var(--c1)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => bulkPickMatch(s.id, r.url)}>
+                                  {cov && <img src={cov} alt="" style={{ width: 26, height: 36, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                                  <span style={{ fontSize: 11, color: "var(--t1)" }}>{r.title}</span>
+                                </div>
+                              );
+                            })}
+                          </div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

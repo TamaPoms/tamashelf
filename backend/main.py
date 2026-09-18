@@ -1850,14 +1850,18 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
             auto_matched += 1
         else:
             not_found += 1
-            best = results[0] if results else None
-            if best and best.get("url"):
+            if results:
                 suggestions.append({
                     "series_id": sid,
                     "series_name": name,
-                    "candidate_title": best.get("title") or "",
-                    "candidate_url": best.get("url"),
-                    "candidate_cover": best.get("cover_url") or best.get("image_url") or "",
+                    "candidates": [
+                        {
+                            "title": r.get("title") or "",
+                            "url": r.get("url"),
+                            "cover": r.get("cover_url") or r.get("image_url") or "",
+                        }
+                        for r in results[:6] if r.get("url")
+                    ],
                 })
     return {"auto_matched": auto_matched, "not_found": not_found, "suggestions": suggestions}
 
