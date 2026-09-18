@@ -13,6 +13,18 @@ function isCbzLikePath(path) {
   return /\.(cbz|cbr|zip)$/i.test(String(path || '').trim());
 }
 
+// Cover d'un item de progression de lecture : les entrées Kavita utilisent
+// un manga_url synthétique "kavita:series:<id>" (voir openKavitaChapter) qui
+// ne correspond à aucun dossier CBZ local -- il faut passer par la cover
+// Kavita plutôt que par folder-cover.
+function progressCoverUrl(mangaUrl) {
+  const s = String(mangaUrl || '');
+  if (s.startsWith('kavita:series:')) {
+    return api.kavitaCoverUrl(s.slice('kavita:series:'.length));
+  }
+  return api.cbzFolderCoverUrl(s);
+}
+
 // Lien "Télécharger l'appli Android" : public -- utilisable sur l'écran de connexion,
 // avant même d'avoir un compte.
 function ApkDownloadLink({ compact = false }) {
@@ -28,7 +40,7 @@ function ApkDownloadLink({ compact = false }) {
 }
 
 function ReadingPreview({ progressItem, size = 60, radius = 8 }) {
-  const coverSrc = api.cbzFolderCoverUrl(progressItem?.manga_url || progressItem?.mangaUrl || '');
+  const coverSrc = progressCoverUrl(progressItem?.manga_url || progressItem?.mangaUrl || '');
   const volumeId = String(progressItem?.volume_id || progressItem?.volumeId || '');
   const canPreview = isCbzLikePath(volumeId);
   const thumbs = canPreview ? [0, 1, 2].map(i => api.cbzPageThumbUrl(volumeId, i)) : [];
@@ -3489,7 +3501,7 @@ function HomepageView({ onOpenManga, onResumeReading, allMangas, show }) {
             return (
               <div key={`${p.manga_url}__${p.volume_id}`} onClick={() => onResumeReading(p)} style={{ minWidth: 100, maxWidth: 100, cursor: "pointer", flexShrink: 0 }}>
                 <div style={{ position: "relative", width: 100, height: 142, borderRadius: "var(--r)", overflow: "hidden", background: "var(--c2)", border: "1px solid var(--brd)" }}>
-                  <img src={api.cbzFolderCoverUrl(p.manga_url)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
+                  <img src={progressCoverUrl(p.manga_url)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
                   <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4, background: "var(--brd)" }}>
                     <div style={{ width: pct + "%", height: "100%", background: "var(--ac)" }} />
                   </div>
