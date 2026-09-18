@@ -102,6 +102,13 @@ def _image_url(chemin_relatif) -> str:
     chemin = (chemin_relatif or "").strip()
     if not chemin:
         return ""
+    # Certaines entrées anciennes de la base ont une URL nautiljon.com absolue au lieu
+    # d'un chemin relatif (résidu d'un scraping antérieur à app.py) -- la faire passer
+    # par IMAGE_ROUTE_PREFIX donnerait une URL absurde (proxy vers un "chemin" qui est en
+    # fait une URL complète) plutôt qu'un simple 404. On la sert donc telle quelle : le
+    # navigateur ira la chercher directement chez nautiljon.com.
+    if chemin.startswith("http://") or chemin.startswith("https://"):
+        return chemin
     if not chemin.startswith("/"):
         chemin = "/" + chemin
     return f"{IMAGE_ROUTE_PREFIX}{chemin}"
