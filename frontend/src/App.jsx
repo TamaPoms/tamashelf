@@ -2223,6 +2223,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [reviewQueue, setReviewQueue] = useState([]); // suggestions du matching auto sans correspondance exacte, à valider/refuser une par une
   const [reviewIndex, setReviewIndex] = useState(0);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewCoverRetry, setReviewCoverRetry] = useState(0); // incrémenté pour forcer un rechargement de la cover Kavita (proxy Kavita parfois en 502 passager)
   const [showMatchAll, setShowMatchAll] = useState(false); // fenêtre "Match" : toutes les séries, recherche manuelle par ligne
   const [matchingSeriesId, setMatchingSeriesId] = useState(null); // ligne dont le panneau de recherche est ouvert dans cette fenêtre
 
@@ -2267,6 +2268,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       .finally(() => { if (!cancelled) setLoadingSeries(false); });
     return () => { cancelled = true; };
   }, [libId]);
+
+  useEffect(() => { setReviewCoverRetry(0); }, [reviewIndex]);
 
   const runAutoMatch = async () => {
     if (libId == null) return;
@@ -2655,7 +2658,13 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
             <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
               <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
-                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 130, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                <div style={{ width: 130, aspectRatio: "2/3", position: "relative", flexShrink: 0 }}>
+                  <img key={reviewCoverRetry} src={`${api.kavitaCoverUrl(item.series_id)}&_r=${reviewCoverRetry}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                  <div style={{ display: "none", position: "absolute", inset: 0, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", fontSize: 28 }}>
+                    📖
+                    <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => setReviewCoverRetry(n => n + 1)}>🔄 Actualiser</button>
+                  </div>
+                </div>
                 <div>
                   <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Kavita</div>
                   <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
