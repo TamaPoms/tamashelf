@@ -1750,6 +1750,53 @@ async def kavita_delete_match(series_id: int, admin=Depends(require_admin)):
         db.commit()
     return {"ok": True}
 
+@app.get("/api/kavita/matches")
+async def kavita_list_matches(user=Depends(get_current_user)):
+    """Tous les matchs persistés {kavita_series_id: nautiljon_url}, pour afficher un
+    badge sur les cartes de la grille de séries sans faire un appel par série."""
+    with get_db_ctx() as db:
+        rows = db.execute("SELECT kavita_series_id, nautiljon_url FROM kavita_matches").fetchall()
+    return {str(r["kavita_series_id"]): r["nautiljon_url"] for r in rows}
+
+@app.post("/api/kavita/auto-match/{library_id}")
+async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
+    """Matching auto pour une bibliothèque Kavita : uniquement les correspondances
+    exactes (titre normalisé identique, voir _normalize_match_key -- insensible à la
+    casse/aux accents mais rien d'approximatif), contrairement au matching auto CBZ qui
+    tente aussi des variantes de requête. Les séries déjà matchées sont laissées
+    intactes ; pas de résultat exact -> ignorée (reste à faire manuellement)."""
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+        already = {r["kavita_series_id"] for r in db.execute("SELECT kavita_series_id FROM kavita_matches").fetchall()}
+    if not nautiljon_db.is_available():
+        return {"error": f"Base Nautiljon injoignable via {nautiljon_db.APP_PY_URL}"}
+    try:
+        series_list = await client.series_in_library(library_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+    auto_matched = 0
+    not_found = 0
+    for s in series_list:
+        sid = s.get("id")
+        name = (s.get("name") or "").strip()
+        if not sid or sid in already or not name:
+            continue
+        key = _normalize_match_key(name)
+        results = nautiljon_db.search_local(name, limit=8, offset=0).get("results") or []
+        exact = next((r for r in results if _normalize_match_key(r.get("title") or "") == key), None)
+        if exact and exact.get("url"):
+            with get_db_ctx() as db:
+                db.execute(
+                    "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, created_at) VALUES (?, ?, ?, ?)",
+                    (sid, exact["url"], admin["username"], time.time())
+                )
+                db.commit()
+            auto_matched += 1
+        else:
+            not_found += 1
+    return {"auto_matched": auto_matched, "not_found": not_found}
+
 
 @app.get("/api/library")
 async def get_library(

@@ -2214,6 +2214,12 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [matchSearching, setMatchSearching] = useState(false);
   const [matchDirectUrl, setMatchDirectUrl] = useState("");
   const [alphaFilter, setAlphaFilter] = useState(null);
+  const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: nautiljon_url}, pour les badges de la grille
+  const [autoMatching, setAutoMatching] = useState(false);
+
+  const refreshMatchesMap = useCallback(() => {
+    api.kavitaMatches().then(setMatchesMap).catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -2225,13 +2231,14 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
           const libs = await api.kavitaLibraries();
           setLibraries(libs);
           if (libs.length) setLibId(libs[0].id);
+          refreshMatchesMap();
         }
       } catch (e) {
         setAvailable(false);
         setErrMsg(e.message || null);
       }
     })();
-  }, []);
+  }, [refreshMatchesMap]);
 
   useEffect(() => {
     if (libId == null) return;
@@ -2245,6 +2252,18 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       .finally(() => { if (!cancelled) setLoadingSeries(false); });
     return () => { cancelled = true; };
   }, [libId]);
+
+  const runAutoMatch = async () => {
+    if (libId == null) return;
+    setAutoMatching(true);
+    try {
+      const r = await api.kavitaAutoMatch(libId);
+      if (r.error) { show(`❌ ${r.error}`); return; }
+      show(`✅ ${r.auto_matched} associée(s), ${r.not_found} sans correspondance exacte`);
+      refreshMatchesMap();
+    } catch (e) { show(`❌ ${e.message}`); }
+    setAutoMatching(false);
+  };
 
   // Matching Nautiljon persisté par série Kavita (table kavita_matches,
   // séparée de `matches`/`manga_library` -- voir backend) : contrairement à
@@ -2305,6 +2324,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       await api.kavitaSaveMatch(sel.id, url);
       show("✅ Associé");
       await loadMatchFor(sel);
+      refreshMatchesMap();
     } catch (e) { show(`❌ ${e.message}`); }
   };
 
@@ -2313,6 +2333,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return;
     try {
       await api.kavitaDeleteMatch(sel.id);
+      refreshMatchesMap();
       show("Dissocié");
       await loadMatchFor(sel);
     } catch (e) { show(`❌ ${e.message}`); }
@@ -2453,13 +2474,16 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
 
   return (
     <>
-      {libraries.length > 1 && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-          {libraries.map(l => (
-            <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {libraries.length > 1 && libraries.map(l => (
+          <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
+        ))}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" style={{ marginLeft: "auto" }} onClick={runAutoMatch} disabled={autoMatching}>
+            {autoMatching ? "…" : "🪄 Matching auto"}
+          </button>
+        )}
+      </div>
       {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
         seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
         (() => {
@@ -2481,6 +2505,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
               <div className="mg" style={{ flex: 1 }}>
                 {filtered.map(s => (
                   <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+                    {matchesMap[s.id] && <div className="mc-match" title="Associé à Nautiljon"><span className="badge bg">✓</span></div>}
                     <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
                     <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
                   </div>

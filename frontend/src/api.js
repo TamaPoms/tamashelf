@@ -198,6 +198,8 @@ export const api = {
   kavitaGetMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`),
   kavitaSaveMatch: (seriesId, nautiljonUrl) => request(`/kavita/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
   kavitaDeleteMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
+  kavitaMatches: () => request(`/kavita/matches`),
+  kavitaAutoMatch: (libraryId) => request(`/kavita/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
 
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),
