@@ -1062,67 +1062,83 @@ class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
       ),
       body: _busy
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  SizedBox(
-                    width: 70, height: 100,
-                    child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('rev_${item.seriesId}'), seriesId: item.seriesId)),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
+          // CustomScrollView + SliverGrid plutôt qu'un GridView shrinkWrap :
+          // les suggestions ne sont plus plafonnées (voir autoMatch dans
+          // nautiljon_service.dart, le bon résultat était parfois hors du
+          // top 6), donc potentiellement plusieurs dizaines de candidats --
+          // autant rester sur une grille "paresseuse" par principe (même
+          // remarque que _buildBrowser dans KavitaScreen).
+          : CustomScrollView(
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  sliver: SliverToBoxAdapter(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(item.seriesName, style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
-                      const SizedBox(height: 4),
-                      Text('Série Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
-                      const SizedBox(height: 10),
-                      Text('Choisis la bonne fiche Nautiljon ci-dessous, ou refuse.', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        SizedBox(
+                          width: 70, height: 100,
+                          child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('rev_${item.seriesId}'), seriesId: item.seriesId)),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(item.seriesName, style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
+                            const SizedBox(height: 4),
+                            Text('Série Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                            const SizedBox(height: 10),
+                            Text('Choisis la bonne fiche Nautiljon ci-dessous (${item.candidates.length}), ou refuse.', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                          ]),
+                        ),
+                      ]),
+                      const SizedBox(height: 14),
                     ]),
                   ),
-                ]),
-                const SizedBox(height: 14),
-                // Candidats limités à 6 (voir kavita_auto_match) -- une
-                // grille shrinkWrap est donc sans risque ici, contrairement
-                // à la liste des séries qui peut en compter des milliers.
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 130, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
-                  itemCount: item.candidates.length,
-                  itemBuilder: (ctx, i) {
-                    final c = item.candidates[i];
-                    return GestureDetector(
-                      onTap: () => _accept(c),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Expanded(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Container(
-                              color: AppTheme.c2,
-                              child: c.cover.isEmpty
-                                  ? Center(child: Icon(Icons.book, color: AppTheme.t3))
-                                  : Image.network(c.cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => Center(child: Icon(Icons.book, color: AppTheme.t3))),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(c.title, style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
-                      ]),
-                    );
-                  },
                 ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: _reject,
-                    style: OutlinedButton.styleFrom(foregroundColor: AppTheme.ros, side: BorderSide(color: AppTheme.ros)),
-                    child: const Text('Refuser'),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  sliver: SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 130, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
+                    delegate: SliverChildBuilderDelegate(
+                      (ctx, i) {
+                        final c = item.candidates[i];
+                        return GestureDetector(
+                          onTap: () => _accept(c),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Expanded(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  color: AppTheme.c2,
+                                  child: c.cover.isEmpty
+                                      ? Center(child: Icon(Icons.book, color: AppTheme.t3))
+                                      : Image.network(c.cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => Center(child: Icon(Icons.book, color: AppTheme.t3))),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(c.title, style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          ]),
+                        );
+                      },
+                      childCount: item.candidates.length,
+                    ),
                   ),
                 ),
-              ]),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  sliver: SliverToBoxAdapter(
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: _reject,
+                        style: OutlinedButton.styleFrom(foregroundColor: AppTheme.ros, side: BorderSide(color: AppTheme.ros)),
+                        child: const Text('Refuser'),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
     );
   }

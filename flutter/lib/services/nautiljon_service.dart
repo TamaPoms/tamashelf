@@ -279,7 +279,7 @@ class NautiljonService {
     };
   }
 
-  Future<List<Map<String, dynamic>>> search(String query, {int limit = 24, int offset = 0}) async {
+  Future<List<Map<String, dynamic>>> search(String query, {int limit = 40, int offset = 0}) async {
     final data = await _get('/api/recherche', {'q': query, 'limit': '$limit', 'offset': '$offset'});
     if (data == null) return [];
     final rows = (data['rows'] as List? ?? []).map((r) => Map<String, dynamic>.from(r as Map));
@@ -365,7 +365,10 @@ class NautiljonService {
       final results = <Map<String, dynamic>>[];
       final seen = <String>{};
       for (final titre in titres) {
-        final rs = await search(titre, limit: 8);
+        // limit généreux : côté tamajon les résultats ne sont pas toujours
+        // triés par pertinence, le bon match peut être loin dans la liste
+        // (voir aussi le retrait du plafond sur les suggestions ci-dessous).
+        final rs = await search(titre, limit: 40);
         for (final r in rs) {
           final u = (r['url'] ?? '').toString().trim();
           if (u.isNotEmpty && !seen.contains(u)) {
@@ -396,7 +399,7 @@ class NautiljonService {
           result.suggestions.add(KavitaMatchSuggestion(
             seriesId: sid,
             seriesName: name,
-            candidates: results.take(6).where((r) => (r['url'] ?? '').toString().isNotEmpty).map((r) => KavitaMatchCandidate(
+            candidates: results.where((r) => (r['url'] ?? '').toString().isNotEmpty).map((r) => KavitaMatchCandidate(
                   title: (r['title'] ?? '').toString(),
                   url: (r['url'] ?? '').toString(),
                   cover: (r['cover_url'] ?? '').toString(),
