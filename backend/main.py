@@ -303,6 +303,13 @@ def init_db():
         created_at REAL NOT NULL DEFAULT (unixepoch())
     );
 
+    CREATE TABLE IF NOT EXISTS kavita_matches (
+        kavita_series_id INTEGER PRIMARY KEY,
+        nautiljon_url TEXT NOT NULL,
+        matched_by TEXT,
+        created_at REAL NOT NULL DEFAULT (unixepoch())
+    );
+
     CREATE TABLE IF NOT EXISTS manga_cache (
         url TEXT PRIMARY KEY,
         title TEXT,
@@ -1717,6 +1724,31 @@ async def kavita_read_page(chapter_id: int, page: int = Query(0, ge=0), user=Dep
     except KavitaError as e:
         raise HTTPException(502, str(e))
     return Response(content=content, media_type=content_type)
+
+@app.get("/api/kavita/match/{series_id}")
+async def kavita_get_match(series_id: int, user=Depends(get_current_user)):
+    """Match Nautiljon persisté pour une série Kavita (voir kavita_matches --
+    séparé de `matches`/`manga_library` qui sont spécifiques aux CBZ locaux)."""
+    with get_db_ctx() as db:
+        row = db.execute("SELECT nautiljon_url FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+    return {"matched": bool(row), "nautiljon_url": row["nautiljon_url"] if row else None}
+
+@app.post("/api/kavita/match/{series_id}")
+async def kavita_save_match(series_id: int, nautiljon_url: str, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, created_at) VALUES (?, ?, ?, ?)",
+            (series_id, nautiljon_url, admin["username"], time.time())
+        )
+        db.commit()
+    return {"ok": True}
+
+@app.delete("/api/kavita/match/{series_id}")
+async def kavita_delete_match(series_id: int, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        db.execute("DELETE FROM kavita_matches WHERE kavita_series_id = ?", (series_id,))
+        db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/library")

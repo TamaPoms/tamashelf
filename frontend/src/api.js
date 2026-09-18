@@ -195,6 +195,9 @@ export const api = {
     const token = getToken();
     return `/api/kavita/read/${encodeURIComponent(chapterId)}?page=${page}&token=${encodeURIComponent(token)}`;
   },
+  kavitaGetMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`),
+  kavitaSaveMatch: (seriesId, nautiljonUrl) => request(`/kavita/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
+  kavitaDeleteMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
 
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),

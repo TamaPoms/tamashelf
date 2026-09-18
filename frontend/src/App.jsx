@@ -1217,7 +1217,7 @@ function MainApp({ session, doLogout, show, toast }) {
           {nav === "app-android" && <AppAndroidView />}
 
           {/* ══ KAVITA (serveur externe) ══ */}
-          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} />}
+          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} isAdmin={isAdmin} />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -2195,7 +2195,7 @@ function AppAndroidView() {
 // onOpenChapter (voir App.openKavitaChapter). Lecture seule : aucune
 // tentative de fusion avec les mangas CBZ locaux ou leur matching Nautiljon
 // -- volontairement une source à part pour cette première version.
-function KavitaBrowser({ onOpenChapter, show }) {
+function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [available, setAvailable] = useState(null); // null = vérification en cours
   const [errMsg, setErrMsg] = useState(null);
   const [libraries, setLibraries] = useState([]);
@@ -2205,8 +2205,14 @@ function KavitaBrowser({ onOpenChapter, show }) {
   const [sel, setSel] = useState(null); // série sélectionnée (SeriesDto Kavita)
   const [volumes, setVolumes] = useState([]);
   const [loadingVolumes, setLoadingVolumes] = useState(false);
-  const [nautMatch, setNautMatch] = useState(null); // fiche Nautiljon trouvée pour sel.name (simple recherche, pas de matching persistant)
+  const [nautMatch, setNautMatch] = useState(null); // fiche Nautiljon complète du match persisté (kavita_matches, voir backend)
   const [loadingNaut, setLoadingNaut] = useState(false);
+  const [suggested, setSuggested] = useState(null); // résultat de recherche auto, à valider avant de persister
+  const [showMatchSearch, setShowMatchSearch] = useState(false);
+  const [matchQuery, setMatchQuery] = useState("");
+  const [matchResults, setMatchResults] = useState([]);
+  const [matchSearching, setMatchSearching] = useState(false);
+  const [matchDirectUrl, setMatchDirectUrl] = useState("");
   const [alphaFilter, setAlphaFilter] = useState(null);
 
   useEffect(() => {
@@ -2240,11 +2246,15 @@ function KavitaBrowser({ onOpenChapter, show }) {
     return () => { cancelled = true; };
   }, [libId]);
 
+  // Matching Nautiljon persisté par série Kavita (table kavita_matches,
+  // séparée de `matches`/`manga_library` -- voir backend) : contrairement à
+  // la 1re version qui refaisait une recherche à chaque ouverture (peu
+  // fiable, jamais enregistrée), on lit/écrit maintenant un vrai match.
   const openSeries = async (series) => {
     setSel(series);
     setVolumes([]);
     setLoadingVolumes(true);
-    setNautMatch(null);
+    setMatchQuery(series.name || "");
     try {
       setVolumes(await api.kavitaVolumes(series.id));
     } catch (e) {
@@ -2252,17 +2262,60 @@ function KavitaBrowser({ onOpenChapter, show }) {
     } finally {
       setLoadingVolumes(false);
     }
-    // Simple recherche Nautiljon par titre pour afficher synopsis/infos --
-    // aucune persistance, aucun lien avec le système de matching CBZ (voir
-    // le commentaire en tête de KavitaBrowser). Échec silencieux : cette
-    // fiche est un bonus, pas un pré-requis pour lire.
+    await loadMatchFor(series);
+  };
+
+  // Prend `series` en paramètre plutôt que de lire `sel` (state) : au
+  // premier appel depuis openSeries(), sel n'est pas encore à jour au
+  // moment où cette closure est créée.
+  const loadMatchFor = async (series) => {
     setLoadingNaut(true);
+    setNautMatch(null);
+    setSuggested(null);
+    setShowMatchSearch(false);
+    setMatchResults([]);
     try {
-      const r = await api.nautiljonSearch(series.name, 1);
-      const best = (r.results || r.rows || [])[0];
-      if (best?.url) setNautMatch(await api.nautiljonManga(best.url));
-    } catch { /* pas grave, pas de fiche affichée */ }
+      const m = await api.kavitaGetMatch(series.id);
+      if (m.matched && m.nautiljon_url) {
+        setNautMatch(await api.nautiljonManga(m.nautiljon_url));
+      } else if (isAdmin) {
+        try {
+          const r = await api.nautiljonSearch(series.name || "", 1);
+          const best = (r.results || r.rows || [])[0];
+          if (best?.url) setSuggested(best); else setShowMatchSearch(true);
+        } catch { setShowMatchSearch(true); }
+      }
+    } catch { /* pas de fiche affichée */ }
     setLoadingNaut(false);
+  };
+
+  const doMatchSearch = async () => {
+    if (!matchQuery.trim()) return;
+    setMatchSearching(true);
+    try {
+      const r = await api.nautiljonSearch(matchQuery.trim(), 12);
+      setMatchResults(r.results || r.rows || []);
+    } catch (e) { show(e.message); }
+    setMatchSearching(false);
+  };
+
+  const saveMatch = async (url) => {
+    if (!sel || !url) return;
+    try {
+      await api.kavitaSaveMatch(sel.id, url);
+      show("✅ Associé");
+      await loadMatchFor(sel);
+    } catch (e) { show(`❌ ${e.message}`); }
+  };
+
+  const unmatch = async () => {
+    if (!sel) return;
+    if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return;
+    try {
+      await api.kavitaDeleteMatch(sel.id);
+      show("Dissocié");
+      await loadMatchFor(sel);
+    } catch (e) { show(`❌ ${e.message}`); }
   };
 
   if (available === null) return <div className="empty"><p>Chargement…</p></div>;
@@ -2284,19 +2337,59 @@ function KavitaBrowser({ onOpenChapter, show }) {
           <span className="sec-t" style={{ marginLeft: 8 }}>{sel.name}</span>
         </div>
         {loadingNaut && <p style={{ fontSize: 11, color: "var(--t3)", padding: "0 12px 8px" }}>Recherche Nautiljon…</p>}
+
         {nautMatch && (() => {
           let cov = nautMatch.cover_url || nautMatch.image_url || "";
           if (cov) cov = nautiljonMiniUrl(cov);
           return (
             <div style={{ display: "flex", gap: 12, padding: "0 12px 14px", alignItems: "flex-start" }}>
               {cov && <img src={cov} alt="" style={{ width: 70, height: 98, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>📚 {nautMatch.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span></div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", display: "flex", alignItems: "center", gap: 6 }}>
+                  📚 {nautMatch.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span>
+                  {isAdmin && <>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={() => setShowMatchSearch(v => !v)}>🔁 Changer</button>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={unmatch}>✕ Dissocier</button>
+                  </>}
+                </div>
                 {nautMatch.synopsis && <p style={{ fontSize: 11, color: "var(--t2)", marginTop: 4, display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{nautMatch.synopsis}</p>}
               </div>
             </div>
           );
         })()}
+
+        {!nautMatch && !loadingNaut && suggested && !showMatchSearch && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <span style={{ fontSize: 11, color: "var(--t2)", flex: 1 }}>Suggestion Nautiljon : <b style={{ color: "var(--t1)" }}>{suggested.title}</b></span>
+            <button className="btn btn-s btn-p" style={{ fontSize: 10 }} onClick={() => saveMatch(suggested.url)}>✅ Associer</button>
+            <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => { setSuggested(null); setShowMatchSearch(true); }}>Autre…</button>
+          </div>
+        )}
+
+        {isAdmin && !nautMatch && !loadingNaut && showMatchSearch && (
+          <div style={{ padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+              <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+            </div>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 10, padding: "4px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && saveMatch(matchDirectUrl.trim())} />
+              <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => saveMatch(matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗 Associer</button>
+            </div>
+            {matchResults.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
+              {matchResults.map((r, i) => {
+                let cov = r.cover_url || r.image_url || "";
+                if (cov) cov = nautiljonMiniUrl(cov);
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
+                    {cov && <img src={cov} alt="" style={{ width: 30, height: 42, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                    <span style={{ fontSize: 11, color: "var(--t1)" }}>{r.title}</span>
+                  </div>
+                );
+              })}
+            </div>}
+          </div>
+        )}
         {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
           <div className="vg vg-lg">
             {volumes.flatMap(v => (v.chapters || []).map(c => {
