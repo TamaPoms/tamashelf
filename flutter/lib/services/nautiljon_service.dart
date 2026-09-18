@@ -122,6 +122,29 @@ String stripEditionSuffix(String name) {
   return best > 0 ? n.substring(0, best).trim() : n;
 }
 
+// Trie une liste de résultats pour mettre en premier ceux dont le titre
+// commence par (ou contient) le titre de référence -- tamajon ne trie pas
+// forcément par pertinence, le bon résultat peut sinon se retrouver loin
+// dans la liste. Tri stable : au même rang, l'ordre d'origine est conservé.
+List<Map<String, dynamic>> sortByTitleMatch(List<Map<String, dynamic>> results, String referenceTitle) {
+  final ref = normalizeMatchKey(referenceTitle);
+  if (ref.isEmpty) return results;
+  int score(Map<String, dynamic> r) {
+    final t = normalizeMatchKey((r['title'] ?? '').toString());
+    if (t == ref) return 0;
+    if (t.startsWith(ref)) return 1;
+    if (ref.startsWith(t) && t.isNotEmpty) return 2;
+    if (t.contains(ref)) return 3;
+    return 4;
+  }
+  final indexed = results.asMap().entries.toList();
+  indexed.sort((a, b) {
+    final c = score(a.value).compareTo(score(b.value));
+    return c != 0 ? c : a.key.compareTo(b.key);
+  });
+  return indexed.map((e) => e.value).toList();
+}
+
 // ── Résultat de matching auto (une série sans correspondance exacte, mais
 // avec au moins un candidat à valider/refuser à la main) ──
 
@@ -377,6 +400,7 @@ class NautiljonService {
           }
         }
       }
+      final sortedResults = sortByTitleMatch(results, name);
 
       Map<String, dynamic>? exact;
       for (final r in results) {
@@ -395,11 +419,11 @@ class NautiljonService {
         result.autoMatched++;
       } else {
         result.notFound++;
-        if (results.isNotEmpty) {
+        if (sortedResults.isNotEmpty) {
           result.suggestions.add(KavitaMatchSuggestion(
             seriesId: sid,
             seriesName: name,
-            candidates: results.where((r) => (r['url'] ?? '').toString().isNotEmpty).map((r) => KavitaMatchCandidate(
+            candidates: sortedResults.where((r) => (r['url'] ?? '').toString().isNotEmpty).map((r) => KavitaMatchCandidate(
                   title: (r['title'] ?? '').toString(),
                   url: (r['url'] ?? '').toString(),
                   cover: (r['cover_url'] ?? '').toString(),

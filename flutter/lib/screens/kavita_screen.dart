@@ -699,10 +699,11 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   }
 
   Future<void> _search() async {
-    if (_searchCtrl.text.trim().isEmpty) return;
+    final q = _searchCtrl.text.trim();
+    if (q.isEmpty) return;
     setState(() => _searching = true);
-    final r = await context.read<AppState>().nautiljon.search(_searchCtrl.text.trim());
-    if (mounted) setState(() { _searchResults = r; _searching = false; });
+    final r = await context.read<AppState>().nautiljon.search(q);
+    if (mounted) setState(() { _searchResults = sortByTitleMatch(r, q); _searching = false; });
   }
 
   Future<void> _pick(Map<String, dynamic> r) async {
@@ -1178,10 +1179,11 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
   }
 
   Future<void> _search() async {
-    if (_ctrl.text.trim().isEmpty) return;
+    final q = _ctrl.text.trim();
+    if (q.isEmpty) return;
     setState(() => _searching = true);
-    final r = await context.read<AppState>().nautiljon.search(_ctrl.text.trim());
-    if (mounted) setState(() { _results = r; _searching = false; });
+    final r = await context.read<AppState>().nautiljon.search(q);
+    if (mounted) setState(() { _results = sortByTitleMatch(r, q); _searching = false; });
   }
 
   Future<void> _pick(Map<String, dynamic> r) async {
