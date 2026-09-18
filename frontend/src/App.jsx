@@ -2214,6 +2214,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [matchSearching, setMatchSearching] = useState(false);
   const [matchDirectUrl, setMatchDirectUrl] = useState("");
   const [alphaFilter, setAlphaFilter] = useState(null);
+  const [seriesSearch, setSeriesSearch] = useState("");
+  const [matchStatusFilter, setMatchStatusFilter] = useState(null); // null | "matched" | "unmatched"
   const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: nautiljon_url}, pour les badges de la grille
   const [autoMatching, setAutoMatching] = useState(false);
 
@@ -2246,6 +2248,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     setLoadingSeries(true);
     setSel(null);
     setAlphaFilter(null);
+    setSeriesSearch("");
+    setMatchStatusFilter(null);
     api.kavitaSeries(libId)
       .then(list => { if (!cancelled) setSeriesList(list); })
       .catch(e => show(e.message))
@@ -2474,7 +2478,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
 
   return (
     <>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {libraries.length > 1 && libraries.map(l => (
           <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
         ))}
@@ -2484,33 +2488,56 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
           </button>
         )}
       </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          style={{ flex: 1, minWidth: 160, fontSize: 12, padding: "5px 8px" }}
+          value={seriesSearch}
+          onChange={e => setSeriesSearch(e.target.value)}
+          placeholder="Rechercher une série…"
+        />
+        <button className={`btn btn-s${!matchStatusFilter ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(null)}>Toutes</button>
+        <button className={`btn btn-s${matchStatusFilter === "matched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "matched" ? null : "matched")}>✓ Matchées</button>
+        <button className={`btn btn-s${matchStatusFilter === "unmatched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "unmatched" ? null : "unmatched")}>✗ Non matchées</button>
+      </div>
       {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
         seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
         (() => {
+          const q = seriesSearch.trim().toLowerCase();
+          const base = seriesList.filter(s => {
+            if (q && !String(s.name || "").toLowerCase().includes(q)) return false;
+            const isMatched = !!matchesMap[s.id];
+            if (matchStatusFilter === "matched" && !isMatched) return false;
+            if (matchStatusFilter === "unmatched" && isMatched) return false;
+            return true;
+          });
           const alphaIndex = {};
-          for (const s of seriesList) {
+          for (const s of base) {
             const first = (s.name || "?")[0]?.toUpperCase?.() || "#";
             const key = /[A-Z]/.test(first) ? first : "#";
             alphaIndex[key] = (alphaIndex[key] || 0) + 1;
           }
           const filtered = alphaFilter
-            ? seriesList.filter(s => { const f = (s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
-            : seriesList;
+            ? base.filter(s => { const f = (s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
+            : base;
           return (
             <div style={{ display: "flex", gap: 6 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0, position: "sticky", top: 0, alignSelf: "flex-start" }}>
                 <button onClick={() => setAlphaFilter(null)} style={{ padding: "3px 6px", fontSize: 9, fontWeight: !alphaFilter ? 700 : 400, background: !alphaFilter ? "var(--ac)" : "var(--c2)", color: !alphaFilter ? "#fff" : "var(--t3)", border: "1px solid var(--brd)", borderRadius: 3, cursor: "pointer" }}>All</button>
                 {ALPHA_LETTERS.map(l => <button key={l} onClick={() => setAlphaFilter(l === alphaFilter ? null : l)} disabled={!alphaIndex[l]} style={{ padding: "2px 6px", fontSize: 9, fontWeight: l === alphaFilter ? 700 : 400, background: l === alphaFilter ? "var(--ac)" : "transparent", color: !alphaIndex[l] ? "var(--brd)" : l === alphaFilter ? "#fff" : "var(--t3)", border: "none", borderRadius: 2, cursor: alphaIndex[l] ? "pointer" : "default", fontFamily: "monospace", lineHeight: 1.4 }}>{l}</button>)}
               </div>
-              <div className="mg" style={{ flex: 1 }}>
-                {filtered.map(s => (
-                  <div key={s.id} className="mc" onClick={() => openSeries(s)}>
-                    {matchesMap[s.id] && <div className="mc-match" title="Associé à Nautiljon"><span className="badge bg">✓</span></div>}
-                    <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
-                    <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
-                  </div>
-                ))}
-              </div>
+              {filtered.length === 0 ? (
+                <div className="empty" style={{ flex: 1 }}><p>Aucune série ne correspond.</p></div>
+              ) : (
+                <div className="mg" style={{ flex: 1 }}>
+                  {filtered.map(s => (
+                    <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+                      {matchesMap[s.id] && <div className="mc-match" title="Associé à Nautiljon"><span className="badge bg">✓</span></div>}
+                      <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
+                      <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })()
