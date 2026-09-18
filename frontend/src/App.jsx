@@ -2624,19 +2624,23 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       }
       {reviewQueue.length > 0 && reviewIndex < reviewQueue.length && (() => {
         const item = reviewQueue[reviewIndex];
-        let cov = item.candidate_cover || "";
-        if (cov) cov = nautiljonMiniUrl(cov);
+        let nautCov = item.candidate_cover || "";
+        if (nautCov) nautCov = nautiljonMiniUrl(nautCov);
         return (
           <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
-            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 420, width: "90%" }}>
-              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 10 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
-              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                {cov && <img src={cov} alt="" style={{ width: 80, height: 112, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12, color: "var(--t3)" }}>Série Kavita</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", marginBottom: 8 }}>{item.series_name}</div>
-                  <div style={{ fontSize: 12, color: "var(--t3)" }}>Suggestion Nautiljon</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>{item.candidate_title}</div>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 460, width: "90%" }}>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, textAlign: "center" }}>
+                  <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)" }} onError={e => { e.target.style.visibility = "hidden"; }} />
+                  <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Série Kavita</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
+                </div>
+                <div style={{ fontSize: 20, color: "var(--t3)", marginTop: 50 }}>→</div>
+                <div style={{ flex: 1, textAlign: "center" }}>
+                  {nautCov ? <img src={nautCov} alt="" style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
+                  <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Suggestion Nautiljon</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.candidate_title}</div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
