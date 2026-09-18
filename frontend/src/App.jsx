@@ -2489,9 +2489,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
                 let cov = r.cover_url || r.image_url || "";
                 if (cov) cov = nautiljonMiniUrl(cov);
                 return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
-                    {cov && <img src={cov} alt="" style={{ width: 30, height: 42, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-                    <span style={{ fontSize: 11, color: "var(--t1)" }}>{r.title}</span>
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
+                    {cov && <img src={cov} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                    <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
                   </div>
                 );
               })}
@@ -2652,29 +2652,29 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
         const candidates = item.candidates || [];
         return (
           <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
-            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 520, width: "90%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
-              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 4 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 36, height: 50, objectFit: "cover", borderRadius: 4, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} />
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 56, height: 78, objectFit: "cover", borderRadius: 5, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} />
                 <div>
-                  <div style={{ fontSize: 10, color: "var(--t3)" }}>Série Kavita</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Kavita</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 10 }}>
                 {candidates.length > 1 ? `${candidates.length} suggestions Nautiljon -- choisis celle qui correspond :` : "Suggestion Nautiljon :"}
               </div>
-              <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
                 {candidates.map((c, i) => {
                   let cov = c.cover || "";
                   if (cov) cov = nautiljonMiniUrl(cov);
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", background: "var(--c2)", borderRadius: 6, cursor: reviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: reviewBusy ? .5 : 1 }} onClick={() => !reviewBusy && reviewAccept(c.url)}>
-                      <div style={{ width: 40, height: 56, flexShrink: 0, position: "relative" }}>
-                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 4, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
-                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 4, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 16 }}>📖</div>
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: reviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: reviewBusy ? .5 : 1 }} onClick={() => !reviewBusy && reviewAccept(c.url)}>
+                      <div style={{ width: "100%", aspectRatio: "2/3", position: "relative" }}>
+                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 5, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
                       </div>
-                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600 }}>{c.title}</span>
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{c.title}</span>
                     </div>
                   );
                 })}
@@ -2689,7 +2689,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       })()}
       {showMatchAll && (
         <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) { setShowMatchAll(false); setMatchingSeriesId(null); } }}>
-          <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 640, width: "92%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 820, width: "95%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--t1)" }}>Matcher les séries</span>
               <button className="ib" style={{ marginLeft: "auto" }} onClick={() => { setShowMatchAll(false); setMatchingSeriesId(null); }}>✕</button>
@@ -2703,17 +2703,17 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
                   const open = matchingSeriesId === s.id;
                   return (
                     <div key={s.id} style={{ border: "1px solid var(--brd)", borderRadius: 6, overflow: "hidden" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", background: "var(--c2)" }}>
-                        <img src={api.kavitaCoverUrl(s.id)} alt="" style={{ width: 30, height: 42, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 10px", background: "var(--c2)" }}>
+                        <img src={api.kavitaCoverUrl(s.id)} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
-                          <div style={{ fontSize: 10, color: matched ? "#4caf50" : "var(--t3)" }}>{matched ? "✓ Associé" : "Non associé"}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                          <div style={{ fontSize: 11, color: matched ? "#4caf50" : "var(--t3)" }}>{matched ? "✓ Associé" : "Non associé"}</div>
                         </div>
-                        <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => {
+                        <button className="btn btn-s" onClick={() => {
                           if (open) { setMatchingSeriesId(null); return; }
                           setMatchingSeriesId(s.id); setMatchQuery(s.name || ""); setMatchResults([]); setMatchDirectUrl("");
                         }}>{matched ? "🔁 Changer" : "🔍 Matcher"}</button>
-                        {matched && <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => unmatchFor(s.id)}>✕</button>}
+                        {matched && <button className="btn btn-s" onClick={() => unmatchFor(s.id)}>✕</button>}
                       </div>
                       {open && (
                         <div style={{ padding: 8 }}>
@@ -2725,14 +2725,16 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
                             <input style={{ flex: 1, fontSize: 10, padding: "4px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && matchDirectUrl.trim() && bulkPickMatch(s.id, matchDirectUrl.trim())} />
                             <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => bulkPickMatch(s.id, matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗</button>
                           </div>
-                          {matchResults.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+                          {matchResults.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, maxHeight: 320, overflowY: "auto" }}>
                             {matchResults.map((r, i) => {
                               let cov = r.cover_url || r.image_url || "";
                               if (cov) cov = nautiljonMiniUrl(cov);
                               return (
-                                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", background: "var(--c1)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => bulkPickMatch(s.id, r.url)}>
-                                  {cov && <img src={cov} alt="" style={{ width: 26, height: 36, objectFit: "cover", borderRadius: 3, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-                                  <span style={{ fontSize: 11, color: "var(--t1)" }}>{r.title}</span>
+                                <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: 6, background: "var(--c1)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => bulkPickMatch(s.id, r.url)}>
+                                  {cov
+                                    ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 4 }} onError={e => { e.target.style.display = "none"; }} />
+                                    : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 4, background: "var(--c2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>📖</div>}
+                                  <span style={{ fontSize: 11, color: "var(--t1)", textAlign: "center" }}>{r.title}</span>
                                 </div>
                               );
                             })}
