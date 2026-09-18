@@ -2654,11 +2654,11 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
           <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
             <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
               <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 56, height: 78, objectFit: "cover", borderRadius: 5, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} />
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: 130, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
                 <div>
                   <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Kavita</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 10 }}>
@@ -2703,8 +2703,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
                   const open = matchingSeriesId === s.id;
                   return (
                     <div key={s.id} style={{ border: "1px solid var(--brd)", borderRadius: 6, overflow: "hidden" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 10px", background: "var(--c2)" }}>
-                        <img src={api.kavitaCoverUrl(s.id)} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 12px", background: "var(--c2)" }}>
+                        <img src={api.kavitaCoverUrl(s.id)} alt="" style={{ width: 70, aspectRatio: "2/3", objectFit: "cover", borderRadius: 5, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
                           <div style={{ fontSize: 11, color: matched ? "#4caf50" : "var(--t3)" }}>{matched ? "✓ Associé" : "Non associé"}</div>
