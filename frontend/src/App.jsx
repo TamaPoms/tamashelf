@@ -2632,13 +2632,19 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
               <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
               <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-start" }}>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)" }} onError={e => { e.target.style.visibility = "hidden"; }} />
+                  <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", position: "relative" }}>
+                    <img src={api.kavitaCoverUrl(item.series_id)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                    <div style={{ display: "none", width: "100%", height: "100%", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
+                  </div>
                   <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Série Kavita</div>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
                 </div>
                 <div style={{ fontSize: 20, color: "var(--t3)", marginTop: 50 }}>→</div>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  {nautCov ? <img src={nautCov} alt="" style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)" }} onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
+                  <div style={{ width: "100%", maxWidth: 140, aspectRatio: "2/3", margin: "0 auto", position: "relative" }}>
+                    {nautCov && <img src={nautCov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                    <div style={{ display: nautCov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
+                  </div>
                   <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 4 }}>Suggestion Nautiljon</div>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)" }}>{item.candidate_title}</div>
                 </div>
