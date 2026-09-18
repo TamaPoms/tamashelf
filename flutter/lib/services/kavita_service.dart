@@ -6,8 +6,11 @@
 // d'authentification (voir les commentaires là-bas pour le détail des
 // choix, ex. pourquoi userId/apiKey sont nécessaires en plus du Bearer).
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class KavitaError implements Exception {
@@ -43,6 +46,24 @@ class KavitaService {
   double _tokenExpiresAt = 0;
   final Map<int, Uint8List> _seriesCoverCache = {};
   final Map<int, Uint8List> _chapterCoverCache = {};
+  Directory? _coverDirCache;
+
+  // Covers écrites sur disque (dossier Tamashelf de l'appli) en plus du
+  // cache mémoire -- pour rester instantanées après un redémarrage de
+  // l'appli plutôt que de tout re-télécharger à chaque ouverture.
+  Future<Directory> _coverDir() async {
+    if (_coverDirCache != null) return _coverDirCache!;
+    Directory base;
+    try {
+      base = (await getExternalStorageDirectory()) ?? await getApplicationDocumentsDirectory();
+    } catch (_) {
+      base = await getApplicationDocumentsDirectory();
+    }
+    final dir = Directory(p.join(base.path, 'Tamashelf', 'kavita', 'covers'));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    _coverDirCache = dir;
+    return dir;
+  }
 
   String get serverUrl => _serverUrl;
   String get apiKey => _apiKey;
@@ -199,16 +220,30 @@ class KavitaService {
   Future<Uint8List> seriesCoverBytes(int seriesId) async {
     final cached = _seriesCoverCache[seriesId];
     if (cached != null) return cached;
+    final file = File(p.join((await _coverDir()).path, 'series_$seriesId.img'));
+    if (await file.exists()) {
+      final bytes = await file.readAsBytes();
+      _seriesCoverCache[seriesId] = bytes;
+      return bytes;
+    }
     final resp = await _request('GET', '/api/Image/series-cover', params: {'seriesId': '$seriesId'});
     _seriesCoverCache[seriesId] = resp.bodyBytes;
+    try { await file.writeAsBytes(resp.bodyBytes); } catch (_) {}
     return resp.bodyBytes;
   }
 
   Future<Uint8List> chapterCoverBytes(int chapterId) async {
     final cached = _chapterCoverCache[chapterId];
     if (cached != null) return cached;
+    final file = File(p.join((await _coverDir()).path, 'chapter_$chapterId.img'));
+    if (await file.exists()) {
+      final bytes = await file.readAsBytes();
+      _chapterCoverCache[chapterId] = bytes;
+      return bytes;
+    }
     final resp = await _request('GET', '/api/Image/chapter-cover', params: {'chapterId': '$chapterId'});
     _chapterCoverCache[chapterId] = resp.bodyBytes;
+    try { await file.writeAsBytes(resp.bodyBytes); } catch (_) {}
     return resp.bodyBytes;
   }
 }

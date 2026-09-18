@@ -4,6 +4,7 @@ import 'services/download_service.dart';
 import 'services/progress_service.dart';
 import 'services/update_service.dart';
 import 'services/kavita_service.dart';
+import 'services/kavita_download_service.dart';
 import 'services/nautiljon_service.dart';
 import 'models/manga.dart';
 
@@ -17,6 +18,7 @@ class AppState extends ChangeNotifier {
   // services), pour fonctionner même sans serveur TamaShelf configuré.
   final KavitaService kavita = KavitaService();
   final NautiljonService nautiljon = NautiljonService();
+  late final KavitaDownloadService kavitaDownloads;
   UpdateInfo? updateInfo;
 
   bool isLoading = false;
@@ -43,6 +45,8 @@ class AppState extends ChangeNotifier {
     downloads.addListener(notifyListeners);
     progress = ProgressService(db);
     progress.addListener(notifyListeners);
+    kavitaDownloads = KavitaDownloadService(kavita);
+    kavitaDownloads.addListener(notifyListeners);
   }
 
   Future<void> init() async {
@@ -266,6 +270,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     downloads.removeListener(notifyListeners);
     progress.removeListener(notifyListeners);
+    kavitaDownloads.removeListener(notifyListeners);
     super.dispose();
   }
 }

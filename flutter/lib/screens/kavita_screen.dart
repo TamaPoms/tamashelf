@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../models/manga.dart';
 import '../services/kavita_service.dart';
+import '../services/kavita_download_service.dart';
 import '../services/nautiljon_service.dart';
 import '../theme.dart';
 import 'reader_screen.dart';
@@ -33,7 +34,9 @@ Future<void> _openKavitaChapter(
   required int totalPages,
   int startPage = 0,
 }) async {
-  final kavita = context.read<AppState>().kavita;
+  final state = context.read<AppState>();
+  final kavita = state.kavita;
+  final kdl = state.kavitaDownloads;
   await Navigator.push(context, MaterialPageRoute(
     builder: (_) => ReaderScreen(
       title: seriesName,
@@ -41,7 +44,13 @@ Future<void> _openKavitaChapter(
       online: true,
       onlineTotalPages: totalPages,
       startPage: startPage,
-      onlinePageLoader: (page) => kavita.pageBytes(chapterId, page),
+      onlinePageLoader: (page) async {
+        // Chapitre téléchargé (voir services/kavita_download_service.dart) :
+        // on lit sur disque, aucun accès réseau -- lecture hors-ligne.
+        final local = await kdl.localPageBytes(chapterId, page);
+        if (local != null) return local;
+        return kavita.pageBytes(chapterId, page);
+      },
       progressMangaUrl: 'kavita:series:$seriesId',
       progressVolumeId: 'kavita:chapter:$chapterId',
       enableNextVolume: false,
@@ -51,7 +60,10 @@ Future<void> _openKavitaChapter(
 
 // Déclenche la mise en cache des pages côté Kavita (chapter-info) avant
 // d'ouvrir le lecteur -- sans cet appel préalable la première lecture d'un
-// chapitre renvoie des pages vides/noires (voir kavita_service.dart).
+// chapitre renvoie des pages vides/noires (voir kavita_service.dart). Sauf
+// si le chapitre est déjà téléchargé : on évite alors tout appel réseau
+// (nombre de pages repris du manifeste local) pour une vraie lecture
+// hors-ligne.
 Future<void> openKavitaChapterFresh(
   BuildContext context, {
   required int seriesId,
@@ -60,9 +72,17 @@ Future<void> openKavitaChapterFresh(
   required int fallbackPages,
   int startPage = 0,
 }) async {
-  final kavita = context.read<AppState>().kavita;
+  final state = context.read<AppState>();
+  final downloaded = await state.kavitaDownloads.info(chapterId);
+  if (downloaded != null) {
+    final pages = (downloaded['totalPages'] as num?)?.toInt() ?? fallbackPages;
+    if (!context.mounted) return;
+    await _openKavitaChapter(context,
+        seriesId: seriesId, seriesName: seriesName, chapterId: chapterId, totalPages: pages, startPage: startPage);
+    return;
+  }
   try {
-    final info = await kavita.chapterInfo(chapterId);
+    final info = await state.kavita.chapterInfo(chapterId);
     final pages = (info['pages'] as num?)?.toInt() ?? fallbackPages;
     if (!context.mounted) return;
     await _openKavitaChapter(context,
@@ -195,6 +215,11 @@ class _KavitaScreenState extends State<KavitaScreen> {
         title: Text('Kavita', style: TextStyle(color: AppTheme.t1)),
         iconTheme: IconThemeData(color: AppTheme.t1),
         actions: [
+          IconButton(
+            icon: Icon(Icons.download_done, color: AppTheme.t2),
+            tooltip: 'Téléchargements',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaDownloadsScreen())),
+          ),
           IconButton(icon: Icon(Icons.settings, color: AppTheme.t2), onPressed: _openConfig),
         ],
       ),
@@ -598,12 +623,17 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   final _searchCtrl = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
   bool _searching = false;
+  Set<int> _downloadedIds = {};
+  bool _selectMode = false;
+  final Set<int> _selected = {};
+  bool _downloadBusy = false;
 
   @override
   void initState() {
     super.initState();
     _load();
     _loadMatchDetails();
+    _refreshDownloaded();
   }
 
   @override
@@ -660,6 +690,115 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     if (mounted) setState(() => _details = null);
   }
 
+  Future<void> _refreshDownloaded() async {
+    final ids = await context.read<AppState>().kavitaDownloads.downloadedIds();
+    if (mounted) setState(() => _downloadedIds = ids);
+  }
+
+  String _chapterLabel(Map<String, dynamic> v, Map<String, dynamic> c) {
+    final vNum = (v['number'] as num?)?.toInt() ?? 0;
+    final cNum = c['number'];
+    final noChapNum = '$cNum' == '-100000';
+    return vNum > 0
+        ? (noChapNum ? 'Volume $vNum' : 'Volume $vNum — Ch. $cNum')
+        : (noChapNum ? (c['title']?.toString().isNotEmpty == true ? c['title'].toString() : 'Chapitre') : 'Chapitre $cNum');
+  }
+
+  void _toggleSelectMode() {
+    setState(() { _selectMode = !_selectMode; _selected.clear(); });
+  }
+
+  void _toggleSelected(int chapterId) {
+    setState(() {
+      if (_selected.contains(chapterId)) { _selected.remove(chapterId); } else { _selected.add(chapterId); }
+    });
+  }
+
+  Future<void> _downloadOne(int chapterId) async {
+    final item = _chapters.firstWhere((it) => (it['chapter'] as Map<String, dynamic>)['id'] == chapterId);
+    await _runDownloads([item]);
+  }
+
+  Future<void> _downloadSelected() async {
+    final items = _chapters.where((it) => _selected.contains((it['chapter'] as Map<String, dynamic>)['id'] as int)).toList();
+    setState(() { _selectMode = false; _selected.clear(); });
+    await _runDownloads(items);
+  }
+
+  Future<void> _runDownloads(List<Map<String, dynamic>> items) async {
+    final kdl = context.read<AppState>().kavitaDownloads;
+    final kavita = context.read<AppState>().kavita;
+    final toDownload = <Map<String, dynamic>>[];
+    for (final item in items) {
+      final c = item['chapter'] as Map<String, dynamic>;
+      final chapterId = c['id'] as int;
+      if (!_downloadedIds.contains(chapterId)) toDownload.add(item);
+    }
+    if (toDownload.isEmpty) return;
+    _downloadBusy = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) => Consumer<AppState>(
+        builder: (c2, state, _) {
+          final active = toDownload
+              .map((it) => (it['chapter'] as Map<String, dynamic>)['id'] as int)
+              .map((id) => state.kavitaDownloads.activeDownloads[id])
+              .whereType<KavitaDownloadInfo>()
+              .toList();
+          final finished = !_downloadBusy && active.isEmpty;
+          return AlertDialog(
+            backgroundColor: AppTheme.bg,
+            title: Text(finished ? 'Téléchargement terminé' : 'Téléchargement…', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+            content: SizedBox(
+              width: 280,
+              child: finished
+                  ? Text('${toDownload.length} chapitre(s) traité(s).', style: TextStyle(color: AppTheme.t2, fontSize: 12))
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: active.map((d) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(d.label, style: TextStyle(color: AppTheme.t2, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+                              const SizedBox(height: 3),
+                              LinearProgressIndicator(value: d.progress, backgroundColor: AppTheme.brd, color: AppTheme.ac),
+                              if (d.hasError) Text(d.error ?? 'Erreur', style: TextStyle(color: AppTheme.ros, fontSize: 10)),
+                            ]),
+                          )).toList(),
+                    ),
+            ),
+            actions: [TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Fermer'))],
+          );
+        },
+      ),
+    );
+
+    for (final item in toDownload) {
+      final v = item['volume'] as Map<String, dynamic>;
+      final c = item['chapter'] as Map<String, dynamic>;
+      final chapterId = c['id'] as int;
+      final label = _chapterLabel(v, c);
+      try {
+        final chapInfo = await kavita.chapterInfo(chapterId);
+        final pages = (chapInfo['pages'] as num?)?.toInt() ?? (c['pages'] as num?)?.toInt() ?? 0;
+        await kdl.downloadChapter(
+          chapterId: chapterId,
+          seriesId: widget.seriesId,
+          seriesName: widget.seriesName,
+          label: label,
+          totalPages: pages,
+        );
+      } catch (_) {
+        // KavitaDownloadInfo.hasError couvre déjà l'affichage -- on continue
+        // avec les chapitres suivants de la sélection.
+      }
+    }
+    _downloadBusy = false;
+    await _refreshDownloaded();
+    context.read<AppState>().notifyAllListeners(); // fait passer le dialogue de progression en "terminé"
+  }
+
   @override
   Widget build(BuildContext context) {
     final naut = context.watch<AppState>().nautiljon;
@@ -670,7 +809,30 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         backgroundColor: AppTheme.bg,
         iconTheme: IconThemeData(color: AppTheme.t1),
         title: Text(widget.seriesName, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        actions: [
+          if (_chapters.isNotEmpty)
+            IconButton(
+              tooltip: _selectMode ? 'Annuler la sélection' : 'Télécharger plusieurs chapitres',
+              icon: Icon(_selectMode ? Icons.close : Icons.download_for_offline_outlined, color: AppTheme.t2),
+              onPressed: _toggleSelectMode,
+            ),
+        ],
       ),
+      bottomNavigationBar: (_selectMode && _selected.isNotEmpty)
+          ? SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _downloadSelected,
+                    icon: const Icon(Icons.download, size: 18),
+                    label: Text('Télécharger (${_selected.length})'),
+                  ),
+                ),
+              ),
+            )
+          : null,
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
@@ -763,20 +925,48 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     final item = _chapters[i];
     final v = item['volume'] as Map<String, dynamic>;
     final c = item['chapter'] as Map<String, dynamic>;
-    final vNum = (v['number'] as num?)?.toInt() ?? 0;
-    final cNum = c['number'];
-    // Kavita utilise -100000 pour "pas de numéro de chapitre applicable"
-    // (volume à chapitre unique).
-    final noChapNum = '$cNum' == '-100000';
     final chapterId = c['id'] as int;
-    final label = vNum > 0
-        ? (noChapNum ? 'Volume $vNum' : 'Volume $vNum — Ch. $cNum')
-        : (noChapNum ? (c['title']?.toString().isNotEmpty == true ? c['title'].toString() : 'Chapitre') : 'Chapitre $cNum');
+    final label = _chapterLabel(v, c);
+    final downloaded = _downloadedIds.contains(chapterId);
+    final selected = _selected.contains(chapterId);
     return GestureDetector(
-      onTap: () => openKavitaChapterFresh(context,
-          seriesId: widget.seriesId, seriesName: widget.seriesName, chapterId: chapterId, fallbackPages: (c['pages'] as num?)?.toInt() ?? 0),
+      onTap: () {
+        if (_selectMode) { _toggleSelected(chapterId); return; }
+        openKavitaChapterFresh(context,
+            seriesId: widget.seriesId, seriesName: widget.seriesName, chapterId: chapterId, fallbackPages: (c['pages'] as num?)?.toInt() ?? 0);
+      },
+      onLongPress: () {
+        if (!_selectMode) setState(() => _selectMode = true);
+        _toggleSelected(chapterId);
+      },
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: _KavitaChapterCover(chapterId: chapterId))),
+        Expanded(
+          child: Stack(children: [
+            Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: _KavitaChapterCover(chapterId: chapterId))),
+            if (_selectMode)
+              Positioned(
+                top: 4, left: 4,
+                child: Icon(selected ? Icons.check_circle : Icons.radio_button_unchecked,
+                    color: selected ? AppTheme.ac : Colors.white, size: 18,
+                    shadows: const [Shadow(color: Colors.black54, blurRadius: 4)]),
+              )
+            else if (downloaded)
+              Positioned(
+                top: 4, left: 4,
+                child: Icon(Icons.download_done, color: AppTheme.grn, size: 16, shadows: const [Shadow(color: Colors.black54, blurRadius: 4)]),
+              )
+            else
+              Positioned(
+                top: 2, right: 2,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  icon: const Icon(Icons.download, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 4)]),
+                  onPressed: () => _downloadOne(chapterId),
+                ),
+              ),
+          ]),
+        ),
         const SizedBox(height: 4),
         Text(label, style: TextStyle(color: AppTheme.t2, fontSize: 10), maxLines: 2, overflow: TextOverflow.ellipsis),
       ]),
@@ -1009,6 +1199,112 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
           SizedBox(width: double.infinity, child: OutlinedButton(onPressed: _skip, child: const Text('Passer'))),
         ]),
       ),
+    );
+  }
+}
+
+// ── Gestion des chapitres Kavita téléchargés (hors-ligne) ──
+
+class KavitaDownloadsScreen extends StatefulWidget {
+  const KavitaDownloadsScreen({super.key});
+  @override
+  State<KavitaDownloadsScreen> createState() => _KavitaDownloadsScreenState();
+}
+
+class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
+  List<Map<String, dynamic>> _items = [];
+  int _totalSize = 0;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final kdl = context.read<AppState>().kavitaDownloads;
+    final items = await kdl.listDownloads();
+    final size = await kdl.totalSize();
+    if (mounted) setState(() { _items = items; _totalSize = size; _loading = false; });
+  }
+
+  Future<void> _delete(int chapterId) async {
+    await context.read<AppState>().kavitaDownloads.deleteChapter(chapterId);
+    _load();
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes o';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} Ko';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / 1024 / 1024).toStringAsFixed(1)} Mo';
+    return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)} Go';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppTheme.d,
+      appBar: AppBar(
+        backgroundColor: AppTheme.bg,
+        iconTheme: IconThemeData(color: AppTheme.t1),
+        title: Text('Téléchargements Kavita', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Text('${_items.length} chapitre(s) · ${_formatSize(_totalSize)}', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+                ),
+                Consumer<AppState>(
+                  builder: (ctx, state, _) {
+                    final active = state.kavitaDownloads.activeDownloads.values.toList();
+                    if (active.isEmpty) return const SizedBox.shrink();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: active.map((d) => Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.ac.withValues(alpha: 0.3))),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(d.label, style: TextStyle(color: AppTheme.t1, fontSize: 12), overflow: TextOverflow.ellipsis),
+                              const SizedBox(height: 6),
+                              LinearProgressIndicator(value: d.progress, backgroundColor: AppTheme.brd, color: AppTheme.ac),
+                            ]),
+                          )).toList(),
+                    );
+                  },
+                ),
+                Expanded(
+                  child: _items.isEmpty
+                      ? Center(child: Text('Aucun chapitre Kavita téléchargé.', style: TextStyle(color: AppTheme.t3)))
+                      : RefreshIndicator(
+                          onRefresh: _load,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.all(8),
+                            itemCount: _items.length,
+                            itemBuilder: (ctx, i) {
+                              final it = _items[i];
+                              final chapterId = it['chapterId'] as int;
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 4),
+                                decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.brd, width: 0.5)),
+                                child: ListTile(
+                                  leading: Icon(Icons.download_done, color: AppTheme.grn, size: 24),
+                                  title: Text(it['seriesName']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  subtitle: Text('${it['label'] ?? ''} · ${_formatSize((it['sizeBytes'] as num? ?? 0).toInt())}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                  trailing: IconButton(icon: Icon(Icons.delete_outline, color: AppTheme.ros, size: 20), onPressed: () => _delete(chapterId)),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                ),
+              ],
+            ),
     );
   }
 }
