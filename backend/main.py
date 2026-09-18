@@ -2499,6 +2499,9 @@ async def auto_match(admin=Depends(require_admin)):
         not_found = 0
         errors = 0
         pending = 0
+        suggestions = []  # mangas sans match exact mais avec au moins un candidat --
+                           # à valider/refuser à la main (revue après le matching auto,
+                           # même principe que pour Kavita).
 
         for row in unmatched:
             manga_id = row["id"]
@@ -2581,8 +2584,23 @@ async def auto_match(admin=Depends(require_admin)):
                         db2.close()
                         pending += 1
                 else:
-                    # Pas exact → reste unmatched, l'admin cherchera manuellement
+                    # Pas exact → reste unmatched, mais on garde les candidats trouvés
+                    # pour la revue manuelle (voir suggestions dans la réponse).
                     not_found += 1
+                    if results:
+                        suggestions.append({
+                            "manga_id": manga_id,
+                            "folder": folder,
+                            "title": titre_base,
+                            "candidates": [
+                                {
+                                    "title": r.get("title") or "",
+                                    "url": r.get("url"),
+                                    "cover": r.get("cover_url") or r.get("image_url") or "",
+                                }
+                                for r in results[:6] if r.get("url")
+                            ],
+                        })
 
             except Exception as e:
                 errors += 1
@@ -2609,7 +2627,7 @@ async def auto_match(admin=Depends(require_admin)):
             if folder_base and _extract_folder_cover(folder_base, folder):
                 covers += 1
 
-        return {"auto_matched": auto_matched, "not_found": not_found, "errors": errors, "covers": covers}
+        return {"auto_matched": auto_matched, "not_found": not_found, "errors": errors, "covers": covers, "suggestions": suggestions}
 
 
 def _store_details(manga_id, nautiljon_url, title):
