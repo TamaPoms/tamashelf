@@ -831,6 +831,36 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
+            SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.c1,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppTheme.brd, width: 0.5),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_stories_outlined, color: MangaColors.accent, size: 22),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Raccourci Kavita sur l\'accueil', style: TextStyle(color: AppTheme.t1, fontSize: 14, fontWeight: FontWeight.w600)),
+                        Text('Affiche une carte d\'accès rapide vers Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: state.showKavitaShortcut,
+                    onChanged: (v) => state.setShowKavitaShortcut(v),
+                    activeColor: MangaColors.accent,
+                    activeTrackColor: MangaColors.accent.withValues(alpha: 0.3),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             _buildAppInfoCard(state),
             const SizedBox(height: 12),

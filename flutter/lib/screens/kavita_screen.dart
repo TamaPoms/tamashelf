@@ -114,6 +114,8 @@ class _KavitaScreenState extends State<KavitaScreen> {
   String _autoMatchStatus = '';
   Map<String, List<String>> _tagFilters = {};
   bool _showTagPanel = false;
+  bool _refreshingTags = false;
+  String _refreshTagsStatus = '';
 
   KavitaService get _kavita => context.read<AppState>().kavita;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -209,6 +211,27 @@ class _KavitaScreenState extends State<KavitaScreen> {
     if (mounted) setState(() {});
   }
 
+  // Associations sauvegardées avant l'ajout des tags (metadata) -- repasse
+  // dessus pour aller les chercher sans tout ré-associer à la main.
+  Future<void> _refreshTags() async {
+    if (_refreshingTags) return;
+    setState(() { _refreshingTags = true; _refreshTagsStatus = ''; });
+    try {
+      final updated = await _naut.refreshMissingTags(onProgress: (done, total) {
+        if (mounted) setState(() => _refreshTagsStatus = '$done/$total');
+      });
+      if (!mounted) return;
+      setState(() => _refreshingTags = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(updated > 0 ? '$updated association(s) mise(s) à jour avec leurs tags.' : 'Toutes les associations ont déjà leurs tags.'),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _refreshingTags = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur : $e'), backgroundColor: AppTheme.ros));
+    }
+  }
+
   Future<void> _resumeChapter({required String mangaUrl, required String volumeId, required String title, required int startPage}) async {
     final seriesId = int.tryParse(mangaUrl.replaceFirst('kavita:series:', '')) ?? 0;
     final chapterId = int.tryParse(volumeId.replaceFirst('kavita:chapter:', '')) ?? 0;
@@ -239,6 +262,13 @@ class _KavitaScreenState extends State<KavitaScreen> {
         title: Text('Kavita', style: TextStyle(color: AppTheme.t1)),
         iconTheme: IconThemeData(color: AppTheme.t1),
         actions: [
+          IconButton(
+            icon: _refreshingTags
+                ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.t2))
+                : Icon(Icons.sync, color: AppTheme.t2),
+            tooltip: _refreshingTags ? 'Rafraîchissement… $_refreshTagsStatus' : 'Rafraîchir les tags des associations existantes',
+            onPressed: _refreshingTags ? null : _refreshTags,
+          ),
           IconButton(
             icon: Icon(Icons.download_done, color: AppTheme.t2),
             tooltip: 'Téléchargements',

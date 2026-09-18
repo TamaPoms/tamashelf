@@ -326,6 +326,38 @@ class NautiljonService {
     await _saveMatches();
   }
 
+  // Associations sauvegardées avant l'ajout des tags (voir saveMatch) --
+  // n'ont pas de 'metadata', ou une metadata vide. Repasse dessus pour
+  // aller chercher leurs tags sans avoir à tout ré-associer à la main.
+  // Par défaut ne touche pas aux associations qui ont déjà des tags
+  // (force: true pour tout rafraîchir malgré tout).
+  Future<int> refreshMissingTags({bool force = false, void Function(int done, int total)? onProgress}) async {
+    final entries = _matches.entries.toList();
+    var updated = 0;
+    for (var i = 0; i < entries.length; i++) {
+      final sid = entries[i].key;
+      final m = entries[i].value;
+      final meta = m['metadata'];
+      final hasMeta = meta is Map && meta.isNotEmpty;
+      if (!force && hasMeta) {
+        onProgress?.call(i + 1, entries.length);
+        continue;
+      }
+      final url = (m['nautiljon_url'] ?? '').toString();
+      if (url.isNotEmpty) {
+        final details = await mangaDetails(url);
+        final newMeta = _tagMetadataFrom(details);
+        if (newMeta.isNotEmpty) {
+          _matches[sid] = {...m, 'metadata': newMeta};
+          updated++;
+        }
+      }
+      onProgress?.call(i + 1, entries.length);
+    }
+    if (updated > 0) await _saveMatches();
+    return updated;
+  }
+
   // ── Images ──
 
   String imageUrl(String? chemin) {

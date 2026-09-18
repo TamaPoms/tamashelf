@@ -6,6 +6,7 @@ import '../theme.dart';
 import '../models/manga.dart';
 import 'manga_detail_screen.dart';
 import 'reader_screen.dart';
+import 'kavita_screen.dart';
 
 class HomepageScreen extends StatefulWidget {
   const HomepageScreen({super.key});
@@ -59,23 +60,24 @@ class _HomepageScreenState extends State<HomepageScreen> {
           Expanded(
             child: _loading
                 ? Center(child: CircularProgressIndicator(color: AppTheme.ac))
-                : _data == null || _data!.isEmpty
-                    ? _buildEmpty()
-                    : RefreshIndicator(
-                        onRefresh: _load,
-                        color: AppTheme.ac,
-                        child: ListView(
-                          padding: const EdgeInsets.all(12),
-                          children: [
-                            if (_hasProgress) _buildProgressSection(state),
-                            if (_hasRecent) _buildRecentSection(state),
-                            if (_hasTopRated) _buildTopRatedSection(state),
-                            if (_hasRecommendations) _buildRecommendationsSection(state),
-                            if (!_hasProgress && !_hasRecent)
-                              _buildEmpty(),
-                          ],
-                        ),
-                      ),
+                : RefreshIndicator(
+                    onRefresh: _load,
+                    color: AppTheme.ac,
+                    child: ListView(
+                      padding: const EdgeInsets.all(12),
+                      children: [
+                        if (state.showKavitaShortcut) _buildKavitaShortcut(),
+                        if (_data != null && _data!.isNotEmpty) ...[
+                          if (_hasProgress) _buildProgressSection(state),
+                          if (_hasRecent) _buildRecentSection(state),
+                          if (_hasTopRated) _buildTopRatedSection(state),
+                          if (_hasRecommendations) _buildRecommendationsSection(state),
+                          if (!_hasProgress && !_hasRecent && !state.showKavitaShortcut) _buildEmpty(),
+                        ] else if (!state.showKavitaShortcut)
+                          _buildEmpty(),
+                      ],
+                    ),
+                  ),
           ),
         ],
       ),
@@ -86,6 +88,35 @@ class _HomepageScreenState extends State<HomepageScreen> {
   bool get _hasRecent => (_data?['recent'] as List?)?.isNotEmpty == true;
   bool get _hasTopRated => (_data?['top_rated'] as List?)?.isNotEmpty == true;
   bool get _hasRecommendations => (_data?['recommendations'] as List?)?.isNotEmpty == true;
+
+  Widget _buildKavitaShortcut() {
+    return GestureDetector(
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaScreen())),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(colors: [MangaColors.accent, MangaColors.secondary]),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.auto_stories_outlined, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Kavita', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+              Text('Parcourir ton serveur Kavita', style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 11)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right, color: Colors.white, size: 22),
+        ]),
+      ),
+    );
+  }
 
   Widget _buildEmpty() {
     return Center(

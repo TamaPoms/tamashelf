@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'services/db_service.dart';
 import 'services/download_service.dart';
 import 'services/progress_service.dart';
@@ -37,6 +38,7 @@ class AppState extends ChangeNotifier {
   List<UserListItem> readItems = [];
   Map<int, int> ratings = {};
   Map<int, String> notes = {};
+  bool showKavitaShortcut = true;
 
   void notifyAllListeners() => notifyListeners();
 
@@ -55,6 +57,8 @@ class AppState extends ChangeNotifier {
       await progress.loadLocal();
       await kavita.init();
       await nautiljon.init();
+      final prefs = await SharedPreferences.getInstance();
+      showKavitaShortcut = prefs.getBool('show_kavita_shortcut') ?? true;
       if (db.hasLocalDb) {
         await loadMangas();
         availableTags = await db.getAllTags();
@@ -257,6 +261,13 @@ class AppState extends ChangeNotifier {
   }
 
   int get activeFilterCount => tagFilters.values.fold(0, (sum, v) => sum + v.length);
+
+  Future<void> setShowKavitaShortcut(bool v) async {
+    showKavitaShortcut = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('show_kavita_shortcut', v);
+  }
 
   Future<void> checkForUpdate() async {
     final info = await _updateService.checkForUpdate();
