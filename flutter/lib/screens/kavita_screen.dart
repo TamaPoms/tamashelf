@@ -171,9 +171,18 @@ class _KavitaScreenState extends State<KavitaScreen> {
 
   Future<void> _runAutoMatch() async {
     if (_libId == null || _autoMatching) return;
+    // Ne pas repasser sur les séries déjà associées -- autoMatch() les
+    // ignore de toute façon en interne, mais les lui passer quand même
+    // gonflait inutilement le compteur de progression (et le temps
+    // d'itération) avec des milliers d'entrées déjà traitées.
+    final unmatched = _seriesList.where((s) => _naut.matchFor(s['id'] as int) == null).toList();
+    if (unmatched.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Toutes les séries sont déjà associées.')));
+      return;
+    }
     setState(() { _autoMatching = true; _autoMatchStatus = ''; });
     try {
-      final result = await _naut.autoMatch(_seriesList, onProgress: (done, total) {
+      final result = await _naut.autoMatch(unmatched, onProgress: (done, total) {
         if (mounted) setState(() => _autoMatchStatus = '$done/$total');
       });
       if (!mounted) return;
