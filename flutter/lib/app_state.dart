@@ -3,6 +3,8 @@ import 'services/db_service.dart';
 import 'services/download_service.dart';
 import 'services/progress_service.dart';
 import 'services/update_service.dart';
+import 'services/kavita_service.dart';
+import 'services/nautiljon_service.dart';
 import 'models/manga.dart';
 
 class AppState extends ChangeNotifier {
@@ -10,6 +12,11 @@ class AppState extends ChangeNotifier {
   late final DownloadService downloads;
   late final ProgressService progress;
   final UpdateService _updateService = UpdateService();
+  // Kavita + Nautiljon (tamajon) : entièrement autonomes du serveur
+  // TamaShelf -- config et associations mémorisées en local (voir les
+  // services), pour fonctionner même sans serveur TamaShelf configuré.
+  final KavitaService kavita = KavitaService();
+  final NautiljonService nautiljon = NautiljonService();
   UpdateInfo? updateInfo;
 
   bool isLoading = false;
@@ -42,6 +49,8 @@ class AppState extends ChangeNotifier {
     try {
       await db.init();
       await progress.loadLocal();
+      await kavita.init();
+      await nautiljon.init();
       if (db.hasLocalDb) {
         await loadMangas();
         availableTags = await db.getAllTags();

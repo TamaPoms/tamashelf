@@ -20,6 +20,7 @@ import 'user_list_screen.dart';
 import 'homepage_screen.dart';
 import 'collections_screen.dart';
 import 'stats_screen.dart';
+import 'kavita_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -177,6 +178,8 @@ class _HomeScreenState extends State<HomeScreen> {
               _moreItem(Icons.download_done, 'Telecharges', '', AppTheme.cyn, 3),
               if (isAdmin) _moreItem(Icons.link, 'Associer mangas', '', AppTheme.amb, 4),
               _moreItem(Icons.settings, 'Parametres', '', AppTheme.t2, 5),
+              _moreItem(Icons.auto_stories_outlined, 'Kavita', '', AppTheme.cyn, 6,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaScreen()))),
             ],
           ),
         ),
@@ -184,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _moreItem(IconData icon, String label, String badge, Color color, int idx) {
+  Widget _moreItem(IconData icon, String label, String badge, Color color, int idx, {VoidCallback? onTap}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
@@ -215,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(Icons.chevron_right, color: AppTheme.t3, size: 20),
           ],
         ),
-        onTap: () async {
+        onTap: onTap ?? () async {
           if (idx == 0 || idx == 1) await context.read<AppState>().loadLists();
           setState(() => _moreIdx = idx);
         },

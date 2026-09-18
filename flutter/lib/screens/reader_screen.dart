@@ -20,6 +20,17 @@ class ReaderScreen extends StatefulWidget {
   final int? onlineTotalPages;
   // Resume position
   final int startPage;
+  // Source de pages alternative pour un mode "online" qui n'est pas la
+  // bibliothèque CBZ du serveur TamaShelf (ex: Kavita, voir kavita_screen.dart) --
+  // si fourni, remplace l'appel /api/cbz/read/... normalement utilisé en ligne.
+  final Future<Uint8List?> Function(int page)? onlinePageLoader;
+  // Clés de progression à utiliser à la place de volume.cbzFolder/filepath
+  // (mêmes besoins : une source hors bibliothèque locale a ses propres clés).
+  final String? progressMangaUrl;
+  final String? progressVolumeId;
+  // La proposition "tome suivant" s'appuie sur state.db.getVolumes (bibliothèque
+  // locale) -- sans objet hors CBZ local.
+  final bool enableNextVolume;
 
   const ReaderScreen({
     super.key,
@@ -29,6 +40,10 @@ class ReaderScreen extends StatefulWidget {
     this.online = false,
     this.onlineTotalPages,
     this.startPage = 0,
+    this.onlinePageLoader,
+    this.progressMangaUrl,
+    this.progressVolumeId,
+    this.enableNextVolume = true,
   });
 
   @override
@@ -135,8 +150,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_isOnline) {
       // Online: get total pages from server or volume data
       _totalPages = widget.onlineTotalPages ?? widget.volume.totalPages;
-      if (_totalPages == 0) {
-        // Fetch info from server
+      if (_totalPages == 0 && widget.onlinePageLoader == null) {
+        // Fetch info from server (bibliothèque CBZ TamaShelf uniquement --
+        // une source alternative avec onlinePageLoader fournit déjà onlineTotalPages)
         try {
           final resp = await http.get(
             Uri.parse('${state.db.serverUrl}/api/cbz/info/${widget.volume.filepath}'),
@@ -163,7 +179,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _webtoonKeys = List.generate(_totalPages, (_) => GlobalKey());
 
     // Restore saved position
-    final saved = state.progress.getProgress(widget.volume.cbzFolder, widget.volume.filepath);
+    final saved = state.progress.getProgress(
+      widget.progressMangaUrl ?? widget.volume.cbzFolder,
+      widget.progressVolumeId ?? widget.volume.filepath,
+    );
     final startPage = widget.startPage > 0
         ? widget.startPage
         : (saved != null && saved.currentPage < _totalPages) ? saved.currentPage : 0;
@@ -180,6 +199,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<Uint8List?> _loadOnlinePage(int page) async {
     if (_onlineCache.containsKey(page)) return _onlineCache[page];
+    if (widget.onlinePageLoader != null) {
+      try {
+        final bytes = await widget.onlinePageLoader!(page);
+        if (bytes != null) _onlineCache[page] = bytes;
+        return bytes;
+      } catch (e) {
+        print('Load page $page error: $e');
+        return null;
+      }
+    }
     final state = context.read<AppState>();
     try {
       final url = '${state.db.serverUrl}/api/cbz/read/${widget.volume.filepath}?page=$page';
@@ -220,8 +249,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_totalPages == 0) return;
     final state = context.read<AppState>();
     state.progress.updateProgress(
-      mangaUrl: widget.volume.cbzFolder,
-      volumeId: widget.volume.filepath,
+      mangaUrl: widget.progressMangaUrl ?? widget.volume.cbzFolder,
+      volumeId: widget.progressVolumeId ?? widget.volume.filepath,
       currentPage: _currentPage,
       totalPages: _totalPages,
       title: widget.title,
@@ -358,6 +387,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _findNextVolume() async {
+    if (!widget.enableNextVolume) return;
     try {
       final state = context.read<AppState>();
       final volumes = await state.db.getVolumes(widget.volume.cbzFolder);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import 'kavita_screen.dart';
 
 class SetupScreen extends StatefulWidget {
   const SetupScreen({super.key});
@@ -136,6 +137,13 @@ class _SetupScreenState extends State<SetupScreen> {
           child: _loading
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             : const Text('Suivant'),
+        ),
+        const SizedBox(height: 10),
+        // Kavita est autonome (config + associations en local) : pas besoin
+        // d'un serveur TamaShelf pour l'utiliser.
+        TextButton(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaScreen())),
+          child: Text('Utiliser Kavita sans serveur TamaShelf', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
         ),
       ],
     );
