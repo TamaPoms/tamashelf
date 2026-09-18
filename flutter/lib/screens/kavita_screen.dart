@@ -112,6 +112,8 @@ class _KavitaScreenState extends State<KavitaScreen> {
   String? _matchFilter; // null | 'matched' | 'unmatched'
   bool _autoMatching = false;
   String _autoMatchStatus = '';
+  Map<String, List<String>> _tagFilters = {};
+  bool _showTagPanel = false;
 
   KavitaService get _kavita => context.read<AppState>().kavita;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -215,6 +217,19 @@ class _KavitaScreenState extends State<KavitaScreen> {
     if (mounted) setState(() {});
   }
 
+  void _toggleTag(String category, String tag) {
+    setState(() {
+      final list = _tagFilters[category] ?? [];
+      if (list.contains(tag)) {
+        _tagFilters = {..._tagFilters, category: list.where((t) => t != tag).toList()};
+      } else {
+        _tagFilters = {..._tagFilters, category: [...list, tag]};
+      }
+    });
+  }
+
+  int get _activeTagCount => _tagFilters.values.fold(0, (sum, v) => sum + v.length);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -294,13 +309,16 @@ class _KavitaScreenState extends State<KavitaScreen> {
     final filtered = _loadingSeries
         ? const <Map<String, dynamic>>[]
         : _seriesList.where((s) {
+            final sid = s['id'] as int;
             final name = (s['name'] as String? ?? '');
             if (q.isNotEmpty && !name.toLowerCase().contains(q)) return false;
-            final matched = _naut.matchFor(s['id'] as int) != null;
+            final matched = _naut.matchFor(sid) != null;
             if (_matchFilter == 'matched' && !matched) return false;
             if (_matchFilter == 'unmatched' && matched) return false;
+            if (!_naut.matchHasTags(sid, _tagFilters)) return false;
             return true;
           }).toList();
+    final availableTags = _naut.allTags();
 
     // IMPORTANT : la grille de séries doit rester une sliver "paresseuse"
     // (SliverGrid dans le même CustomScrollView, pas un GridView.builder
@@ -367,11 +385,74 @@ class _KavitaScreenState extends State<KavitaScreen> {
                   onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 8),
-                Wrap(spacing: 6, children: [
+                Wrap(spacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
                   ChoiceChip(label: const Text('Toutes'), selected: _matchFilter == null, onSelected: (_) => setState(() => _matchFilter = null)),
                   ChoiceChip(label: const Text('✓ Associées'), selected: _matchFilter == 'matched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'matched' ? null : 'matched')),
                   ChoiceChip(label: const Text('✗ Non associées'), selected: _matchFilter == 'unmatched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'unmatched' ? null : 'unmatched')),
+                  GestureDetector(
+                    onTap: () => setState(() => _showTagPanel = !_showTagPanel),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _showTagPanel ? AppTheme.ac : AppTheme.inp,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: _showTagPanel ? AppTheme.ac : AppTheme.brd, width: 0.5),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.local_offer_outlined, size: 14, color: _showTagPanel ? Colors.white : AppTheme.t2),
+                        if (_activeTagCount > 0) ...[
+                          const SizedBox(width: 4),
+                          Text('$_activeTagCount', style: TextStyle(color: _showTagPanel ? Colors.white : AppTheme.t2, fontSize: 11, fontWeight: FontWeight.w700)),
+                        ],
+                      ]),
+                    ),
+                  ),
                 ]),
+                if (_showTagPanel) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.brd, width: 0.5)),
+                    child: availableTags.isEmpty
+                        ? Text(
+                            'Pas encore de tags -- associe des séries à Nautiljon (matching auto ou manuel) pour les voir apparaître ici.',
+                            style: TextStyle(color: AppTheme.t3, fontSize: 11),
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: availableTags.entries.map((cat) {
+                              final tagsSorted = cat.value.toList()..sort();
+                              final selected = _tagFilters[cat.key] ?? [];
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(cat.key, style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w700)),
+                                  const SizedBox(height: 4),
+                                  Wrap(
+                                    spacing: 5, runSpacing: 5,
+                                    children: tagsSorted.take(30).map((tag) {
+                                      final isOn = selected.contains(tag);
+                                      final col = MangaColors.tagColor(tag);
+                                      return GestureDetector(
+                                        onTap: () => _toggleTag(cat.key, tag),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: isOn ? col : Colors.transparent,
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(color: col.withValues(alpha: isOn ? 1 : 0.5)),
+                                          ),
+                                          child: Text(tag, style: TextStyle(color: isOn ? Colors.white : col, fontSize: 11)),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
+                                ]),
+                              );
+                            }).toList(),
+                          ),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 Row(children: [
                   Expanded(

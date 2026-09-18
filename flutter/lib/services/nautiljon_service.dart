@@ -235,20 +235,90 @@ class NautiljonService {
 
   Map<String, dynamic>? matchFor(int seriesId) => _matches['$seriesId'];
 
+  // Mêmes catégories que db_service.dart (bibliothèque locale, getAllTags)
+  // -- pour rester cohérent si jamais les deux filtres se retrouvent un
+  // jour dans le même écran.
+  static const _tagCategories = ['Type', 'Genres', 'Themes', 'Statut', 'Editeur', 'Auteur', 'Pays'];
+
+  Map<String, String> _tagMetadataFrom(Map<String, dynamic>? details) {
+    if (details == null) return {};
+    final out = <String, String>{};
+    void put(String key, dynamic v) {
+      final s = (v ?? '').toString().trim();
+      if (s.isNotEmpty) out[key] = s;
+    }
+    put('Type', details['type']);
+    put('Genres', details['genres']);
+    put('Themes', details['themes']);
+    put('Statut', details['status']);
+    put('Editeur', details['publisher']);
+    put('Auteur', details['author']);
+    put('Pays', details['country']);
+    return out;
+  }
+
   Future<void> saveMatch(int seriesId, {
     required String nautiljonUrl,
     required String title,
     String cover = '',
     String matchedBy = 'manual',
   }) async {
+    // Récupère la fiche complète pour en tirer les tags (genres/thèmes/...)
+    // -- même logique que _kavita_match_metadata côté backend web : les
+    // mémoriser au moment du match plutôt que refetcher à chaque affichage
+    // de la grille.
+    final details = await mangaDetails(nautiljonUrl);
     _matches['$seriesId'] = {
       'nautiljon_url': nautiljonUrl,
       'title': title,
       'cover_url': cover,
       'matched_by': matchedBy,
       'created_at': DateTime.now().millisecondsSinceEpoch / 1000,
+      'metadata': _tagMetadataFrom(details),
     };
     await _saveMatches();
+  }
+
+  // Tags disponibles parmi toutes les séries matchées, pour le panneau de
+  // filtre (voir KavitaScreen).
+  Map<String, Set<String>> allTags() {
+    final tags = <String, Set<String>>{for (final c in _tagCategories) c: {}};
+    for (final m in _matches.values) {
+      final meta = m['metadata'];
+      if (meta is! Map) continue;
+      for (final key in _tagCategories) {
+        final val = meta[key]?.toString() ?? '';
+        if (val.isEmpty) continue;
+        if (key == 'Genres' || key == 'Themes') {
+          for (final t in val.split(RegExp(r'\s*[-,]\s*'))) {
+            final trimmed = t.trim();
+            if (trimmed.isNotEmpty) tags[key]!.add(trimmed);
+          }
+        } else {
+          tags[key]!.add(val.trim());
+        }
+      }
+    }
+    tags.removeWhere((k, v) => v.isEmpty);
+    return tags;
+  }
+
+  // Même sémantique que searchMangas (db_service.dart, bibliothèque locale) :
+  // chaque tag sélectionné (toutes catégories confondues) doit être présent
+  // -- une série sans match échoue dès qu'un filtre est actif.
+  bool matchHasTags(int seriesId, Map<String, List<String>> tagFilters) {
+    final hasFilters = tagFilters.values.any((v) => v.isNotEmpty);
+    if (!hasFilters) return true;
+    final m = matchFor(seriesId);
+    final meta = (m?['metadata'] is Map) ? Map<String, dynamic>.from(m!['metadata'] as Map) : const <String, dynamic>{};
+    for (final entry in tagFilters.entries) {
+      if (entry.value.isEmpty) continue;
+      final val = (meta[entry.key] ?? '').toString();
+      for (final tag in entry.value) {
+        if (!val.contains(tag)) return false;
+      }
+    }
+    return true;
   }
 
   Future<void> deleteMatch(int seriesId) async {
