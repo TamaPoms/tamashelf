@@ -2339,20 +2339,40 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
         {loadingNaut && <p style={{ fontSize: 11, color: "var(--t3)", padding: "0 12px 8px" }}>Recherche Nautiljon…</p>}
 
         {nautMatch && (() => {
-          let cov = nautMatch.cover_url || nautMatch.image_url || "";
+          // /api/nautiljon/manga renvoie {details, editions, cached} -- les
+          // vraies infos (titre, synopsis, table de métadonnées) sont sous
+          // .details, avec la table clé/valeur dans .details.raw_infos_json
+          // (même donnée que det.metadata_json dans la bibliothèque locale,
+          // juste un nom de champ différent à ce niveau de l'API).
+          const d = nautMatch.details || {};
+          let cov = d.cover_url || d.image_url || "";
           if (cov) cov = nautiljonMiniUrl(cov);
+          const infos = (d.raw_infos_json && typeof d.raw_infos_json === "object") ? d.raw_infos_json : {};
           return (
-            <div style={{ display: "flex", gap: 12, padding: "0 12px 14px", alignItems: "flex-start" }}>
-              {cov && <img src={cov} alt="" style={{ width: 70, height: 98, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+            <div style={{ display: "flex", gap: 14, padding: "0 12px 14px", alignItems: "flex-start" }}>
+              {cov && <img src={cov} alt="" style={{ width: 90, height: 126, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", display: "flex", alignItems: "center", gap: 6 }}>
-                  📚 {nautMatch.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  📚 {d.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span>
                   {isAdmin && <>
                     <button className="btn btn-s" style={{ fontSize: 9 }} onClick={() => setShowMatchSearch(v => !v)}>🔁 Changer</button>
                     <button className="btn btn-s" style={{ fontSize: 9 }} onClick={unmatch}>✕ Dissocier</button>
                   </>}
                 </div>
-                {nautMatch.synopsis && <p style={{ fontSize: 11, color: "var(--t2)", marginTop: 4, display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{nautMatch.synopsis}</p>}
+                {(infos.Type || infos.Genres) && <div className="dp-tags" style={{ marginTop: 4 }}>
+                  {infos.Type && <span className="dp-tag genre-badge genre-badge-filled" style={{ background: "var(--ac)" }}>{infos.Type}</span>}
+                  {String(infos.Genres || "").split(/\s*[-,]\s*/).filter(Boolean).slice(0, 5).map((g, i) => <span key={i} className="dp-tag genre-badge genre-badge-outline" style={{ color: tagColor(g), borderColor: tagColor(g) + "88" }}>{g}</span>)}
+                </div>}
+                {d.synopsis && <p className="syn" style={{ fontSize: 11, color: "var(--t2)", marginTop: 6 }}>{d.synopsis}</p>}
+                {Object.keys(infos).length > 0 && (
+                  <div className="mg2" style={{ marginTop: 8 }}>
+                    {Object.entries(infos).map(([k, v]) => {
+                      const isTag = SEARCH_TAG_KEYS.includes(k);
+                      const tags = isTag ? String(v).split(/\s*[-,]\s*/).filter(Boolean) : [];
+                      return <div key={k} className="mi"><div className="l">{k}</div><div className="v">{isTag && tags.length ? <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{tags.map((t, i) => <span key={i} className="genre-badge genre-badge-outline" style={{ color: tagColor(t), borderColor: tagColor(t) + "55", fontSize: 10 }}>{t}</span>)}</div> : String(v)}</div></div>;
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           );
