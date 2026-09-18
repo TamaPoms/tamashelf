@@ -2216,7 +2216,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [alphaFilter, setAlphaFilter] = useState(null);
   const [seriesSearch, setSeriesSearch] = useState("");
   const [matchStatusFilter, setMatchStatusFilter] = useState(null); // null | "matched" | "unmatched"
-  const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: nautiljon_url}, pour les badges de la grille
+  const [tagFilters, setTagFilters] = useState({});
+  const [showTagPanel, setShowTagPanel] = useState(false);
+  const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: {nautiljon_url, metadata_json}}, pour les badges + le filtre par tag
   const [autoMatching, setAutoMatching] = useState(false);
 
   const refreshMatchesMap = useCallback(() => {
@@ -2250,6 +2252,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     setAlphaFilter(null);
     setSeriesSearch("");
     setMatchStatusFilter(null);
+    setTagFilters({});
+    setShowTagPanel(false);
     api.kavitaSeries(libId)
       .then(list => { if (!cancelled) setSeriesList(list); })
       .catch(e => show(e.message))
@@ -2353,6 +2357,14 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
         : <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>}
     </div>
   );
+
+  const toggleTag = (cat, tag) => {
+    setTagFilters(prev => {
+      const cur = prev[cat] || [];
+      const next = cur.includes(tag) ? cur.filter(t => t !== tag) : [...cur, tag];
+      return { ...prev, [cat]: next };
+    });
+  };
 
   if (sel) {
     return (
@@ -2498,16 +2510,30 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
         <button className={`btn btn-s${!matchStatusFilter ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(null)}>Toutes</button>
         <button className={`btn btn-s${matchStatusFilter === "matched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "matched" ? null : "matched")}>✓ Matchées</button>
         <button className={`btn btn-s${matchStatusFilter === "unmatched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "unmatched" ? null : "unmatched")}>✗ Non matchées</button>
+        {(() => {
+          const activeTagCount = Object.values(tagFilters).reduce((s, v) => s + (v?.length || 0), 0);
+          return (
+            <button className={`ib${showTagPanel ? " on" : ""}`} onClick={() => setShowTagPanel(p => !p)} style={{ position: "relative" }} title="Filtrer par tags">
+              🏷️{activeTagCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, background: "var(--ac)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 8, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeTagCount}</span>}
+            </button>
+          );
+        })()}
       </div>
       {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
         seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
         (() => {
+          // Tags dérivés des métadonnées mises en cache au moment du match
+          // (kavita_matches.metadata_json, voir backend) -- seules les
+          // séries déjà associées à Nautiljon contribuent des tags,
+          // logique : c'est de là que vient l'info (genres, auteur...).
+          const allTags = extractAllTags(seriesList.map(s => ({ metadata_json: matchesMap[s.id]?.metadata_json || {} })));
           const q = seriesSearch.trim().toLowerCase();
           const base = seriesList.filter(s => {
             if (q && !String(s.name || "").toLowerCase().includes(q)) return false;
             const isMatched = !!matchesMap[s.id];
             if (matchStatusFilter === "matched" && !isMatched) return false;
             if (matchStatusFilter === "unmatched" && isMatched) return false;
+            if (!matchesTagFilters({ metadata_json: matchesMap[s.id]?.metadata_json || {} }, tagFilters)) return false;
             return true;
           });
           const alphaIndex = {};
@@ -2520,6 +2546,30 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
             ? base.filter(s => { const f = (s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
             : base;
           return (
+            <>
+              {showTagPanel && (
+                <div className="tag-panel" style={{ marginBottom: 10 }}>
+                  {Object.keys(allTags).length === 0
+                    ? <p style={{ fontSize: 11, color: "var(--t3)" }}>Pas encore de tags -- associez des séries à Nautiljon (matching auto ou manuel) pour les voir apparaître ici.</p>
+                    : Object.entries(allTags).map(([cat, tags]) => (
+                      <div key={cat} className="tag-cat">
+                        <div className="tag-cat-title">{cat}</div>
+                        <div className="tag-chips">
+                          {tags.slice(0, 30).map(([tag, count]) => {
+                            const isOn = (tagFilters[cat] || []).includes(tag);
+                            const col = tagColor(tag);
+                            return (
+                              <span key={tag} className="tag-chip" onClick={() => toggleTag(cat, tag)}
+                                style={{ background: isOn ? col : "transparent", color: isOn ? "#fff" : col, borderColor: isOn ? col : col + "44" }}>
+                                {tag} <span style={{ opacity: .6, fontSize: 9 }}>({count})</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
             <div style={{ display: "flex", gap: 6 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0, position: "sticky", top: 0, alignSelf: "flex-start" }}>
                 <button onClick={() => setAlphaFilter(null)} style={{ padding: "3px 6px", fontSize: 9, fontWeight: !alphaFilter ? 700 : 400, background: !alphaFilter ? "var(--ac)" : "var(--c2)", color: !alphaFilter ? "#fff" : "var(--t3)", border: "1px solid var(--brd)", borderRadius: 3, cursor: "pointer" }}>All</button>
@@ -2539,6 +2589,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
                 </div>
               )}
             </div>
+            </>
           );
         })()
       }

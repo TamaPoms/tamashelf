@@ -307,6 +307,7 @@ def init_db():
         kavita_series_id INTEGER PRIMARY KEY,
         nautiljon_url TEXT NOT NULL,
         matched_by TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
         created_at REAL NOT NULL DEFAULT (unixepoch())
     );
 
@@ -586,6 +587,15 @@ def migrate_db():
             db.commit()
         if "total_pages" not in mv_cols:
             db.execute("ALTER TABLE manga_volumes ADD COLUMN total_pages INTEGER NOT NULL DEFAULT 0")
+            db.commit()
+    except:
+        pass  # Table might not exist yet
+
+    # Migration: ajouter metadata_json à kavita_matches (pour le filtre par tag)
+    try:
+        km_cols = [row[1] for row in db.execute("PRAGMA table_info(kavita_matches)").fetchall()]
+        if "metadata_json" not in km_cols:
+            db.execute("ALTER TABLE kavita_matches ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
             db.commit()
     except:
         pass  # Table might not exist yet
@@ -1725,20 +1735,39 @@ async def kavita_read_page(chapter_id: int, page: int = Query(0, ge=0), user=Dep
         raise HTTPException(502, str(e))
     return Response(content=content, media_type=content_type)
 
+def _kavita_match_metadata(nautiljon_url: str) -> dict:
+    """Table clé/valeur (Type, Genres, Thème, Auteur...) pour le filtre par tag --
+    même source que le matching CBZ (nautiljon_db.manga_auto().raw_infos_json), mise en
+    cache dans kavita_matches.metadata_json au moment du match plutôt que refetchée à
+    chaque affichage de la grille."""
+    try:
+        details = nautiljon_db.manga_auto(nautiljon_url)
+    except Exception:
+        details = None
+    infos = (details or {}).get("raw_infos_json") or {}
+    return infos if isinstance(infos, dict) else {}
+
 @app.get("/api/kavita/match/{series_id}")
 async def kavita_get_match(series_id: int, user=Depends(get_current_user)):
     """Match Nautiljon persisté pour une série Kavita (voir kavita_matches --
     séparé de `matches`/`manga_library` qui sont spécifiques aux CBZ locaux)."""
     with get_db_ctx() as db:
-        row = db.execute("SELECT nautiljon_url FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
-    return {"matched": bool(row), "nautiljon_url": row["nautiljon_url"] if row else None}
+        row = db.execute("SELECT nautiljon_url, metadata_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+    if not row:
+        return {"matched": False, "nautiljon_url": None}
+    try:
+        meta = json.loads(row["metadata_json"] or "{}")
+    except Exception:
+        meta = {}
+    return {"matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta}
 
 @app.post("/api/kavita/match/{series_id}")
 async def kavita_save_match(series_id: int, nautiljon_url: str, admin=Depends(require_admin)):
+    meta = _kavita_match_metadata(nautiljon_url)
     with get_db_ctx() as db:
         db.execute(
-            "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, created_at) VALUES (?, ?, ?, ?)",
-            (series_id, nautiljon_url, admin["username"], time.time())
+            "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (series_id, nautiljon_url, admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
         )
         db.commit()
     return {"ok": True}
@@ -1752,11 +1781,18 @@ async def kavita_delete_match(series_id: int, admin=Depends(require_admin)):
 
 @app.get("/api/kavita/matches")
 async def kavita_list_matches(user=Depends(get_current_user)):
-    """Tous les matchs persistés {kavita_series_id: nautiljon_url}, pour afficher un
-    badge sur les cartes de la grille de séries sans faire un appel par série."""
+    """Tous les matchs persistés {kavita_series_id: {nautiljon_url, metadata_json}},
+    pour les badges + le filtre par tag de la grille sans un appel par série."""
     with get_db_ctx() as db:
-        rows = db.execute("SELECT kavita_series_id, nautiljon_url FROM kavita_matches").fetchall()
-    return {str(r["kavita_series_id"]): r["nautiljon_url"] for r in rows}
+        rows = db.execute("SELECT kavita_series_id, nautiljon_url, metadata_json FROM kavita_matches").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            meta = json.loads(r["metadata_json"] or "{}")
+        except Exception:
+            meta = {}
+        out[str(r["kavita_series_id"])] = {"nautiljon_url": r["nautiljon_url"], "metadata_json": meta}
+    return out
 
 @app.post("/api/kavita/auto-match/{library_id}")
 async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
@@ -1786,10 +1822,11 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
         results = nautiljon_db.search_local(name, limit=8, offset=0).get("results") or []
         exact = next((r for r in results if _normalize_match_key(r.get("title") or "") == key), None)
         if exact and exact.get("url"):
+            meta = _kavita_match_metadata(exact["url"])
             with get_db_ctx() as db:
                 db.execute(
-                    "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, created_at) VALUES (?, ?, ?, ?)",
-                    (sid, exact["url"], admin["username"], time.time())
+                    "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (sid, exact["url"], admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
                 )
                 db.commit()
             auto_matched += 1
