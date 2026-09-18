@@ -702,8 +702,8 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) return;
     setState(() => _searching = true);
-    final r = await context.read<AppState>().nautiljon.search(q);
-    if (mounted) setState(() { _searchResults = sortByTitleMatch(r, q); _searching = false; });
+    final r = await context.read<AppState>().nautiljon.searchRanked(q);
+    if (mounted) setState(() { _searchResults = r; _searching = false; });
   }
 
   Future<void> _pick(Map<String, dynamic> r) async {
@@ -920,18 +920,29 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                     icon: _searching ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.search, color: AppTheme.t2),
                   ),
                 ]),
-                ..._searchResults.map((r) => ListTile(
-                      dense: true,
-                      leading: SizedBox(
-                        width: 36, height: 50,
-                        child: (r['cover_url'] as String? ?? '').isEmpty
-                            ? Icon(Icons.book, color: AppTheme.t3)
-                            : Image.network((r['cover_url'] as String), headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
-                      ),
-                      title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      onTap: () => _pick(r),
-                    )),
+                if (_searchResults.isNotEmpty)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _searchResults.length,
+                      itemBuilder: (ctx, i) {
+                        final r = _searchResults[i];
+                        return ListTile(
+                          dense: true,
+                          leading: SizedBox(
+                            width: 36, height: 50,
+                            child: (r['cover_url'] as String? ?? '').isEmpty
+                                ? Icon(Icons.book, color: AppTheme.t3)
+                                : Image.network((r['cover_url'] as String), headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
+                          ),
+                          title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          onTap: () => _pick(r),
+                        );
+                      },
+                    ),
+                  ),
               ]),
             ),
           ],
@@ -1182,8 +1193,8 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
     final q = _ctrl.text.trim();
     if (q.isEmpty) return;
     setState(() => _searching = true);
-    final r = await context.read<AppState>().nautiljon.search(q);
-    if (mounted) setState(() { _results = sortByTitleMatch(r, q); _searching = false; });
+    final r = await context.read<AppState>().nautiljon.searchRanked(q);
+    if (mounted) setState(() { _results = r; _searching = false; });
   }
 
   Future<void> _pick(Map<String, dynamic> r) async {

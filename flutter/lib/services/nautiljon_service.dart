@@ -309,6 +309,33 @@ class NautiljonService {
     return rows.map(_rowToItem).toList();
   }
 
+  // Recherche manuelle (une seule requête, déclenchée par l'utilisateur) --
+  // tamajon ne trie pas par pertinence et un mot court/courant (ex: "Che")
+  // peut avoir des centaines de résultats, le bon étant parfois hors de la
+  // première page. On parcourt donc plusieurs pages jusqu'à tout récupérer
+  // (ou une limite raisonnable), on trie par correspondance de titre (voir
+  // sortByTitleMatch), puis on ne garde que les meilleurs pour l'affichage.
+  // Réservé aux recherches ponctuelles -- PAS utilisé par le matching auto,
+  // qui interroge potentiellement des milliers de séries et resterait sur
+  // une seule page par requête pour ne pas multiplier les appels réseau.
+  Future<List<Map<String, dynamic>>> searchRanked(String query, {int pageSize = 100, int maxFetch = 500, int maxResults = 80}) async {
+    final all = <Map<String, dynamic>>[];
+    var offset = 0;
+    int? total;
+    while (true) {
+      final data = await _get('/api/recherche', {'q': query, 'limit': '$pageSize', 'offset': '$offset'});
+      if (data == null) break;
+      final rows = (data['rows'] as List? ?? []).map((r) => Map<String, dynamic>.from(r as Map)).toList();
+      total ??= (data['total'] as num?)?.toInt();
+      if (rows.isEmpty) break;
+      all.addAll(rows.map(_rowToItem));
+      offset += rows.length;
+      if (total != null && offset >= total!) break;
+      if (offset >= maxFetch) break;
+    }
+    return sortByTitleMatch(all, query).take(maxResults).toList();
+  }
+
   // Détails complets d'une série par son URL Nautiljon (portage de manga_auto).
   Future<Map<String, dynamic>?> mangaDetails(String url) async {
     if (url.isEmpty) return null;
