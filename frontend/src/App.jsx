@@ -1371,7 +1371,7 @@ function MainApp({ session, doLogout, show, toast }) {
           {nav === "app-android" && <AppAndroidView />}
 
           {/* ══ KAVITA (serveur externe) ══ */}
-          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} isAdmin={isAdmin} />}
+          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} isAdmin={isAdmin} progress={progress} onResume={resumeReading} />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -2440,7 +2440,7 @@ function AppAndroidView() {
 // onOpenChapter (voir App.openKavitaChapter). Lecture seule : aucune
 // tentative de fusion avec les mangas CBZ locaux ou leur matching Nautiljon
 // -- volontairement une source à part pour cette première version.
-function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
+function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
   const [available, setAvailable] = useState(null); // null = vérification en cours
   const [errMsg, setErrMsg] = useState(null);
   const [libraries, setLibraries] = useState([]);
@@ -2832,8 +2832,36 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     );
   }
 
+  const kavitaInProgress = (progress || []).filter(p =>
+    String(p.volume_id || '').startsWith('kavita:chapter:') &&
+    p.current_page > 0 && p.current_page < (p.total_pages || 1) - 1
+  );
+
   return (
     <>
+      {kavitaInProgress.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="sec-h"><span className="sec-t">📖 En cours de lecture</span><span className="cnt">{kavitaInProgress.length}</span></div>
+          <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+            {kavitaInProgress.map(p => {
+              const pct = p.total_pages > 0 ? Math.round(p.current_page / p.total_pages * 100) : 0;
+              const seriesId = String(p.manga_url || '').slice('kavita:series:'.length);
+              return (
+                <div key={`${p.manga_url}__${p.volume_id}`} onClick={() => onResume && onResume(p)} style={{ minWidth: 100, maxWidth: 100, cursor: "pointer", flexShrink: 0 }}>
+                  <div style={{ position: "relative", width: 100, height: 142, borderRadius: "var(--r)", overflow: "hidden", background: "var(--c2)", border: "1px solid var(--brd)" }}>
+                    <img src={api.kavitaCoverUrl(seriesId)} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4, background: "var(--brd)" }}>
+                      <div style={{ width: pct + "%", height: "100%", background: "var(--ac)" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--t1)", marginTop: 4, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title || "Kavita"}</div>
+                  <div style={{ fontSize: 9, color: "var(--t3)" }}>{pct}%</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {libraries.length > 1 && libraries.map(l => (
           <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
