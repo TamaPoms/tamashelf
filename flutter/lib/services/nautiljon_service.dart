@@ -318,8 +318,9 @@ class NautiljonService {
   // Réservé aux recherches ponctuelles -- PAS utilisé par le matching auto,
   // qui interroge potentiellement des milliers de séries et resterait sur
   // une seule page par requête pour ne pas multiplier les appels réseau.
-  Future<List<Map<String, dynamic>>> searchRanked(String query, {int pageSize = 100, int maxFetch = 500, int maxResults = 80}) async {
+  Future<List<Map<String, dynamic>>> searchRanked(String query, {int pageSize = 100, int maxFetch = 1000, int maxResults = 80}) async {
     final all = <Map<String, dynamic>>[];
+    final ref = normalizeMatchKey(query);
     var offset = 0;
     int? total;
     while (true) {
@@ -332,6 +333,14 @@ class NautiljonService {
       offset += rows.length;
       if (total != null && offset >= total!) break;
       if (offset >= maxFetch) break;
+      // Un titre commençant par la requête a déjà été trouvé : inutile
+      // d'aller chercher plus loin (cas courant, reste rapide). Sinon on
+      // continue jusqu'à maxFetch -- nécessaire pour un mot très courant
+      // ("Che") dont le vrai titre peut être noyé sous des centaines de
+      // correspondances de synopsis avant d'apparaître.
+      if (ref.isNotEmpty && all.any((r) => normalizeMatchKey((r['title'] ?? '').toString()).startsWith(ref))) {
+        break;
+      }
     }
     return sortByTitleMatch(all, query).take(maxResults).toList();
   }
