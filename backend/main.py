@@ -17,6 +17,7 @@ import unicodedata
 import subprocess
 import tempfile
 import shutil
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
 from contextlib import contextmanager
@@ -2994,6 +2995,53 @@ async def nautiljon_img(chemin: str):
         cache_path.write_bytes(r.content)
     except OSError:
         pass  # le cache est un bonus -- une écriture ratée n'empêche pas de servir l'image
+
+    return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+
+
+_NAUTILJON_IMG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Referer": "https://www.nautiljon.com/mangas/",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+}  # mêmes headers que le téléchargeur de tamajon.py (_HEADERS_SCRAPING) -- nautiljon.com
+   # bloque le hotlinking direct sans ça.
+
+@app.get("/api/nautiljon/img-external")
+async def nautiljon_img_external(url: str):
+    """Repli pour les entrées de la base app.py où seule l'URL nautiljon.com brute est
+    connue (image_jpg jamais téléchargée localement, résidu d'un scraping ancien -- voir
+    nautiljon_db._image_url). On sert quand même depuis NOTRE domaine : jamais de lien
+    direct vers nautiljon.com donné au client (bloqué sans le bon Referer de toute façon,
+    et cohérent avec le reste -- tout passe par le cache local d'images)."""
+    if urlparse(url).netloc not in ("www.nautiljon.com", "nautiljon.com"):
+        raise HTTPException(400, "URL non autorisée")
+    ext = Path(urlparse(url).path).suffix.lower().lstrip(".")
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/jpeg")
+
+    cache_root = IMG_CACHE_DIR.resolve()
+    cache_name = "_external_" + hashlib.sha1(url.encode()).hexdigest() + (f".{ext}" if ext else "")
+    cache_path = (cache_root / cache_name).resolve()
+    if cache_root != cache_path and cache_root not in cache_path.parents:
+        raise HTTPException(400, "Chemin invalide")
+
+    if cache_path.is_file():
+        return FileResponse(str(cache_path), media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+
+    try:
+        async with httpx.AsyncClient(timeout=nautiljon_db.APP_PY_TIMEOUT, headers=_NAUTILJON_IMG_HEADERS) as client:
+            r = await client.get(url)
+    except (httpx.RequestError, TimeoutError):
+        raise HTTPException(502, "nautiljon.com injoignable")
+    if r.status_code != 200:
+        raise HTTPException(404, "Image introuvable")
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except OSError:
+        pass
 
     return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
 

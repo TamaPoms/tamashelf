@@ -102,13 +102,17 @@ def _image_url(chemin_relatif) -> str:
     chemin = (chemin_relatif or "").strip()
     if not chemin:
         return ""
-    # Certaines entrées anciennes de la base ont une URL nautiljon.com absolue au lieu
-    # d'un chemin relatif (résidu d'un scraping antérieur à app.py) -- la faire passer
-    # par IMAGE_ROUTE_PREFIX donnerait une URL absurde (proxy vers un "chemin" qui est en
-    # fait une URL complète) plutôt qu'un simple 404. On la sert donc telle quelle : le
-    # navigateur ira la chercher directement chez nautiljon.com.
+    # Certaines entrées anciennes de la base n'ont jamais eu leur image téléchargée
+    # localement par app.py (image_jpg vide) : on retombe alors sur "image", une URL
+    # nautiljon.com absolue. La faire passer par IMAGE_ROUTE_PREFIX donnerait une URL
+    # absurde (proxy vers un "chemin" qui est en fait une URL complète, 404 assuré). On
+    # veut aussi éviter d'exposer un lien direct nautiljon.com au client : ça casse
+    # (hotlinking bloqué sans le bon Referer) et ça sort du principe "tout est servi
+    # depuis notre domaine, en cache". /api/nautiljon/img-external s'en charge : elle
+    # récupère l'image elle-même (avec les bons headers) et la met en cache comme les
+    # autres.
     if chemin.startswith("http://") or chemin.startswith("https://"):
-        return chemin
+        return f"{IMAGE_ROUTE_PREFIX}-external?url={urllib.parse.quote(chemin, safe='')}"
     if not chemin.startswith("/"):
         chemin = "/" + chemin
     return f"{IMAGE_ROUTE_PREFIX}{chemin}"
