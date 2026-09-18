@@ -2220,6 +2220,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
   const [showTagPanel, setShowTagPanel] = useState(false);
   const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: {nautiljon_url, metadata_json}}, pour les badges + le filtre par tag
   const [autoMatching, setAutoMatching] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState([]); // suggestions du matching auto sans correspondance exacte, à valider/refuser une par une
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const refreshMatchesMap = useCallback(() => {
     api.kavitaMatches().then(setMatchesMap).catch(() => {});
@@ -2269,9 +2272,35 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
       if (r.error) { show(`❌ ${r.error}`); return; }
       show(`✅ ${r.auto_matched} associée(s), ${r.not_found} sans correspondance exacte`);
       refreshMatchesMap();
+      if (r.suggestions?.length) {
+        setReviewQueue(r.suggestions);
+        setReviewIndex(0);
+      }
     } catch (e) { show(`❌ ${e.message}`); }
     setAutoMatching(false);
   };
+
+  // Revue des suggestions du matching auto : une série + un candidat à la
+  // fois, Valider/Refuser avance à la suivante, Annuler vide toute la file.
+  const reviewAccept = async () => {
+    const item = reviewQueue[reviewIndex];
+    if (!item) return;
+    setReviewBusy(true);
+    try {
+      await api.kavitaSaveMatch(item.series_id, item.candidate_url);
+      refreshMatchesMap();
+    } catch (e) { show(`❌ ${e.message}`); }
+    setReviewBusy(false);
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("✅ Revue terminée");
+  };
+  const reviewReject = () => {
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("Revue terminée");
+  };
+  const reviewCancel = () => { setReviewQueue([]); setReviewIndex(0); };
 
   // Matching Nautiljon persisté par série Kavita (table kavita_matches,
   // séparée de `matches`/`manga_library` -- voir backend) : contrairement à
@@ -2593,6 +2622,32 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
           );
         })()
       }
+      {reviewQueue.length > 0 && reviewIndex < reviewQueue.length && (() => {
+        const item = reviewQueue[reviewIndex];
+        let cov = item.candidate_cover || "";
+        if (cov) cov = nautiljonMiniUrl(cov);
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 20, maxWidth: 420, width: "90%" }}>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 10 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                {cov && <img src={cov} alt="" style={{ width: 80, height: 112, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: "var(--t3)" }}>Série Kavita</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", marginBottom: 8 }}>{item.series_name}</div>
+                  <div style={{ fontSize: 12, color: "var(--t3)" }}>Suggestion Nautiljon</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)" }}>{item.candidate_title}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-p" style={{ flex: 1 }} onClick={reviewAccept} disabled={reviewBusy}>✅ Valider</button>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={reviewReject} disabled={reviewBusy}>❌ Refuser</button>
+                <button className="btn btn-s" onClick={reviewCancel} disabled={reviewBusy}>🛑 Annuler</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }

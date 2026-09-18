@@ -1817,6 +1817,8 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
 
     auto_matched = 0
     not_found = 0
+    suggestions = []  # séries sans match exact mais avec au moins un candidat --
+                       # à valider/refuser à la main (voir /api/kavita/match).
     for s in series_list:
         sid = s.get("id")
         name = (s.get("name") or "").strip()
@@ -1847,7 +1849,16 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
             auto_matched += 1
         else:
             not_found += 1
-    return {"auto_matched": auto_matched, "not_found": not_found}
+            best = results[0] if results else None
+            if best and best.get("url"):
+                suggestions.append({
+                    "series_id": sid,
+                    "series_name": name,
+                    "candidate_title": best.get("title") or "",
+                    "candidate_url": best.get("url"),
+                    "candidate_cover": best.get("cover_url") or best.get("image_url") or "",
+                })
+    return {"auto_matched": auto_matched, "not_found": not_found, "suggestions": suggestions}
 
 
 @app.get("/api/library")
