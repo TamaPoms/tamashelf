@@ -1799,8 +1799,12 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
     """Matching auto pour une bibliothèque Kavita : uniquement les correspondances
     exactes (titre normalisé identique, voir _normalize_match_key -- insensible à la
     casse/aux accents mais rien d'approximatif), contrairement au matching auto CBZ qui
-    tente aussi des variantes de requête. Les séries déjà matchées sont laissées
-    intactes ; pas de résultat exact -> ignorée (reste à faire manuellement)."""
+    tente aussi des variantes de requête de recherche. On compare quand même le nom de
+    la série ET sa version sans suffixe d'édition (_strip_edition_suffix, ex. "A Certain
+    Scientific Railgun - Édition Deluxe" -> "A Certain Scientific Railgun") : Nautiljon
+    ne référence la série qu'une fois, pas une fiche par édition physique/numérique.
+    Les séries déjà matchées sont laissées intactes ; pas de résultat exact -> ignorée
+    (reste à faire manuellement)."""
     with get_db_ctx() as db:
         client = _get_kavita_client(db)
         already = {r["kavita_series_id"] for r in db.execute("SELECT kavita_series_id FROM kavita_matches").fetchall()}
@@ -1818,9 +1822,20 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
         name = (s.get("name") or "").strip()
         if not sid or sid in already or not name:
             continue
-        key = _normalize_match_key(name)
-        results = nautiljon_db.search_local(name, limit=8, offset=0).get("results") or []
-        exact = next((r for r in results if _normalize_match_key(r.get("title") or "") == key), None)
+        name_sans_edition = _strip_edition_suffix(name)
+        titres = [name] + ([name_sans_edition] if name_sans_edition and name_sans_edition != name else [])
+        keys = {k for k in (_normalize_match_key(t) for t in titres) if k}
+
+        results = []
+        seen = set()
+        for titre in titres:
+            for r in (nautiljon_db.search_local(titre, limit=8, offset=0).get("results") or []):
+                u = (r.get("url") or "").strip()
+                if u and u not in seen:
+                    seen.add(u)
+                    results.append(r)
+
+        exact = next((r for r in results if _normalize_match_key(r.get("title") or "") in keys), None)
         if exact and exact.get("url"):
             meta = _kavita_match_metadata(exact["url"])
             with get_db_ctx() as db:
