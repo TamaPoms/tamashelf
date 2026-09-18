@@ -837,6 +837,23 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     if (mounted) setState(() => _downloadedIds = ids);
   }
 
+  // Genres + thèmes de la fiche Nautiljon associée, dédupliqués -- pour les
+  // afficher directement sur la fiche série (pas juste dans le panneau de
+  // filtre de la liste, voir KavitaScreen).
+  List<String> get _seriesTags {
+    final genres = (_details?['genres'] ?? '').toString();
+    final themes = (_details?['themes'] ?? '').toString();
+    final tags = <String>[];
+    for (final raw in [genres, themes]) {
+      if (raw.isEmpty) continue;
+      for (final t in raw.split(RegExp(r'\s*[-,]\s*'))) {
+        final trimmed = t.trim();
+        if (trimmed.isNotEmpty && !tags.contains(trimmed)) tags.add(trimmed);
+      }
+    }
+    return tags;
+  }
+
   String _chapterLabel(Map<String, dynamic> v, Map<String, dynamic> c) {
     final vNum = (v['number'] as num?)?.toInt() ?? 0;
     final cNum = c['number'];
@@ -1009,6 +1026,24 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                         ]),
             ),
           ]),
+          if (_seriesTags.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6, runSpacing: 6,
+              children: _seriesTags.map((tag) {
+                final color = MangaColors.tagColor(tag);
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
+                  ),
+                  child: Text(tag, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+                );
+              }).toList(),
+            ),
+          ],
           if ((_details?['synopsis'] ?? '').toString().isNotEmpty) ...[
             const SizedBox(height: 10),
             Text(_details!['synopsis'].toString(), style: TextStyle(color: AppTheme.t2, fontSize: 12)),
