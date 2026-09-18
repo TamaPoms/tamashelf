@@ -99,7 +99,7 @@ class KomgaService {
     final all = <Map<String, dynamic>>[];
     var page = 0;
     while (true) {
-      final resp = await _request('POST', '/api/v2/series', params: {'page': '$page', 'size': '$pageSize'}, jsonBody: body);
+      final resp = await _request('POST', '/api/v1/series/list', params: {'page': '$page', 'size': '$pageSize'}, jsonBody: body);
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       final content = (data['content'] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
       all.addAll(content);

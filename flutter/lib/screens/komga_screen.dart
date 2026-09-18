@@ -127,7 +127,7 @@ class _KomgaScreenState extends State<KomgaScreen> {
 
   Future<void> _loadSeries() async {
     if (_libId == null) return;
-    setState(() => _loadingSeries = true);
+    setState(() { _loadingSeries = true; _error = null; });
     try {
       final list = await _komga.seriesInLibrary(_libId!);
       list.sort((a, b) => komgaSeriesTitle(a).toLowerCase().compareTo(komgaSeriesTitle(b).toLowerCase()));
@@ -475,7 +475,20 @@ class _KomgaScreenState extends State<KomgaScreen> {
                   Text('Chargement des séries…', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
                   const SizedBox(height: 20),
                 ] else if (filtered.isEmpty)
-                  Padding(padding: const EdgeInsets.all(30), child: Center(child: Text('Aucune série', style: TextStyle(color: AppTheme.t3)))),
+                  Padding(
+                    padding: const EdgeInsets.all(30),
+                    child: Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Text(_error != null ? 'Erreur de chargement' : 'Aucune série', style: TextStyle(color: AppTheme.t3)),
+                        if (_error != null) ...[
+                          const SizedBox(height: 6),
+                          Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: AppTheme.ros, fontSize: 11)),
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(onPressed: _loadSeries, icon: const Icon(Icons.refresh, size: 16), label: const Text('Réessayer')),
+                        ],
+                      ]),
+                    ),
+                  ),
               ]),
             ),
           ),
