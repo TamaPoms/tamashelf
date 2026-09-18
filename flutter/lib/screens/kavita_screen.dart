@@ -282,135 +282,156 @@ class _KavitaScreenState extends State<KavitaScreen> {
     final state = context.watch<AppState>();
     final inProgress = state.progress.inProgress.where((e) => e.volumeId.startsWith('kavita:chapter:')).toList();
     final q = _searchCtrl.text.trim().toLowerCase();
-    final filtered = _seriesList.where((s) {
-      final name = (s['name'] as String? ?? '');
-      if (q.isNotEmpty && !name.toLowerCase().contains(q)) return false;
-      final matched = _naut.matchFor(s['id'] as int) != null;
-      if (_matchFilter == 'matched' && !matched) return false;
-      if (_matchFilter == 'unmatched' && matched) return false;
-      return true;
-    }).toList();
+    final filtered = _loadingSeries
+        ? const <Map<String, dynamic>>[]
+        : _seriesList.where((s) {
+            final name = (s['name'] as String? ?? '');
+            if (q.isNotEmpty && !name.toLowerCase().contains(q)) return false;
+            final matched = _naut.matchFor(s['id'] as int) != null;
+            if (_matchFilter == 'matched' && !matched) return false;
+            if (_matchFilter == 'unmatched' && matched) return false;
+            return true;
+          }).toList();
 
+    // IMPORTANT : la grille de séries doit rester une sliver "paresseuse"
+    // (SliverGrid dans le même CustomScrollView, pas un GridView.builder
+    // shrinkWrap imbriqué dans un ListView) -- avec 4000+ séries, un
+    // GridView shrinkWrap construit TOUTES les tuiles (et donc lance TOUS
+    // les téléchargements de covers) d'un coup pour calculer sa hauteur,
+    // ce qui bloquait/plantait l'appli. Ici seules les tuiles visibles
+    // (+ la zone de cache habituelle de Flutter) sont construites.
     return RefreshIndicator(
       onRefresh: _loadSeries,
-      child: ListView(
-        padding: const EdgeInsets.all(12),
-        children: [
-          if (_libraries.length > 1) ...[
-            Wrap(
-              spacing: 6,
-              children: _libraries.map((l) {
-                final id = l['id'] as int;
-                return ChoiceChip(
-                  label: Text(l['name']?.toString() ?? '?'),
-                  selected: id == _libId,
-                  onSelected: (_) { setState(() => _libId = id); _loadSeries(); },
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 12),
-          ],
-          if (inProgress.isNotEmpty) ...[
-            Text('📖 En cours de lecture', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 150,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: inProgress.length,
-                itemBuilder: (ctx, i) {
-                  final e = inProgress[i];
-                  final seriesId = int.tryParse(e.mangaUrl.replaceFirst('kavita:series:', '')) ?? 0;
-                  return GestureDetector(
-                    onTap: () => _resumeChapter(mangaUrl: e.mangaUrl, volumeId: e.volumeId, title: e.title, startPage: e.currentPage),
-                    child: Container(
-                      width: 100,
-                      margin: const EdgeInsets.only(right: 10),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('prog_$seriesId'), seriesId: seriesId))),
-                        const SizedBox(height: 4),
-                        Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 10, fontWeight: FontWeight.w600)),
-                        Text('${(e.percent * 100).round()}%', style: TextStyle(color: AppTheme.t3, fontSize: 9)),
-                      ]),
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-          TextField(
-            controller: _searchCtrl,
-            decoration: InputDecoration(hintText: 'Rechercher une série...', isDense: true, prefixIcon: const Icon(Icons.search, size: 18)),
-            style: TextStyle(color: AppTheme.t1, fontSize: 13),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 8),
-          Wrap(spacing: 6, children: [
-            ChoiceChip(label: const Text('Toutes'), selected: _matchFilter == null, onSelected: (_) => setState(() => _matchFilter = null)),
-            ChoiceChip(label: const Text('✓ Associées'), selected: _matchFilter == 'matched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'matched' ? null : 'matched')),
-            ChoiceChip(label: const Text('✗ Non associées'), selected: _matchFilter == 'unmatched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'unmatched' ? null : 'unmatched')),
-          ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _autoMatching ? null : _runAutoMatch,
-                icon: _autoMatching
-                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.auto_fix_high, size: 16),
-                label: Text(_autoMatching ? (_autoMatchStatus.isEmpty ? '...' : _autoMatchStatus) : 'Matching auto', style: const TextStyle(fontSize: 12)),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _seriesList.isEmpty ? null : _openMatchAll,
-                icon: const Icon(Icons.link, size: 16),
-                label: const Text('Associer', style: TextStyle(fontSize: 12)),
-              ),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          if (_loadingSeries)
-            const Padding(padding: EdgeInsets.all(30), child: Center(child: CircularProgressIndicator()))
-          else if (filtered.isEmpty)
-            Padding(padding: const EdgeInsets.all(30), child: Center(child: Text('Aucune série', style: TextStyle(color: AppTheme.t3))))
-          else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 120, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
-              itemCount: filtered.length,
-              itemBuilder: (ctx, i) {
-                final s = filtered[i];
-                final sid = s['id'] as int;
-                final matched = _naut.matchFor(sid) != null;
-                return GestureDetector(
-                  onTap: () async {
-                    await Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => KavitaSeriesDetailScreen(seriesId: sid, seriesName: s['name']?.toString() ?? '?'),
-                    ));
-                    if (mounted) setState(() {});
-                  },
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Expanded(child: Stack(children: [
-                      Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey(sid), seriesId: sid))),
-                      if (matched)
-                        Positioned(
-                          top: 4, right: 4,
+      child: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            sliver: SliverToBoxAdapter(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                if (_libraries.length > 1) ...[
+                  Wrap(
+                    spacing: 6,
+                    children: _libraries.map((l) {
+                      final id = l['id'] as int;
+                      return ChoiceChip(
+                        label: Text(l['name']?.toString() ?? '?'),
+                        selected: id == _libId,
+                        onSelected: (_) { setState(() => _libId = id); _loadSeries(); },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (inProgress.isNotEmpty) ...[
+                  Text('📖 En cours de lecture', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 150,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: inProgress.length,
+                      itemBuilder: (ctx, i) {
+                        final e = inProgress[i];
+                        final seriesId = int.tryParse(e.mangaUrl.replaceFirst('kavita:series:', '')) ?? 0;
+                        return GestureDetector(
+                          onTap: () => _resumeChapter(mangaUrl: e.mangaUrl, volumeId: e.volumeId, title: e.title, startPage: e.currentPage),
                           child: Container(
-                            padding: const EdgeInsets.all(3),
-                            decoration: BoxDecoration(color: AppTheme.grn, shape: BoxShape.circle),
-                            child: const Icon(Icons.check, color: Colors.white, size: 10),
+                            width: 100,
+                            margin: const EdgeInsets.only(right: 10),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('prog_$seriesId'), seriesId: seriesId))),
+                              const SizedBox(height: 4),
+                              Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 10, fontWeight: FontWeight.w600)),
+                              Text('${(e.percent * 100).round()}%', style: TextStyle(color: AppTheme.t3, fontSize: 9)),
+                            ]),
                           ),
-                        ),
-                    ])),
-                    const SizedBox(height: 4),
-                    Text(s['name']?.toString() ?? '?', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 11, fontWeight: FontWeight.w600)),
-                  ]),
-                );
-              },
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                TextField(
+                  controller: _searchCtrl,
+                  decoration: InputDecoration(hintText: 'Rechercher une série...', isDense: true, prefixIcon: const Icon(Icons.search, size: 18)),
+                  style: TextStyle(color: AppTheme.t1, fontSize: 13),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 8),
+                Wrap(spacing: 6, children: [
+                  ChoiceChip(label: const Text('Toutes'), selected: _matchFilter == null, onSelected: (_) => setState(() => _matchFilter = null)),
+                  ChoiceChip(label: const Text('✓ Associées'), selected: _matchFilter == 'matched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'matched' ? null : 'matched')),
+                  ChoiceChip(label: const Text('✗ Non associées'), selected: _matchFilter == 'unmatched', onSelected: (_) => setState(() => _matchFilter = _matchFilter == 'unmatched' ? null : 'unmatched')),
+                ]),
+                const SizedBox(height: 8),
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _autoMatching ? null : _runAutoMatch,
+                      icon: _autoMatching
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.auto_fix_high, size: 16),
+                      label: Text(_autoMatching ? (_autoMatchStatus.isEmpty ? '...' : _autoMatchStatus) : 'Matching auto', style: const TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _seriesList.isEmpty ? null : _openMatchAll,
+                      icon: const Icon(Icons.link, size: 16),
+                      label: const Text('Associer', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 12),
+                if (_loadingSeries) ...[
+                  LinearProgressIndicator(color: AppTheme.ac, backgroundColor: AppTheme.brd),
+                  const SizedBox(height: 8),
+                  Text('Chargement des séries…', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+                  const SizedBox(height: 20),
+                ] else if (filtered.isEmpty)
+                  Padding(padding: const EdgeInsets.all(30), child: Center(child: Text('Aucune série', style: TextStyle(color: AppTheme.t3)))),
+              ]),
+            ),
+          ),
+          if (!_loadingSeries && filtered.isNotEmpty)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 120, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
+                delegate: SliverChildBuilderDelegate(
+                  (ctx, i) {
+                    final s = filtered[i];
+                    final sid = s['id'] as int;
+                    final matched = _naut.matchFor(sid) != null;
+                    return GestureDetector(
+                      onTap: () async {
+                        await Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => KavitaSeriesDetailScreen(seriesId: sid, seriesName: s['name']?.toString() ?? '?'),
+                        ));
+                        if (mounted) setState(() {});
+                      },
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Expanded(child: Stack(children: [
+                          Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey(sid), seriesId: sid))),
+                          if (matched)
+                            Positioned(
+                              top: 4, right: 4,
+                              child: Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: BoxDecoration(color: AppTheme.grn, shape: BoxShape.circle),
+                                child: const Icon(Icons.check, color: Colors.white, size: 10),
+                              ),
+                            ),
+                        ])),
+                        const SizedBox(height: 4),
+                        Text(s['name']?.toString() ?? '?', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 11, fontWeight: FontWeight.w600)),
+                      ]),
+                    );
+                  },
+                  childCount: filtered.length,
+                ),
+              ),
             ),
         ],
       ),
@@ -833,9 +854,12 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
               ),
             )
           : null,
-      body: ListView(
-        padding: const EdgeInsets.all(12),
-        children: [
+      body: CustomScrollView(
+        slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          sliver: SliverToBoxAdapter(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: 90, height: 128, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(seriesId: widget.seriesId))),
             const SizedBox(width: 12),
@@ -905,17 +929,27 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
           Text('Chapitres', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
           const SizedBox(height: 8),
           if (_loading)
-            const Center(child: CircularProgressIndicator())
+            const Padding(padding: EdgeInsets.only(bottom: 20), child: Center(child: CircularProgressIndicator()))
           else if (_chapters.isEmpty)
-            Text('Aucun volume/chapitre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))
-          else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
+            Padding(padding: const EdgeInsets.only(bottom: 20), child: Text('Aucun volume/chapitre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))),
+            ]),
+          ),
+        ),
+        // Sliver "paresseuse" (voir la même remarque sur _buildBrowser dans
+        // KavitaScreen) -- certaines séries/webtoons ont plusieurs centaines
+        // de chapitres, un GridView shrinkWrap les construirait tous d'un
+        // coup.
+        if (!_loading && _chapters.isNotEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            sliver: SliverGrid(
               gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 100, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 0.6),
-              itemCount: _chapters.length,
-              itemBuilder: (ctx, i) => _chapterTile(ctx, i),
+              delegate: SliverChildBuilderDelegate(
+                (ctx, i) => _chapterTile(ctx, i),
+                childCount: _chapters.length,
+              ),
             ),
+          ),
         ],
       ),
     );
