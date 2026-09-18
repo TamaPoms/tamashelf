@@ -1053,42 +1053,58 @@ class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
       ),
       body: _busy
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
+          : SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(item.seriesName, style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
-                const SizedBox(height: 4),
-                Text('Choisis la bonne fiche Nautiljon, ou refuse', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  SizedBox(
+                    width: 70, height: 100,
+                    child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('rev_${item.seriesId}'), seriesId: item.seriesId)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(item.seriesName, style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
+                      const SizedBox(height: 4),
+                      Text('Série Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                      const SizedBox(height: 10),
+                      Text('Choisis la bonne fiche Nautiljon ci-dessous, ou refuse.', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                    ]),
+                  ),
+                ]),
                 const SizedBox(height: 14),
-                Expanded(
-                  child: GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 130, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
-                    itemCount: item.candidates.length,
-                    itemBuilder: (ctx, i) {
-                      final c = item.candidates[i];
-                      return GestureDetector(
-                        onTap: () => _accept(c),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Expanded(
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                color: AppTheme.c2,
-                                child: c.cover.isEmpty
-                                    ? Center(child: Icon(Icons.book, color: AppTheme.t3))
-                                    : Image.network(c.cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Center(child: Icon(Icons.book, color: AppTheme.t3))),
-                              ),
+                // Candidats limités à 6 (voir kavita_auto_match) -- une
+                // grille shrinkWrap est donc sans risque ici, contrairement
+                // à la liste des séries qui peut en compter des milliers.
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 130, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 0.6),
+                  itemCount: item.candidates.length,
+                  itemBuilder: (ctx, i) {
+                    final c = item.candidates[i];
+                    return GestureDetector(
+                      onTap: () => _accept(c),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              color: AppTheme.c2,
+                              child: c.cover.isEmpty
+                                  ? Center(child: Icon(Icons.book, color: AppTheme.t3))
+                                  : Image.network(c.cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Center(child: Icon(Icons.book, color: AppTheme.t3))),
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(c.title, style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
-                        ]),
-                      );
-                    },
-                  ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(c.title, style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
+                      ]),
+                    );
+                  },
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 14),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton(
@@ -1183,7 +1199,14 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(s['name']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SizedBox(
+              width: 60, height: 86,
+              child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('mall_${s['id']}'), seriesId: s['id'] as int)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text(s['name']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16))),
+          ]),
           const SizedBox(height: 10),
           Row(children: [
             Expanded(child: TextField(
