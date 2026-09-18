@@ -353,6 +353,21 @@ class NautiljonService {
     return true;
   }
 
+  // Réutilisation d'une association déjà faite sur UNE AUTRE source pour le
+  // même titre (normalisé) -- évite de refaire une recherche Nautiljon pour
+  // une série qu'on a déjà associée côté Kavita/Komga sous un nom identique.
+  // `titleKeys` : l'ensemble des variantes de titre normalisées à essayer
+  // (mêmes clés que celles utilisées pour la correspondance exacte).
+  Map<String, dynamic>? _findReusableMatch(String excludeSource, Set<String> titleKeys) {
+    if (titleKeys.isEmpty) return null;
+    for (final entry in _matches.entries) {
+      if (entry.key.startsWith('$excludeSource:')) continue;
+      final t = normalizeMatchKey((entry.value['title'] ?? '').toString());
+      if (t.isNotEmpty && titleKeys.contains(t)) return entry.value;
+    }
+    return null;
+  }
+
   Future<void> deleteMatch(String source, String seriesId) async {
     _matches.remove(matchKey(source, seriesId));
     await _saveMatches();
@@ -556,6 +571,26 @@ class NautiljonService {
         }
       }
       final keys = titres.map(normalizeMatchKey).where((k) => k.isNotEmpty).toSet();
+
+      // Une autre source (Kavita/Komga) a-t-elle déjà une association pour
+      // ce même titre ? Si oui, on la réutilise directement -- aucune
+      // recherche réseau nécessaire.
+      final reuse = _findReusableMatch(source, keys);
+      if (reuse != null) {
+        _matches[matchKey(source, sid)] = {
+          'source': source,
+          'series_id': sid,
+          'nautiljon_url': reuse['nautiljon_url'],
+          'title': reuse['title'],
+          'cover_url': reuse['cover_url'],
+          'matched_by': 'auto_reuse',
+          'created_at': DateTime.now().millisecondsSinceEpoch / 1000,
+          'metadata': reuse['metadata'] is Map ? Map<String, dynamic>.from(reuse['metadata'] as Map) : <String, dynamic>{},
+        };
+        await _saveMatches();
+        result.autoMatched++;
+        continue;
+      }
 
       final results = <Map<String, dynamic>>[];
       final seen = <String>{};
