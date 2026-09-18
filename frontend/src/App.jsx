@@ -100,6 +100,50 @@ function nautiljonMiniUrl(raw) {
 const SEARCH_TAG_KEYS = ["Type", "Types", "Genres", "Thème", "Thèmes", "Auteur", "Scénariste", "Dessinateur"];
 const ALPHA_LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
 
+// Variantes de ponctuation pour la recherche Nautiljon côté Kavita (voir
+// _match_query_variants côté backend, même logique en plus simple ici :
+// seule la première occurrence de " - "/" : "/": " est le séparateur
+// titre/sous-titre, ex. "Detroit - Become Human - Tokyo Stories" ->
+// "Detroit: Become Human - Tokyo Stories", pas "Detroit: Become Human:
+// Tokyo Stories").
+function titleSearchVariants(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return [];
+  const variants = [raw];
+  const addOnce = (v) => { if (v && !variants.includes(v)) variants.push(v); };
+  const replaceFirst = (s, sep, rep) => { const i = s.indexOf(sep); return i === -1 ? s : s.slice(0, i) + rep + s.slice(i + sep.length); };
+  if (raw.includes(" - ")) {
+    addOnce(replaceFirst(raw, " - ", " : "));
+    addOnce(replaceFirst(raw, " - ", ": "));
+  }
+  if (raw.includes(" : ")) {
+    addOnce(replaceFirst(raw, " : ", " - "));
+    addOnce(replaceFirst(raw, " : ", ": "));
+  } else if (raw.includes(": ")) {
+    addOnce(replaceFirst(raw, ": ", " - "));
+    addOnce(replaceFirst(raw, ": ", " : "));
+  }
+  return variants;
+}
+
+// Cherche sur Nautiljon avec toutes les variantes de ponctuation du titre et
+// fusionne les résultats (dédupliqués par URL) -- pour que "Cyberpunk -
+// Edgerunners MADNESS" retrouve bien "Cyberpunk: Edgerunners MADNESS" sans
+// que l'utilisateur ait à retaper la requête à la main.
+async function searchNautiljonAllVariants(name, limitPerVariant = 12) {
+  const seen = new Set();
+  const merged = [];
+  for (const v of titleSearchVariants(name)) {
+    try {
+      const r = await api.nautiljonSearch(v, limitPerVariant);
+      for (const row of (r.results || r.rows || [])) {
+        if (row.url && !seen.has(row.url)) { seen.add(row.url); merged.push(row); }
+      }
+    } catch { /* une variante en échec ne doit pas bloquer les autres */ }
+  }
+  return merged;
+}
+
 const TAG_COLORS = [
   "#FF6B6B", "#FFB347", "#6BCB77", "#4ECDC4", "#45B7D1",
   "#7C4DFF", "#FF6B9D", "#FFA502", "#2ED573", "#5F27CD",
@@ -2344,8 +2388,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
         setNautMatch(await api.nautiljonManga(m.nautiljon_url));
       } else if (isAdmin) {
         try {
-          const r = await api.nautiljonSearch(series.name || "", 1);
-          const best = (r.results || r.rows || [])[0];
+          const results = await searchNautiljonAllVariants(series.name || "", 4);
+          const best = results[0];
           if (best?.url) setSuggested(best); else setShowMatchSearch(true);
         } catch { setShowMatchSearch(true); }
       }
@@ -2357,8 +2401,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     if (!matchQuery.trim()) return;
     setMatchSearching(true);
     try {
-      const r = await api.nautiljonSearch(matchQuery.trim(), 12);
-      setMatchResults(r.results || r.rows || []);
+      setMatchResults(await searchNautiljonAllVariants(matchQuery.trim()));
     } catch (e) { show(e.message); }
     setMatchSearching(false);
   };
@@ -2420,8 +2463,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin }) {
     (async () => {
       setMatchSearching(true);
       try {
-        const r = await api.nautiljonSearch(item.name || "", 12);
-        if (!cancelled) setMatchResults(r.results || r.rows || []);
+        const results = await searchNautiljonAllVariants(item.name || "", 12);
+        if (!cancelled) setMatchResults(results);
       } catch { /* recherche auto ratée -- la barre reste utilisable à la main */ }
       if (!cancelled) setMatchSearching(false);
     })();

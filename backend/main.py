@@ -146,11 +146,23 @@ def _match_query_variants(text: str) -> list[str]:
     add(raw)
 
     # Variantes de ponctuation fréquentes (aident la recherche API)
-    # ex: "Agenda - Attraction !" <-> "Agenda : Attraction !"
+    # ex: "Agenda - Attraction !" <-> "Agenda : Attraction !" (typo FR, espace
+    # avant le ":") <-> "Cyberpunk: Edgerunners" (typo EN/titre original, PAS
+    # d'espace avant le ":" -- fréquent sur les titres non-FR référencés tels
+    # quels sur Nautiljon). count=1 : seule la PREMIÈRE occurrence est le
+    # séparateur titre/sous-titre -- un titre comme "Detroit - Become Human -
+    # Tokyo Stories" doit donner "Detroit: Become Human - Tokyo Stories" (le
+    # 2e " - " fait partie du sous-titre, pas un second séparateur), jamais
+    # "Detroit: Become Human: Tokyo Stories".
     if " - " in raw:
-        add(raw.replace(" - ", " : "))
+        add(raw.replace(" - ", " : ", 1))
+        add(raw.replace(" - ", ": ", 1))
     if " : " in raw:
-        add(raw.replace(" : ", " - "))
+        add(raw.replace(" : ", " - ", 1))
+        add(raw.replace(" : ", ": ", 1))
+    if ": " in raw and " : " not in raw:
+        add(raw.replace(": ", " - ", 1))
+        add(raw.replace(": ", " : ", 1))
 
     # Titre (Le/La/Les/The/L') -> Le Titre
     m = re.match(r"^(.*?)\s*\((le|la|les|the|l['’]?|un|une|des)\)\s*$", raw, flags=re.IGNORECASE)
@@ -1799,13 +1811,16 @@ async def kavita_list_matches(user=Depends(get_current_user)):
 async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
     """Matching auto pour une bibliothèque Kavita : uniquement les correspondances
     exactes (titre normalisé identique, voir _normalize_match_key -- insensible à la
-    casse/aux accents mais rien d'approximatif), contrairement au matching auto CBZ qui
-    tente aussi des variantes de requête de recherche. On compare quand même le nom de
-    la série ET sa version sans suffixe d'édition (_strip_edition_suffix, ex. "A Certain
-    Scientific Railgun - Édition Deluxe" -> "A Certain Scientific Railgun") : Nautiljon
-    ne référence la série qu'une fois, pas une fiche par édition physique/numérique.
-    Les séries déjà matchées sont laissées intactes ; pas de résultat exact -> ignorée
-    (reste à faire manuellement)."""
+    casse/aux accents/à la ponctuation, mais rien d'approximatif). Comme le matching
+    auto CBZ, on cherche avec plusieurs variantes du titre (_match_query_variants :
+    ponctuation " - " <-> " : " <-> ": ", ex. "Cyberpunk - Edgerunners MADNESS" <->
+    "Cyberpunk: Edgerunners MADNESS") ET sa version sans suffixe d'édition
+    (_strip_edition_suffix, ex. "A Certain Scientific Railgun - Édition Deluxe" -> "A
+    Certain Scientific Railgun") -- indispensable ici : la comparaison normalisée
+    traiterait déjà ces variantes comme identiques, mais la RECHERCHE (LIKE substring
+    côté app.py) ne remonte le bon résultat que si l'une des requêtes correspond
+    effectivement au texte stocké sur Nautiljon. Les séries déjà matchées sont laissées
+    intactes ; pas de résultat exact -> ignorée (reste à faire manuellement)."""
     with get_db_ctx() as db:
         client = _get_kavita_client(db)
         already = {r["kavita_series_id"] for r in db.execute("SELECT kavita_series_id FROM kavita_matches").fetchall()}
@@ -1826,7 +1841,11 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
         if not sid or sid in already or not name:
             continue
         name_sans_edition = _strip_edition_suffix(name)
-        titres = [name] + ([name_sans_edition] if name_sans_edition and name_sans_edition != name else [])
+        titres = list(_match_query_variants(name))
+        if name_sans_edition and name_sans_edition != name:
+            for t in _match_query_variants(name_sans_edition):
+                if t not in titres:
+                    titres.append(t)
         keys = {k for k in (_normalize_match_key(t) for t in titres) if k}
 
         results = []
