@@ -7,6 +7,7 @@ import '../models/manga.dart';
 import 'manga_detail_screen.dart';
 import 'reader_screen.dart';
 import 'kavita_screen.dart';
+import 'komga_screen.dart';
 
 class HomepageScreen extends StatefulWidget {
   const HomepageScreen({super.key});
@@ -67,13 +68,14 @@ class _HomepageScreenState extends State<HomepageScreen> {
                       padding: const EdgeInsets.all(12),
                       children: [
                         if (state.showKavitaShortcut) _buildKavitaShortcut(),
+                        if (state.showKomgaShortcut) _buildKomgaShortcut(),
                         if (_data != null && _data!.isNotEmpty) ...[
                           if (_hasProgress) _buildProgressSection(state),
                           if (_hasRecent) _buildRecentSection(state),
                           if (_hasTopRated) _buildTopRatedSection(state),
                           if (_hasRecommendations) _buildRecommendationsSection(state),
-                          if (!_hasProgress && !_hasRecent && !state.showKavitaShortcut) _buildEmpty(),
-                        ] else if (!state.showKavitaShortcut)
+                          if (!_hasProgress && !_hasRecent && !state.showKavitaShortcut && !state.showKomgaShortcut) _buildEmpty(),
+                        ] else if (!state.showKavitaShortcut && !state.showKomgaShortcut)
                           _buildEmpty(),
                       ],
                     ),
@@ -110,6 +112,35 @@ class _HomepageScreenState extends State<HomepageScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Kavita', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
               Text('Parcourir ton serveur Kavita', style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 11)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right, color: Colors.white, size: 22),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildKomgaShortcut() {
+    return GestureDetector(
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KomgaScreen())),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(colors: [MangaColors.accent, MangaColors.secondary]),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.auto_stories_outlined, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Komga', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+              Text('Parcourir ton serveur Komga', style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 11)),
             ]),
           ),
           const Icon(Icons.chevron_right, color: Colors.white, size: 22),

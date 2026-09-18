@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import 'kavita_screen.dart';
+import 'komga_screen.dart';
 
 class SetupScreen extends StatefulWidget {
   const SetupScreen({super.key});
@@ -139,11 +140,15 @@ class _SetupScreenState extends State<SetupScreen> {
             : const Text('Suivant'),
         ),
         const SizedBox(height: 10),
-        // Kavita est autonome (config + associations en local) : pas besoin
-        // d'un serveur TamaShelf pour l'utiliser.
+        // Kavita/Komga sont autonomes (config + associations en local) :
+        // pas besoin d'un serveur TamaShelf pour les utiliser.
         TextButton(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaScreen())),
           child: Text('Utiliser Kavita sans serveur TamaShelf', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KomgaScreen())),
+          child: Text('Utiliser Komga sans serveur TamaShelf', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
         ),
       ],
     );

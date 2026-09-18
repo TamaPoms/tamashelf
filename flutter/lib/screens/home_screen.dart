@@ -21,6 +21,7 @@ import 'homepage_screen.dart';
 import 'collections_screen.dart';
 import 'stats_screen.dart';
 import 'kavita_screen.dart';
+import 'komga_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -180,6 +181,8 @@ class _HomeScreenState extends State<HomeScreen> {
               _moreItem(Icons.settings, 'Parametres', '', AppTheme.t2, 5),
               _moreItem(Icons.auto_stories_outlined, 'Kavita', '', AppTheme.cyn, 6,
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaScreen()))),
+              _moreItem(Icons.auto_stories_outlined, 'Komga', '', AppTheme.amb, 7,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KomgaScreen()))),
             ],
           ),
         ),
@@ -855,6 +858,36 @@ class _HomeScreenState extends State<HomeScreen> {
                   Switch(
                     value: state.showKavitaShortcut,
                     onChanged: (v) => state.setShowKavitaShortcut(v),
+                    activeColor: MangaColors.accent,
+                    activeTrackColor: MangaColors.accent.withValues(alpha: 0.3),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.c1,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppTheme.brd, width: 0.5),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_stories_outlined, color: MangaColors.accent, size: 22),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Raccourci Komga sur l\'accueil', style: TextStyle(color: AppTheme.t1, fontSize: 14, fontWeight: FontWeight.w600)),
+                        Text('Affiche une carte d\'accès rapide vers Komga', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: state.showKomgaShortcut,
+                    onChanged: (v) => state.setShowKomgaShortcut(v),
                     activeColor: MangaColors.accent,
                     activeTrackColor: MangaColors.accent.withValues(alpha: 0.3),
                   ),

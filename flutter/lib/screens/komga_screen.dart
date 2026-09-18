@@ -1,111 +1,82 @@
-// Écran Kavita — parcours/lecture d'un serveur Kavita externe, INDÉPENDANT
-// d'un serveur TamaShelf (voir services/kavita_service.dart et
+// Écran Komga — parcours/lecture d'un serveur Komga externe, INDÉPENDANT
+// d'un serveur TamaShelf (voir services/komga_service.dart et
 // services/nautiljon_service.dart : config, associations et progression
-// sont mémorisées localement sur le téléphone). Portage du KavitaBrowser du
-// site (frontend/src/App.jsx) en plus simple pour une première version
-// mobile : recherche + filtre associé/non-associé, matching auto avec file
-// de suggestions à valider, association manuelle une par une, lecture avec
-// reprise.
+// sont mémorisées localement sur le téléphone). Miroir de kavita_screen.dart
+// (même fonctionnalités : recherche + filtre associé/non-associé + filtre
+// par tag, matching auto avec file de suggestions, association manuelle une
+// par une, lecture avec reprise, téléchargement hors-ligne) -- SEUL le
+// matching Nautiljon est partagé entre les deux (NautiljonService, voir
+// nautiljon_service.dart). Différences avec Kavita : identifiants en String
+// (UUID, pas des entiers), auth par simple clé API sans échange de jeton,
+// pas de notion volume/chapitre séparée (juste des "livres" à plat), et le
+// nombre de pages est déjà connu à la liste (media.pagesCount) -- pas
+// besoin d'un appel réseau supplémentaire avant d'ouvrir le lecteur.
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../models/manga.dart';
-import '../services/kavita_service.dart';
-import '../services/kavita_download_service.dart';
+import '../services/komga_service.dart';
+import '../services/komga_download_service.dart';
 import '../services/nautiljon_service.dart';
 import '../theme.dart';
 import 'reader_screen.dart';
 
-Volume _kavitaVolume(int seriesId, int chapterId, int totalPages) => Volume(
-      id: chapterId,
-      cbzFolder: 'kavita:series:$seriesId',
+Volume _komgaVolume(String seriesId, String bookId, int totalPages) => Volume(
+      id: bookId.hashCode,
+      cbzFolder: 'komga:series:$seriesId',
       libraryId: 0,
-      filename: 'kavita_chapter_$chapterId',
-      filepath: 'kavita:chapter:$chapterId',
+      filename: 'komga_book_$bookId',
+      filepath: 'komga:book:$bookId',
       totalPages: totalPages,
     );
 
-Future<void> _openKavitaChapter(
+// Contrairement à Kavita, aucun appel réseau préalable n'est nécessaire :
+// le nombre de pages est déjà connu (media.pagesCount, récupéré avec la
+// liste des livres) ou repris du manifeste local si le livre est
+// téléchargé -- lecture hors-ligne sans aucun accès réseau dans ce cas.
+Future<void> openKomgaBook(
   BuildContext context, {
-  required int seriesId,
+  required String seriesId,
   required String seriesName,
-  required int chapterId,
+  required String bookId,
   required int totalPages,
   int startPage = 0,
 }) async {
   final state = context.read<AppState>();
-  final kavita = state.kavita;
-  final kdl = state.kavitaDownloads;
+  final komga = state.komga;
+  final kdl = state.komgaDownloads;
   await Navigator.push(context, MaterialPageRoute(
     builder: (_) => ReaderScreen(
       title: seriesName,
-      volume: _kavitaVolume(seriesId, chapterId, totalPages),
+      volume: _komgaVolume(seriesId, bookId, totalPages),
       online: true,
       onlineTotalPages: totalPages,
       startPage: startPage,
       onlinePageLoader: (page) async {
-        // Chapitre téléchargé (voir services/kavita_download_service.dart) :
-        // on lit sur disque, aucun accès réseau -- lecture hors-ligne.
-        final local = await kdl.localPageBytes(chapterId, page);
+        final local = await kdl.localPageBytes(bookId, page);
         if (local != null) return local;
-        return kavita.pageBytes(chapterId, page);
+        return komga.pageBytes(bookId, page);
       },
-      progressMangaUrl: 'kavita:series:$seriesId',
-      progressVolumeId: 'kavita:chapter:$chapterId',
+      progressMangaUrl: 'komga:series:$seriesId',
+      progressVolumeId: 'komga:book:$bookId',
       enableNextVolume: false,
     ),
   ));
 }
 
-// Déclenche la mise en cache des pages côté Kavita (chapter-info) avant
-// d'ouvrir le lecteur -- sans cet appel préalable la première lecture d'un
-// chapitre renvoie des pages vides/noires (voir kavita_service.dart). Sauf
-// si le chapitre est déjà téléchargé : on évite alors tout appel réseau
-// (nombre de pages repris du manifeste local) pour une vraie lecture
-// hors-ligne.
-Future<void> openKavitaChapterFresh(
-  BuildContext context, {
-  required int seriesId,
-  required String seriesName,
-  required int chapterId,
-  required int fallbackPages,
-  int startPage = 0,
-}) async {
-  final state = context.read<AppState>();
-  final downloaded = await state.kavitaDownloads.info(chapterId);
-  if (downloaded != null) {
-    final pages = (downloaded['totalPages'] as num?)?.toInt() ?? fallbackPages;
-    if (!context.mounted) return;
-    await _openKavitaChapter(context,
-        seriesId: seriesId, seriesName: seriesName, chapterId: chapterId, totalPages: pages, startPage: startPage);
-    return;
-  }
-  try {
-    final info = await state.kavita.chapterInfo(chapterId);
-    final pages = (info['pages'] as num?)?.toInt() ?? fallbackPages;
-    if (!context.mounted) return;
-    await _openKavitaChapter(context,
-        seriesId: seriesId, seriesName: seriesName, chapterId: chapterId, totalPages: pages, startPage: startPage);
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur Kavita : $e'), backgroundColor: AppTheme.ros));
-    }
-  }
-}
-
-class KavitaScreen extends StatefulWidget {
-  const KavitaScreen({super.key});
+class KomgaScreen extends StatefulWidget {
+  const KomgaScreen({super.key});
   @override
-  State<KavitaScreen> createState() => _KavitaScreenState();
+  State<KomgaScreen> createState() => _KomgaScreenState();
 }
 
-class _KavitaScreenState extends State<KavitaScreen> {
+class _KomgaScreenState extends State<KomgaScreen> {
   bool _checking = true;
   bool _available = false;
   String? _error;
   List<Map<String, dynamic>> _libraries = [];
-  int? _libId;
+  String? _libId;
   List<Map<String, dynamic>> _seriesList = [];
   bool _loadingSeries = false;
   final _searchCtrl = TextEditingController();
@@ -117,7 +88,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
   bool _refreshingTags = false;
   String _refreshTagsStatus = '';
 
-  KavitaService get _kavita => context.read<AppState>().kavita;
+  KomgaService get _komga => context.read<AppState>().komga;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
 
   @override
@@ -134,16 +105,16 @@ class _KavitaScreenState extends State<KavitaScreen> {
 
   Future<void> _check() async {
     setState(() { _checking = true; _error = null; });
-    if (!_kavita.isConfigured) {
+    if (!_komga.isConfigured) {
       setState(() { _checking = false; _available = false; });
       return;
     }
     try {
-      final libs = await _kavita.libraries();
+      final libs = await _komga.libraries();
       if (!mounted) return;
       setState(() {
         _libraries = libs;
-        _libId = libs.isNotEmpty ? libs.first['id'] as int : null;
+        _libId = libs.isNotEmpty ? libs.first['id'] as String : null;
         _available = true;
         _checking = false;
       });
@@ -158,8 +129,8 @@ class _KavitaScreenState extends State<KavitaScreen> {
     if (_libId == null) return;
     setState(() => _loadingSeries = true);
     try {
-      final list = await _kavita.seriesInLibrary(_libId!);
-      list.sort((a, b) => (a['name'] as String? ?? '').toLowerCase().compareTo((b['name'] as String? ?? '').toLowerCase()));
+      final list = await _komga.seriesInLibrary(_libId!);
+      list.sort((a, b) => komgaSeriesTitle(a).toLowerCase().compareTo(komgaSeriesTitle(b).toLowerCase()));
       if (!mounted) return;
       setState(() { _seriesList = list; _loadingSeries = false; });
     } catch (e) {
@@ -169,24 +140,23 @@ class _KavitaScreenState extends State<KavitaScreen> {
   }
 
   Future<void> _openConfig() async {
-    final saved = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const KavitaConfigScreen()));
+    final saved = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const KomgaConfigScreen()));
     if (saved == true) _check();
   }
 
   Future<void> _runAutoMatch() async {
     if (_libId == null || _autoMatching) return;
-    // Ne pas repasser sur les séries déjà associées -- autoMatch() les
-    // ignore de toute façon en interne, mais les lui passer quand même
-    // gonflait inutilement le compteur de progression (et le temps
-    // d'itération) avec des milliers d'entrées déjà traitées.
-    final unmatched = _seriesList.where((s) => _naut.matchFor('kavita', '${s['id']}') == null).toList();
+    final unmatched = _seriesList.where((s) => _naut.matchFor('komga', s['id'] as String) == null).toList();
     if (unmatched.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Toutes les séries sont déjà associées.')));
       return;
     }
     setState(() { _autoMatching = true; _autoMatchStatus = ''; });
     try {
-      final result = await _naut.autoMatch('kavita', unmatched, onProgress: (done, total) {
+      // komgaSeriesTitle (metadata.title si renseigné, sinon name) plutôt
+      // que le champ brut 'name' -- autoMatch() lit s['name'].
+      final withName = unmatched.map((s) => {...s, 'name': komgaSeriesTitle(s)}).toList();
+      final result = await _naut.autoMatch('komga', withName, onProgress: (done, total) {
         if (mounted) setState(() => _autoMatchStatus = '$done/$total');
       });
       if (!mounted) return;
@@ -195,7 +165,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
       if (result.notFound > 0) msg += ', ${result.notFound} sans résultat exact';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       if (result.suggestions.isNotEmpty) {
-        await Navigator.push(context, MaterialPageRoute(builder: (_) => KavitaReviewQueueScreen(queue: result.suggestions)));
+        await Navigator.push(context, MaterialPageRoute(builder: (_) => KomgaReviewQueueScreen(queue: result.suggestions)));
       }
       if (mounted) setState(() {});
     } catch (e) {
@@ -206,13 +176,11 @@ class _KavitaScreenState extends State<KavitaScreen> {
   }
 
   Future<void> _openMatchAll() async {
-    final unmatched = _seriesList.where((s) => _naut.matchFor('kavita', '${s['id']}') == null).toList();
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => KavitaMatchAllScreen(seriesList: unmatched)));
+    final unmatched = _seriesList.where((s) => _naut.matchFor('komga', s['id'] as String) == null).toList();
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => KomgaMatchAllScreen(seriesList: unmatched)));
     if (mounted) setState(() {});
   }
 
-  // Associations sauvegardées avant l'ajout des tags (metadata) -- repasse
-  // dessus pour aller les chercher sans tout ré-associer à la main.
   Future<void> _refreshTags() async {
     if (_refreshingTags) return;
     setState(() { _refreshingTags = true; _refreshTagsStatus = ''; });
@@ -232,11 +200,11 @@ class _KavitaScreenState extends State<KavitaScreen> {
     }
   }
 
-  Future<void> _resumeChapter({required String mangaUrl, required String volumeId, required String title, required int startPage}) async {
-    final seriesId = int.tryParse(mangaUrl.replaceFirst('kavita:series:', '')) ?? 0;
-    final chapterId = int.tryParse(volumeId.replaceFirst('kavita:chapter:', '')) ?? 0;
-    if (seriesId == 0 || chapterId == 0) return;
-    await openKavitaChapterFresh(context, seriesId: seriesId, seriesName: title, chapterId: chapterId, fallbackPages: 0, startPage: startPage);
+  Future<void> _resumeBook({required String mangaUrl, required String volumeId, required String title, required int startPage, required int totalPages}) async {
+    final seriesId = mangaUrl.replaceFirst('komga:series:', '');
+    final bookId = volumeId.replaceFirst('komga:book:', '');
+    if (seriesId.isEmpty || bookId.isEmpty || seriesId == mangaUrl || bookId == volumeId) return;
+    await openKomgaBook(context, seriesId: seriesId, seriesName: title, bookId: bookId, totalPages: totalPages, startPage: startPage);
     if (mounted) setState(() {});
   }
 
@@ -259,7 +227,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
       backgroundColor: AppTheme.d,
       appBar: AppBar(
         backgroundColor: AppTheme.bg,
-        title: Text('Kavita', style: TextStyle(color: AppTheme.t1)),
+        title: Text('Komga', style: TextStyle(color: AppTheme.t1)),
         iconTheme: IconThemeData(color: AppTheme.t1),
         actions: [
           IconButton(
@@ -272,14 +240,14 @@ class _KavitaScreenState extends State<KavitaScreen> {
           IconButton(
             icon: Icon(Icons.download_done, color: AppTheme.t2),
             tooltip: 'Téléchargements',
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KavitaDownloadsScreen())),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KomgaDownloadsScreen())),
           ),
           IconButton(icon: Icon(Icons.settings, color: AppTheme.t2), onPressed: _openConfig),
         ],
       ),
       body: _checking
           ? const Center(child: CircularProgressIndicator())
-          : !_kavita.isConfigured
+          : !_komga.isConfigured
               ? _buildNotConfigured()
               : !_available
                   ? _buildError()
@@ -294,15 +262,15 @@ class _KavitaScreenState extends State<KavitaScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(Icons.dns, color: AppTheme.t3, size: 48),
           const SizedBox(height: 12),
-          Text('Serveur Kavita non configuré', style: TextStyle(color: AppTheme.t1, fontSize: 15, fontWeight: FontWeight.w600)),
+          Text('Serveur Komga non configuré', style: TextStyle(color: AppTheme.t1, fontSize: 15, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           Text(
-            'Indépendant de TamaShelf : renseigne juste l\'adresse de ton serveur Kavita et ta clé API.',
+            'Indépendant de TamaShelf : renseigne juste l\'adresse de ton serveur Komga et ta clé API.',
             textAlign: TextAlign.center,
             style: TextStyle(color: AppTheme.t3, fontSize: 12),
           ),
           const SizedBox(height: 18),
-          ElevatedButton.icon(onPressed: _openConfig, icon: const Icon(Icons.settings, size: 18), label: const Text('Configurer Kavita')),
+          ElevatedButton.icon(onPressed: _openConfig, icon: const Icon(Icons.settings, size: 18), label: const Text('Configurer Komga')),
         ]),
       ),
     );
@@ -315,7 +283,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(Icons.wifi_off, color: AppTheme.ros, size: 48),
           const SizedBox(height: 12),
-          Text('Serveur Kavita injoignable', style: TextStyle(color: AppTheme.t1, fontSize: 15, fontWeight: FontWeight.w600)),
+          Text('Serveur Komga injoignable', style: TextStyle(color: AppTheme.t1, fontSize: 15, fontWeight: FontWeight.w600)),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -334,29 +302,26 @@ class _KavitaScreenState extends State<KavitaScreen> {
 
   Widget _buildBrowser() {
     final state = context.watch<AppState>();
-    final inProgress = state.progress.inProgress.where((e) => e.volumeId.startsWith('kavita:chapter:')).toList();
+    final inProgress = state.progress.inProgress.where((e) => e.volumeId.startsWith('komga:book:')).toList();
     final q = _searchCtrl.text.trim().toLowerCase();
     final filtered = _loadingSeries
         ? const <Map<String, dynamic>>[]
         : _seriesList.where((s) {
-            final sid = s['id'] as int;
-            final name = (s['name'] as String? ?? '');
+            final sid = s['id'] as String;
+            final name = komgaSeriesTitle(s);
             if (q.isNotEmpty && !name.toLowerCase().contains(q)) return false;
-            final matched = _naut.matchFor('kavita', '$sid') != null;
+            final matched = _naut.matchFor('komga', sid) != null;
             if (_matchFilter == 'matched' && !matched) return false;
             if (_matchFilter == 'unmatched' && matched) return false;
-            if (!_naut.matchHasTags('kavita', '$sid', _tagFilters)) return false;
+            if (!_naut.matchHasTags('komga', sid, _tagFilters)) return false;
             return true;
           }).toList();
-    final availableTags = _naut.allTags(source: 'kavita');
+    final availableTags = _naut.allTags(source: 'komga');
 
-    // IMPORTANT : la grille de séries doit rester une sliver "paresseuse"
-    // (SliverGrid dans le même CustomScrollView, pas un GridView.builder
-    // shrinkWrap imbriqué dans un ListView) -- avec 4000+ séries, un
-    // GridView shrinkWrap construit TOUTES les tuiles (et donc lance TOUS
-    // les téléchargements de covers) d'un coup pour calculer sa hauteur,
-    // ce qui bloquait/plantait l'appli. Ici seules les tuiles visibles
-    // (+ la zone de cache habituelle de Flutter) sont construites.
+    // Sliver "paresseuse" -- voir la même remarque dans kavita_screen.dart
+    // (_buildBrowser) : un GridView shrinkWrap imbriqué dans un ListView
+    // construit toutes les tuiles d'un coup pour calculer sa hauteur, ce
+    // qui plante avec des milliers de séries.
     return RefreshIndicator(
       onRefresh: _loadSeries,
       child: CustomScrollView(
@@ -369,7 +334,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
                   Wrap(
                     spacing: 6,
                     children: _libraries.map((l) {
-                      final id = l['id'] as int;
+                      final id = l['id'] as String;
                       return ChoiceChip(
                         label: Text(l['name']?.toString() ?? '?'),
                         selected: id == _libId,
@@ -389,14 +354,14 @@ class _KavitaScreenState extends State<KavitaScreen> {
                       itemCount: inProgress.length,
                       itemBuilder: (ctx, i) {
                         final e = inProgress[i];
-                        final seriesId = int.tryParse(e.mangaUrl.replaceFirst('kavita:series:', '')) ?? 0;
+                        final seriesId = e.mangaUrl.replaceFirst('komga:series:', '');
                         return GestureDetector(
-                          onTap: () => _resumeChapter(mangaUrl: e.mangaUrl, volumeId: e.volumeId, title: e.title, startPage: e.currentPage),
+                          onTap: () => _resumeBook(mangaUrl: e.mangaUrl, volumeId: e.volumeId, title: e.title, startPage: e.currentPage, totalPages: e.totalPages),
                           child: Container(
                             width: 100,
                             margin: const EdgeInsets.only(right: 10),
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('prog_$seriesId'), seriesId: seriesId))),
+                              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KomgaCover(key: ValueKey('prog_$seriesId'), seriesId: seriesId))),
                               const SizedBox(height: 4),
                               Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 10, fontWeight: FontWeight.w600)),
                               Text('${(e.percent * 100).round()}%', style: TextStyle(color: AppTheme.t3, fontSize: 9)),
@@ -522,18 +487,19 @@ class _KavitaScreenState extends State<KavitaScreen> {
                 delegate: SliverChildBuilderDelegate(
                   (ctx, i) {
                     final s = filtered[i];
-                    final sid = s['id'] as int;
-                    final matched = _naut.matchFor('kavita', '$sid') != null;
+                    final sid = s['id'] as String;
+                    final title = komgaSeriesTitle(s);
+                    final matched = _naut.matchFor('komga', sid) != null;
                     return GestureDetector(
                       onTap: () async {
                         await Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => KavitaSeriesDetailScreen(seriesId: sid, seriesName: s['name']?.toString() ?? '?'),
+                          builder: (_) => KomgaSeriesDetailScreen(seriesId: sid, seriesName: title),
                         ));
                         if (mounted) setState(() {});
                       },
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Expanded(child: Stack(children: [
-                          Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey(sid), seriesId: sid))),
+                          Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KomgaCover(key: ValueKey(sid), seriesId: sid))),
                           if (matched)
                             Positioned(
                               top: 4, right: 4,
@@ -545,7 +511,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
                             ),
                         ])),
                         const SizedBox(height: 4),
-                        Text(s['name']?.toString() ?? '?', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 11, fontWeight: FontWeight.w600)),
+                        Text(title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 11, fontWeight: FontWeight.w600)),
                       ]),
                     );
                   },
@@ -559,16 +525,17 @@ class _KavitaScreenState extends State<KavitaScreen> {
   }
 }
 
-// ── Cover série (mise en cache en mémoire côté KavitaService) ──
+// ── Cover série/livre (mise en cache en mémoire + disque côté
+// KomgaService) ──
 
-class _KavitaCover extends StatefulWidget {
-  final int seriesId;
-  const _KavitaCover({super.key, required this.seriesId});
+class _KomgaCover extends StatefulWidget {
+  final String seriesId;
+  const _KomgaCover({super.key, required this.seriesId});
   @override
-  State<_KavitaCover> createState() => _KavitaCoverState();
+  State<_KomgaCover> createState() => _KomgaCoverState();
 }
 
-class _KavitaCoverState extends State<_KavitaCover> {
+class _KomgaCoverState extends State<_KomgaCover> {
   Uint8List? _bytes;
   bool _error = false;
 
@@ -576,7 +543,7 @@ class _KavitaCoverState extends State<_KavitaCover> {
   void initState() { super.initState(); _load(); }
 
   @override
-  void didUpdateWidget(covariant _KavitaCover old) {
+  void didUpdateWidget(covariant _KomgaCover old) {
     super.didUpdateWidget(old);
     if (old.seriesId != widget.seriesId) {
       _bytes = null; _error = false; _load();
@@ -585,7 +552,7 @@ class _KavitaCoverState extends State<_KavitaCover> {
 
   Future<void> _load() async {
     try {
-      final b = await context.read<AppState>().kavita.seriesCoverBytes(widget.seriesId);
+      final b = await context.read<AppState>().komga.seriesCoverBytes(widget.seriesId);
       if (mounted) setState(() => _bytes = b);
     } catch (_) {
       if (mounted) setState(() => _error = true);
@@ -605,14 +572,14 @@ class _KavitaCoverState extends State<_KavitaCover> {
   }
 }
 
-class _KavitaChapterCover extends StatefulWidget {
-  final int chapterId;
-  const _KavitaChapterCover({super.key, required this.chapterId});
+class _KomgaBookCover extends StatefulWidget {
+  final String bookId;
+  const _KomgaBookCover({super.key, required this.bookId});
   @override
-  State<_KavitaChapterCover> createState() => _KavitaChapterCoverState();
+  State<_KomgaBookCover> createState() => _KomgaBookCoverState();
 }
 
-class _KavitaChapterCoverState extends State<_KavitaChapterCover> {
+class _KomgaBookCoverState extends State<_KomgaBookCover> {
   Uint8List? _bytes;
   bool _error = false;
 
@@ -621,7 +588,7 @@ class _KavitaChapterCoverState extends State<_KavitaChapterCover> {
 
   Future<void> _load() async {
     try {
-      final b = await context.read<AppState>().kavita.chapterCoverBytes(widget.chapterId);
+      final b = await context.read<AppState>().komga.bookCoverBytes(widget.bookId);
       if (mounted) setState(() => _bytes = b);
     } catch (_) {
       if (mounted) setState(() => _error = true);
@@ -641,15 +608,15 @@ class _KavitaChapterCoverState extends State<_KavitaChapterCover> {
   }
 }
 
-// ── Config Kavita + tamajon ──
+// ── Config Komga + tamajon ──
 
-class KavitaConfigScreen extends StatefulWidget {
-  const KavitaConfigScreen({super.key});
+class KomgaConfigScreen extends StatefulWidget {
+  const KomgaConfigScreen({super.key});
   @override
-  State<KavitaConfigScreen> createState() => _KavitaConfigScreenState();
+  State<KomgaConfigScreen> createState() => _KomgaConfigScreenState();
 }
 
-class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
+class _KomgaConfigScreenState extends State<KomgaConfigScreen> {
   final _urlCtrl = TextEditingController();
   final _keyCtrl = TextEditingController();
   final _tamajonCtrl = TextEditingController();
@@ -660,8 +627,8 @@ class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
   void initState() {
     super.initState();
     final state = context.read<AppState>();
-    _urlCtrl.text = state.kavita.serverUrl;
-    _keyCtrl.text = state.kavita.apiKey;
+    _urlCtrl.text = state.komga.serverUrl;
+    _keyCtrl.text = state.komga.apiKey;
     _tamajonCtrl.text = state.nautiljon.baseUrl;
   }
 
@@ -680,11 +647,11 @@ class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
     }
     setState(() { _loading = true; _error = null; });
     final state = context.read<AppState>();
-    await state.kavita.setConfig(url.startsWith('http') ? url : 'http://$url', key);
+    await state.komga.setConfig(url.startsWith('http') ? url : 'http://$url', key);
     final tamajon = _tamajonCtrl.text.trim();
     await state.nautiljon.setBaseUrl(tamajon.isEmpty ? kDefaultTamajonUrl : tamajon);
     try {
-      await state.kavita.libraries();
+      await state.komga.libraries();
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (e) {
@@ -694,32 +661,32 @@ class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
   }
 
   Future<void> _remove() async {
-    await context.read<AppState>().kavita.clearConfig();
+    await context.read<AppState>().komga.clearConfig();
     if (mounted) Navigator.pop(context, true);
   }
 
   @override
   Widget build(BuildContext context) {
-    final configured = context.watch<AppState>().kavita.isConfigured;
+    final configured = context.watch<AppState>().komga.isConfigured;
     return Scaffold(
       backgroundColor: AppTheme.d,
-      appBar: AppBar(backgroundColor: AppTheme.bg, title: Text('Config Kavita', style: TextStyle(color: AppTheme.t1)), iconTheme: IconThemeData(color: AppTheme.t1)),
+      appBar: AppBar(backgroundColor: AppTheme.bg, title: Text('Config Komga', style: TextStyle(color: AppTheme.t1)), iconTheme: IconThemeData(color: AppTheme.t1)),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text('Serveur Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
+          Text('Serveur Komga', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           TextField(controller: _urlCtrl, decoration: const InputDecoration(hintText: 'http://adresse:port'), style: TextStyle(color: AppTheme.t1), keyboardType: TextInputType.url),
           const SizedBox(height: 14),
-          Text('Clé API Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
+          Text('Clé API Komga', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          Text('Kavita -> Compte -> Clés API', style: TextStyle(color: AppTheme.t3, fontSize: 10)),
+          Text('Komga -> Paramètres -> Clés API', style: TextStyle(color: AppTheme.t3, fontSize: 10)),
           const SizedBox(height: 6),
           TextField(controller: _keyCtrl, decoration: const InputDecoration(hintText: 'Clé API'), style: TextStyle(color: AppTheme.t1)),
           const SizedBox(height: 20),
           Text('Base Nautiljon (tamajon)', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          Text('Pour le matching -- utilisée directement, sans serveur TamaShelf', style: TextStyle(color: AppTheme.t3, fontSize: 10)),
+          Text('Pour le matching -- utilisée directement, sans serveur TamaShelf. Partagée avec Kavita.', style: TextStyle(color: AppTheme.t3, fontSize: 10)),
           const SizedBox(height: 6),
           TextField(controller: _tamajonCtrl, decoration: InputDecoration(hintText: kDefaultTamajonUrl), style: TextStyle(color: AppTheme.t1), keyboardType: TextInputType.url),
           if (_error != null) ...[
@@ -736,7 +703,7 @@ class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
             OutlinedButton(
               onPressed: _loading ? null : _remove,
               style: OutlinedButton.styleFrom(foregroundColor: AppTheme.ros, side: BorderSide(color: AppTheme.ros)),
-              child: const Text('Supprimer la config Kavita'),
+              child: const Text('Supprimer la config Komga'),
             ),
           ],
         ]),
@@ -745,18 +712,18 @@ class _KavitaConfigScreenState extends State<KavitaConfigScreen> {
   }
 }
 
-// ── Détail d'une série : infos + association Nautiljon + chapitres ──
+// ── Détail d'une série : infos + association Nautiljon + livres ──
 
-class KavitaSeriesDetailScreen extends StatefulWidget {
-  final int seriesId;
+class KomgaSeriesDetailScreen extends StatefulWidget {
+  final String seriesId;
   final String seriesName;
-  const KavitaSeriesDetailScreen({super.key, required this.seriesId, required this.seriesName});
+  const KomgaSeriesDetailScreen({super.key, required this.seriesId, required this.seriesName});
   @override
-  State<KavitaSeriesDetailScreen> createState() => _KavitaSeriesDetailScreenState();
+  State<KomgaSeriesDetailScreen> createState() => _KomgaSeriesDetailScreenState();
 }
 
-class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
-  List<Map<String, dynamic>> _chapters = [];
+class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
+  List<Map<String, dynamic>> _books = [];
   bool _loading = true;
   Map<String, dynamic>? _details;
   bool _loadingDetails = false;
@@ -764,9 +731,9 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   final _searchCtrl = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
   bool _searching = false;
-  Set<int> _downloadedIds = {};
+  Set<String> _downloadedIds = {};
   bool _selectMode = false;
-  final Set<int> _selected = {};
+  final Set<String> _selected = {};
   bool _downloadBusy = false;
 
   @override
@@ -785,14 +752,8 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
 
   Future<void> _load() async {
     try {
-      final vols = await context.read<AppState>().kavita.volumes(widget.seriesId);
-      final chapters = <Map<String, dynamic>>[];
-      for (final v in vols) {
-        for (final c in (v['chapters'] as List? ?? [])) {
-          chapters.add({'volume': v, 'chapter': Map<String, dynamic>.from(c as Map)});
-        }
-      }
-      if (mounted) setState(() { _chapters = chapters; _loading = false; });
+      final books = await context.read<AppState>().komga.booksInSeries(widget.seriesId);
+      if (mounted) setState(() { _books = books; _loading = false; });
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -802,7 +763,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
 
   Future<void> _loadMatchDetails() async {
     final naut = context.read<AppState>().nautiljon;
-    final match = naut.matchFor('kavita', '${widget.seriesId}');
+    final match = naut.matchFor('komga', widget.seriesId);
     if (match == null) return;
     setState(() => _loadingDetails = true);
     final details = await naut.mangaDetails(match['nautiljon_url'] as String);
@@ -820,7 +781,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   Future<void> _pick(Map<String, dynamic> r) async {
     final naut = context.read<AppState>().nautiljon;
     await naut.saveMatch(
-        source: 'kavita', seriesId: '${widget.seriesId}',
+        source: 'komga', seriesId: widget.seriesId,
         nautiljonUrl: r['url'] as String, title: (r['title'] ?? '').toString(), cover: (r['cover_url'] ?? '').toString(), matchedBy: 'manual');
     if (mounted) {
       setState(() { _showSearch = false; _searchResults = []; });
@@ -829,18 +790,15 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   }
 
   Future<void> _unmatch() async {
-    await context.read<AppState>().nautiljon.deleteMatch('kavita', '${widget.seriesId}');
+    await context.read<AppState>().nautiljon.deleteMatch('komga', widget.seriesId);
     if (mounted) setState(() => _details = null);
   }
 
   Future<void> _refreshDownloaded() async {
-    final ids = await context.read<AppState>().kavitaDownloads.downloadedIds();
+    final ids = await context.read<AppState>().komgaDownloads.downloadedIds();
     if (mounted) setState(() => _downloadedIds = ids);
   }
 
-  // Genres + thèmes de la fiche Nautiljon associée, dédupliqués -- pour les
-  // afficher directement sur la fiche série (pas juste dans le panneau de
-  // filtre de la liste, voir KavitaScreen).
   List<String> get _seriesTags {
     final genres = (_details?['genres'] ?? '').toString();
     final themes = (_details?['themes'] ?? '').toString();
@@ -855,45 +813,30 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     return tags;
   }
 
-  String _chapterLabel(Map<String, dynamic> v, Map<String, dynamic> c) {
-    final vNum = (v['number'] as num?)?.toInt() ?? 0;
-    final cNum = c['number'];
-    final noChapNum = '$cNum' == '-100000';
-    return vNum > 0
-        ? (noChapNum ? 'Volume $vNum' : 'Volume $vNum — Ch. $cNum')
-        : (noChapNum ? (c['title']?.toString().isNotEmpty == true ? c['title'].toString() : 'Chapitre') : 'Chapitre $cNum');
-  }
-
   void _toggleSelectMode() {
     setState(() { _selectMode = !_selectMode; _selected.clear(); });
   }
 
-  void _toggleSelected(int chapterId) {
+  void _toggleSelected(String bookId) {
     setState(() {
-      if (_selected.contains(chapterId)) { _selected.remove(chapterId); } else { _selected.add(chapterId); }
+      if (_selected.contains(bookId)) { _selected.remove(bookId); } else { _selected.add(bookId); }
     });
   }
 
-  Future<void> _downloadOne(int chapterId) async {
-    final item = _chapters.firstWhere((it) => (it['chapter'] as Map<String, dynamic>)['id'] == chapterId);
+  Future<void> _downloadOne(String bookId) async {
+    final item = _books.firstWhere((b) => b['id'] == bookId);
     await _runDownloads([item]);
   }
 
   Future<void> _downloadSelected() async {
-    final items = _chapters.where((it) => _selected.contains((it['chapter'] as Map<String, dynamic>)['id'] as int)).toList();
+    final items = _books.where((b) => _selected.contains(b['id'] as String)).toList();
     setState(() { _selectMode = false; _selected.clear(); });
     await _runDownloads(items);
   }
 
   Future<void> _runDownloads(List<Map<String, dynamic>> items) async {
-    final kdl = context.read<AppState>().kavitaDownloads;
-    final kavita = context.read<AppState>().kavita;
-    final toDownload = <Map<String, dynamic>>[];
-    for (final item in items) {
-      final c = item['chapter'] as Map<String, dynamic>;
-      final chapterId = c['id'] as int;
-      if (!_downloadedIds.contains(chapterId)) toDownload.add(item);
-    }
+    final kdl = context.read<AppState>().komgaDownloads;
+    final toDownload = items.where((b) => !_downloadedIds.contains(b['id'] as String)).toList();
     if (toDownload.isEmpty) return;
     _downloadBusy = true;
 
@@ -903,9 +846,9 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
       builder: (dctx) => Consumer<AppState>(
         builder: (c2, state, _) {
           final active = toDownload
-              .map((it) => (it['chapter'] as Map<String, dynamic>)['id'] as int)
-              .map((id) => state.kavitaDownloads.activeDownloads[id])
-              .whereType<KavitaDownloadInfo>()
+              .map((b) => b['id'] as String)
+              .map((id) => state.komgaDownloads.activeDownloads[id])
+              .whereType<KomgaDownloadInfo>()
               .toList();
           final finished = !_downloadBusy && active.isEmpty;
           return AlertDialog(
@@ -914,7 +857,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
             content: SizedBox(
               width: 280,
               child: finished
-                  ? Text('${toDownload.length} chapitre(s) traité(s).', style: TextStyle(color: AppTheme.t2, fontSize: 12))
+                  ? Text('${toDownload.length} livre(s) traité(s).', style: TextStyle(color: AppTheme.t2, fontSize: 12))
                   : Column(
                       mainAxisSize: MainAxisSize.min,
                       children: active.map((d) => Padding(
@@ -934,24 +877,21 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
       ),
     );
 
-    for (final item in toDownload) {
-      final v = item['volume'] as Map<String, dynamic>;
-      final c = item['chapter'] as Map<String, dynamic>;
-      final chapterId = c['id'] as int;
-      final label = _chapterLabel(v, c);
+    for (final book in toDownload) {
+      final bookId = book['id'] as String;
+      final label = komgaBookLabel(book);
+      final pages = komgaPagesCount(book);
       try {
-        final chapInfo = await kavita.chapterInfo(chapterId);
-        final pages = (chapInfo['pages'] as num?)?.toInt() ?? (c['pages'] as num?)?.toInt() ?? 0;
-        await kdl.downloadChapter(
-          chapterId: chapterId,
+        await kdl.downloadBook(
+          bookId: bookId,
           seriesId: widget.seriesId,
           seriesName: widget.seriesName,
           label: label,
           totalPages: pages,
         );
       } catch (_) {
-        // KavitaDownloadInfo.hasError couvre déjà l'affichage -- on continue
-        // avec les chapitres suivants de la sélection.
+        // KomgaDownloadInfo.hasError couvre déjà l'affichage -- on continue
+        // avec les livres suivants de la sélection.
       }
     }
     _downloadBusy = false;
@@ -962,7 +902,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final naut = context.watch<AppState>().nautiljon;
-    final match = naut.matchFor('kavita', '${widget.seriesId}');
+    final match = naut.matchFor('komga', widget.seriesId);
     return Scaffold(
       backgroundColor: AppTheme.d,
       appBar: AppBar(
@@ -970,9 +910,9 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         iconTheme: IconThemeData(color: AppTheme.t1),
         title: Text(widget.seriesName, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 15)),
         actions: [
-          if (_chapters.isNotEmpty)
+          if (_books.isNotEmpty)
             IconButton(
-              tooltip: _selectMode ? 'Annuler la sélection' : 'Télécharger plusieurs chapitres',
+              tooltip: _selectMode ? 'Annuler la sélection' : 'Télécharger plusieurs livres',
               icon: Icon(_selectMode ? Icons.close : Icons.download_for_offline_outlined, color: AppTheme.t2),
               onPressed: _toggleSelectMode,
             ),
@@ -995,156 +935,152 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
           : null,
       body: CustomScrollView(
         slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          sliver: SliverToBoxAdapter(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            SizedBox(width: 90, height: 128, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(seriesId: widget.seriesId))),
-            const SizedBox(width: 12),
-            Expanded(
-              child: match == null
-                  ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Pas encore associée à Nautiljon', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
-                      const SizedBox(height: 8),
-                      ElevatedButton.icon(onPressed: () => setState(() => _showSearch = true), icon: const Icon(Icons.search, size: 16), label: const Text('Associer')),
-                    ])
-                  : _loadingDetails
-                      ? const SizedBox(height: 60, child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
-                      : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(_details?['title']?.toString() ?? match['title']?.toString() ?? '', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
-                          if ((_details?['type'] ?? '').toString().isNotEmpty)
-                            Text(_details!['type'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
-                          if ((_details?['author'] ?? '').toString().isNotEmpty)
-                            Text('✍️ ${_details!['author']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
-                          if ((_details?['status'] ?? '').toString().isNotEmpty)
-                            Text(_details!['status'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
-                          const SizedBox(height: 8),
-                          Row(children: [
-                            TextButton(onPressed: () => setState(() => _showSearch = true), child: const Text('Modifier')),
-                            TextButton(onPressed: _unmatch, style: TextButton.styleFrom(foregroundColor: AppTheme.ros), child: const Text('Dissocier')),
-                          ]),
-                        ]),
-            ),
-          ]),
-          if (_seriesTags.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 6, runSpacing: 6,
-              children: _seriesTags.map((tag) {
-                final color = MangaColors.tagColor(tag);
-                return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
-                  ),
-                  child: Text(tag, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
-                );
-              }).toList(),
-            ),
-          ],
-          if ((_details?['synopsis'] ?? '').toString().isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(_details!['synopsis'].toString(), style: TextStyle(color: AppTheme.t2, fontSize: 12)),
-          ],
-          if (_showSearch) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.brd)),
-              child: Column(children: [
-                Row(children: [
-                  Expanded(child: TextField(
-                    controller: _searchCtrl,
-                    decoration: const InputDecoration(hintText: 'Rechercher sur Nautiljon...', isDense: true),
-                    style: TextStyle(color: AppTheme.t1, fontSize: 12),
-                    onSubmitted: (_) => _search(),
-                  )),
-                  IconButton(
-                    onPressed: _searching ? null : _search,
-                    icon: _searching ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.search, color: AppTheme.t2),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            sliver: SliverToBoxAdapter(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  SizedBox(width: 90, height: 128, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KomgaCover(seriesId: widget.seriesId))),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: match == null
+                        ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('Pas encore associée à Nautiljon', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                            const SizedBox(height: 8),
+                            ElevatedButton.icon(onPressed: () => setState(() => _showSearch = true), icon: const Icon(Icons.search, size: 16), label: const Text('Associer')),
+                          ])
+                        : _loadingDetails
+                            ? const SizedBox(height: 60, child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
+                            : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(_details?['title']?.toString() ?? match['title']?.toString() ?? '', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
+                                if ((_details?['type'] ?? '').toString().isNotEmpty)
+                                  Text(_details!['type'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                if ((_details?['author'] ?? '').toString().isNotEmpty)
+                                  Text('✍️ ${_details!['author']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                if ((_details?['status'] ?? '').toString().isNotEmpty)
+                                  Text(_details!['status'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                const SizedBox(height: 8),
+                                Row(children: [
+                                  TextButton(onPressed: () => setState(() => _showSearch = true), child: const Text('Modifier')),
+                                  TextButton(onPressed: _unmatch, style: TextButton.styleFrom(foregroundColor: AppTheme.ros), child: const Text('Dissocier')),
+                                ]),
+                              ]),
                   ),
                 ]),
-                if (_searchResults.isNotEmpty)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 320),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: _searchResults.length,
-                      itemBuilder: (ctx, i) {
-                        final r = _searchResults[i];
-                        return ListTile(
-                          dense: true,
-                          leading: SizedBox(
-                            width: 36, height: 50,
-                            child: (r['cover_url'] as String? ?? '').isEmpty
-                                ? Icon(Icons.book, color: AppTheme.t3)
-                                : Image.network((r['cover_url'] as String), headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
-                          ),
-                          title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
-                          onTap: () => _pick(r),
-                        );
-                      },
-                    ),
+                if (_seriesTags.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6, runSpacing: 6,
+                    children: _seriesTags.map((tag) {
+                      final color = MangaColors.tagColor(tag);
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
+                        ),
+                        child: Text(tag, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+                      );
+                    }).toList(),
                   ),
+                ],
+                if ((_details?['synopsis'] ?? '').toString().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(_details!['synopsis'].toString(), style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                ],
+                if (_showSearch) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.brd)),
+                    child: Column(children: [
+                      Row(children: [
+                        Expanded(child: TextField(
+                          controller: _searchCtrl,
+                          decoration: const InputDecoration(hintText: 'Rechercher sur Nautiljon...', isDense: true),
+                          style: TextStyle(color: AppTheme.t1, fontSize: 12),
+                          onSubmitted: (_) => _search(),
+                        )),
+                        IconButton(
+                          onPressed: _searching ? null : _search,
+                          icon: _searching ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.search, color: AppTheme.t2),
+                        ),
+                      ]),
+                      if (_searchResults.isNotEmpty)
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 320),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: _searchResults.length,
+                            itemBuilder: (ctx, i) {
+                              final r = _searchResults[i];
+                              return ListTile(
+                                dense: true,
+                                leading: SizedBox(
+                                  width: 36, height: 50,
+                                  child: (r['cover_url'] as String? ?? '').isEmpty
+                                      ? Icon(Icons.book, color: AppTheme.t3)
+                                      : Image.network((r['cover_url'] as String), headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
+                                ),
+                                title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                onTap: () => _pick(r),
+                              );
+                            },
+                          ),
+                        ),
+                    ]),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                Text('Livres', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
+                const SizedBox(height: 8),
+                if (_loading)
+                  const Padding(padding: EdgeInsets.only(bottom: 20), child: Center(child: CircularProgressIndicator()))
+                else if (_books.isEmpty)
+                  Padding(padding: const EdgeInsets.only(bottom: 20), child: Text('Aucun livre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))),
               ]),
             ),
-          ],
-          const SizedBox(height: 18),
-          Text('Chapitres', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
-          const SizedBox(height: 8),
-          if (_loading)
-            const Padding(padding: EdgeInsets.only(bottom: 20), child: Center(child: CircularProgressIndicator()))
-          else if (_chapters.isEmpty)
-            Padding(padding: const EdgeInsets.only(bottom: 20), child: Text('Aucun volume/chapitre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))),
-            ]),
           ),
-        ),
-        // Sliver "paresseuse" (voir la même remarque sur _buildBrowser dans
-        // KavitaScreen) -- certaines séries/webtoons ont plusieurs centaines
-        // de chapitres, un GridView shrinkWrap les construirait tous d'un
-        // coup.
-        if (!_loading && _chapters.isNotEmpty)
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 100, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 0.6),
-              delegate: SliverChildBuilderDelegate(
-                (ctx, i) => _chapterTile(ctx, i),
-                childCount: _chapters.length,
+          // Sliver "paresseuse" -- voir la même remarque dans
+          // kavita_screen.dart (chapitres) : certaines séries ont plusieurs
+          // centaines de livres.
+          if (!_loading && _books.isNotEmpty)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 100, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 0.6),
+                delegate: SliverChildBuilderDelegate(
+                  (ctx, i) => _bookTile(ctx, i),
+                  childCount: _books.length,
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _chapterTile(BuildContext context, int i) {
-    final item = _chapters[i];
-    final v = item['volume'] as Map<String, dynamic>;
-    final c = item['chapter'] as Map<String, dynamic>;
-    final chapterId = c['id'] as int;
-    final label = _chapterLabel(v, c);
-    final downloaded = _downloadedIds.contains(chapterId);
-    final selected = _selected.contains(chapterId);
+  Widget _bookTile(BuildContext context, int i) {
+    final book = _books[i];
+    final bookId = book['id'] as String;
+    final label = komgaBookLabel(book);
+    final downloaded = _downloadedIds.contains(bookId);
+    final selected = _selected.contains(bookId);
     return GestureDetector(
       onTap: () {
-        if (_selectMode) { _toggleSelected(chapterId); return; }
-        openKavitaChapterFresh(context,
-            seriesId: widget.seriesId, seriesName: widget.seriesName, chapterId: chapterId, fallbackPages: (c['pages'] as num?)?.toInt() ?? 0);
+        if (_selectMode) { _toggleSelected(bookId); return; }
+        openKomgaBook(context, seriesId: widget.seriesId, seriesName: widget.seriesName, bookId: bookId, totalPages: komgaPagesCount(book));
       },
       onLongPress: () {
         if (!_selectMode) setState(() => _selectMode = true);
-        _toggleSelected(chapterId);
+        _toggleSelected(bookId);
       },
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Expanded(
           child: Stack(children: [
-            Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: _KavitaChapterCover(chapterId: chapterId))),
+            Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: _KomgaBookCover(bookId: bookId))),
             if (_selectMode)
               Positioned(
                 top: 4, left: 4,
@@ -1164,7 +1100,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                   icon: const Icon(Icons.download, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 4)]),
-                  onPressed: () => _downloadOne(chapterId),
+                  onPressed: () => _downloadOne(bookId),
                 ),
               ),
           ]),
@@ -1178,14 +1114,14 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
 
 // ── File de suggestions après un matching auto ──
 
-class KavitaReviewQueueScreen extends StatefulWidget {
+class KomgaReviewQueueScreen extends StatefulWidget {
   final List<KavitaMatchSuggestion> queue;
-  const KavitaReviewQueueScreen({super.key, required this.queue});
+  const KomgaReviewQueueScreen({super.key, required this.queue});
   @override
-  State<KavitaReviewQueueScreen> createState() => _KavitaReviewQueueScreenState();
+  State<KomgaReviewQueueScreen> createState() => _KomgaReviewQueueScreenState();
 }
 
-class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
+class _KomgaReviewQueueScreenState extends State<KomgaReviewQueueScreen> {
   int _index = 0;
   bool _busy = false;
 
@@ -1222,12 +1158,6 @@ class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
       ),
       body: _busy
           ? const Center(child: CircularProgressIndicator())
-          // CustomScrollView + SliverGrid plutôt qu'un GridView shrinkWrap :
-          // les suggestions ne sont plus plafonnées (voir autoMatch dans
-          // nautiljon_service.dart, le bon résultat était parfois hors du
-          // top 6), donc potentiellement plusieurs dizaines de candidats --
-          // autant rester sur une grille "paresseuse" par principe (même
-          // remarque que _buildBrowser dans KavitaScreen).
           : CustomScrollView(
               slivers: [
                 SliverPadding(
@@ -1237,14 +1167,14 @@ class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
                       Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         SizedBox(
                           width: 70, height: 100,
-                          child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('rev_${item.seriesId}'), seriesId: int.parse(item.seriesId))),
+                          child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KomgaCover(key: ValueKey('rev_${item.seriesId}'), seriesId: item.seriesId)),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             Text(item.seriesName, style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16)),
                             const SizedBox(height: 4),
-                            Text('Série Kavita', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                            Text('Série Komga', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                             const SizedBox(height: 10),
                             Text('Choisis la bonne fiche Nautiljon ci-dessous (${item.candidates.length}), ou refuse.', style: TextStyle(color: AppTheme.t2, fontSize: 12)),
                           ]),
@@ -1306,14 +1236,14 @@ class _KavitaReviewQueueScreenState extends State<KavitaReviewQueueScreen> {
 
 // ── Association manuelle, une série non associée à la fois ──
 
-class KavitaMatchAllScreen extends StatefulWidget {
+class KomgaMatchAllScreen extends StatefulWidget {
   final List<Map<String, dynamic>> seriesList;
-  const KavitaMatchAllScreen({super.key, required this.seriesList});
+  const KomgaMatchAllScreen({super.key, required this.seriesList});
   @override
-  State<KavitaMatchAllScreen> createState() => _KavitaMatchAllScreenState();
+  State<KomgaMatchAllScreen> createState() => _KomgaMatchAllScreenState();
 }
 
-class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
+class _KomgaMatchAllScreenState extends State<KomgaMatchAllScreen> {
   int _index = 0;
   final _ctrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
@@ -1333,7 +1263,7 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
 
   void _prefillAndSearch() {
     if (_index >= widget.seriesList.length) return;
-    _ctrl.text = widget.seriesList[_index]['name']?.toString() ?? '';
+    _ctrl.text = komgaSeriesTitle(widget.seriesList[_index]);
     _search();
   }
 
@@ -1346,9 +1276,9 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
   }
 
   Future<void> _pick(Map<String, dynamic> r) async {
-    final sid = widget.seriesList[_index]['id'] as int;
+    final sid = widget.seriesList[_index]['id'] as String;
     await context.read<AppState>().nautiljon.saveMatch(
-        source: 'kavita', seriesId: '$sid',
+        source: 'komga', seriesId: sid,
         nautiljonUrl: r['url'] as String, title: (r['title'] ?? '').toString(), cover: (r['cover_url'] ?? '').toString(), matchedBy: 'manual');
     _advance();
   }
@@ -1375,6 +1305,7 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
       );
     }
     final s = widget.seriesList[_index];
+    final sid = s['id'] as String;
     return Scaffold(
       backgroundColor: AppTheme.d,
       appBar: AppBar(
@@ -1389,10 +1320,10 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(
               width: 60, height: 86,
-              child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KavitaCover(key: ValueKey('mall_${s['id']}'), seriesId: s['id'] as int)),
+              child: ClipRRect(borderRadius: BorderRadius.circular(8), child: _KomgaCover(key: ValueKey('mall_$sid'), seriesId: sid)),
             ),
             const SizedBox(width: 12),
-            Expanded(child: Text(s['name']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16))),
+            Expanded(child: Text(komgaSeriesTitle(s), style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 16))),
           ]),
           const SizedBox(height: 10),
           Row(children: [
@@ -1447,15 +1378,15 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
   }
 }
 
-// ── Gestion des chapitres Kavita téléchargés (hors-ligne) ──
+// ── Gestion des livres Komga téléchargés (hors-ligne) ──
 
-class KavitaDownloadsScreen extends StatefulWidget {
-  const KavitaDownloadsScreen({super.key});
+class KomgaDownloadsScreen extends StatefulWidget {
+  const KomgaDownloadsScreen({super.key});
   @override
-  State<KavitaDownloadsScreen> createState() => _KavitaDownloadsScreenState();
+  State<KomgaDownloadsScreen> createState() => _KomgaDownloadsScreenState();
 }
 
-class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
+class _KomgaDownloadsScreenState extends State<KomgaDownloadsScreen> {
   List<Map<String, dynamic>> _items = [];
   int _totalSize = 0;
   bool _loading = true;
@@ -1467,14 +1398,14 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
   }
 
   Future<void> _load() async {
-    final kdl = context.read<AppState>().kavitaDownloads;
+    final kdl = context.read<AppState>().komgaDownloads;
     final items = await kdl.listDownloads();
     final size = await kdl.totalSize();
     if (mounted) setState(() { _items = items; _totalSize = size; _loading = false; });
   }
 
-  Future<void> _delete(int chapterId) async {
-    await context.read<AppState>().kavitaDownloads.deleteChapter(chapterId);
+  Future<void> _delete(String bookId) async {
+    await context.read<AppState>().komgaDownloads.deleteBook(bookId);
     _load();
   }
 
@@ -1492,7 +1423,7 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
       appBar: AppBar(
         backgroundColor: AppTheme.bg,
         iconTheme: IconThemeData(color: AppTheme.t1),
-        title: Text('Téléchargements Kavita', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        title: Text('Téléchargements Komga', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -1501,11 +1432,11 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                  child: Text('${_items.length} chapitre(s) · ${_formatSize(_totalSize)}', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
+                  child: Text('${_items.length} livre(s) · ${_formatSize(_totalSize)}', style: TextStyle(color: AppTheme.t3, fontSize: 12)),
                 ),
                 Consumer<AppState>(
                   builder: (ctx, state, _) {
-                    final active = state.kavitaDownloads.activeDownloads.values.toList();
+                    final active = state.komgaDownloads.activeDownloads.values.toList();
                     if (active.isEmpty) return const SizedBox.shrink();
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1524,7 +1455,7 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
                 ),
                 Expanded(
                   child: _items.isEmpty
-                      ? Center(child: Text('Aucun chapitre Kavita téléchargé.', style: TextStyle(color: AppTheme.t3)))
+                      ? Center(child: Text('Aucun livre Komga téléchargé.', style: TextStyle(color: AppTheme.t3)))
                       : RefreshIndicator(
                           onRefresh: _load,
                           child: ListView.builder(
@@ -1532,7 +1463,7 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
                             itemCount: _items.length,
                             itemBuilder: (ctx, i) {
                               final it = _items[i];
-                              final chapterId = it['chapterId'] as int;
+                              final bookId = it['bookId'] as String;
                               return Container(
                                 margin: const EdgeInsets.only(bottom: 4),
                                 decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.brd, width: 0.5)),
@@ -1540,7 +1471,7 @@ class _KavitaDownloadsScreenState extends State<KavitaDownloadsScreen> {
                                   leading: Icon(Icons.download_done, color: AppTheme.grn, size: 24),
                                   title: Text(it['seriesName']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
                                   subtitle: Text('${it['label'] ?? ''} · ${_formatSize((it['sizeBytes'] as num? ?? 0).toInt())}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
-                                  trailing: IconButton(icon: Icon(Icons.delete_outline, color: AppTheme.ros, size: 20), onPressed: () => _delete(chapterId)),
+                                  trailing: IconButton(icon: Icon(Icons.delete_outline, color: AppTheme.ros, size: 20), onPressed: () => _delete(bookId)),
                                 ),
                               );
                             },

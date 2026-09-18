@@ -1,11 +1,21 @@
 // NautiljonService — client autonome pour tamajon (app.py), le serveur qui
 // expose la base Nautiljon scrapée (voir backend/nautiljon_db.py, dont ce
 // fichier est un portage Dart). Appelé directement depuis le téléphone --
-// PAS via le backend TamaShelf -- pour que le matching Kavita fonctionne
-// même sans serveur TamaShelf configuré. Les associations (série Kavita <->
-// fiche Nautiljon) sont mémorisées localement, dans un fichier JSON du
-// dossier "Tamashelf" du stockage externe de l'appli (accessible sans
-// permission spéciale, contrairement à un vrai dossier public partagé).
+// PAS via le backend TamaShelf -- pour que le matching fonctionne même sans
+// serveur TamaShelf configuré. Les associations (série externe <-> fiche
+// Nautiljon) sont mémorisées localement, dans un fichier JSON du dossier
+// "Tamashelf" du stockage externe de l'appli (accessible sans permission
+// spéciale, contrairement à un vrai dossier public partagé).
+//
+// PARTAGÉ entre toutes les sources externes (Kavita, Komga, ...) : chaque
+// association est clée par "<source>:<seriesId>" (ex: "kavita:42",
+// "komga:3f2a..."), le "source" évitant toute collision entre deux
+// identifiants de séries qui se ressembleraient d'un serveur à l'autre
+// (Kavita utilise des entiers, Komga des UUID -- rien ne garantit qu'ils ne
+// se recoupent jamais en tant que chaînes). Les associations créées avant
+// l'ajout de Komga (clé "<seriesId>" nue, implicitement Kavita) sont
+// migrées vers "kavita:<seriesId>" au premier chargement (voir
+// _loadMatches) -- aucune ré-association à refaire.
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -156,10 +166,11 @@ class KavitaMatchCandidate {
 }
 
 class KavitaMatchSuggestion {
-  final int seriesId;
+  final String source; // 'kavita' | 'komga'
+  final String seriesId;
   final String seriesName;
   final List<KavitaMatchCandidate> candidates;
-  KavitaMatchSuggestion({required this.seriesId, required this.seriesName, required this.candidates});
+  KavitaMatchSuggestion({required this.source, required this.seriesId, required this.seriesName, required this.candidates});
 }
 
 class AutoMatchResult {
@@ -216,7 +227,20 @@ class NautiljonService {
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
         if (data is Map && data['matches'] is Map) {
-          _matches = (data['matches'] as Map).map((k, v) => MapEntry(k.toString(), Map<String, dynamic>.from(v as Map)));
+          final raw = (data['matches'] as Map).map((k, v) => MapEntry(k.toString(), Map<String, dynamic>.from(v as Map)));
+          // Migration : clé nue "<seriesId>" (avant le partage avec Komga,
+          // implicitement Kavita) -> "kavita:<seriesId>".
+          var migrated = false;
+          _matches = {};
+          raw.forEach((k, v) {
+            if (k.contains(':')) {
+              _matches[k] = v;
+            } else {
+              _matches['kavita:$k'] = v;
+              migrated = true;
+            }
+          });
+          if (migrated) await _saveMatches();
         }
       }
     } catch (e) {
@@ -233,7 +257,9 @@ class NautiljonService {
     }
   }
 
-  Map<String, dynamic>? matchFor(int seriesId) => _matches['$seriesId'];
+  static String matchKey(String source, String seriesId) => '$source:$seriesId';
+
+  Map<String, dynamic>? matchFor(String source, String seriesId) => _matches[matchKey(source, seriesId)];
 
   // Mêmes catégories que db_service.dart (bibliothèque locale, getAllTags)
   // -- pour rester cohérent si jamais les deux filtres se retrouvent un
@@ -257,7 +283,9 @@ class NautiljonService {
     return out;
   }
 
-  Future<void> saveMatch(int seriesId, {
+  Future<void> saveMatch({
+    required String source,
+    required String seriesId,
     required String nautiljonUrl,
     required String title,
     String cover = '',
@@ -268,7 +296,9 @@ class NautiljonService {
     // mémoriser au moment du match plutôt que refetcher à chaque affichage
     // de la grille.
     final details = await mangaDetails(nautiljonUrl);
-    _matches['$seriesId'] = {
+    _matches[matchKey(source, seriesId)] = {
+      'source': source,
+      'series_id': seriesId,
       'nautiljon_url': nautiljonUrl,
       'title': title,
       'cover_url': cover,
@@ -281,9 +311,11 @@ class NautiljonService {
 
   // Tags disponibles parmi toutes les séries matchées, pour le panneau de
   // filtre (voir KavitaScreen).
-  Map<String, Set<String>> allTags() {
+  Map<String, Set<String>> allTags({String? source}) {
     final tags = <String, Set<String>>{for (final c in _tagCategories) c: {}};
-    for (final m in _matches.values) {
+    for (final entry in _matches.entries) {
+      if (source != null && !entry.key.startsWith('$source:')) continue;
+      final m = entry.value;
       final meta = m['metadata'];
       if (meta is! Map) continue;
       for (final key in _tagCategories) {
@@ -306,10 +338,10 @@ class NautiljonService {
   // Même sémantique que searchMangas (db_service.dart, bibliothèque locale) :
   // chaque tag sélectionné (toutes catégories confondues) doit être présent
   // -- une série sans match échoue dès qu'un filtre est actif.
-  bool matchHasTags(int seriesId, Map<String, List<String>> tagFilters) {
+  bool matchHasTags(String source, String seriesId, Map<String, List<String>> tagFilters) {
     final hasFilters = tagFilters.values.any((v) => v.isNotEmpty);
     if (!hasFilters) return true;
-    final m = matchFor(seriesId);
+    final m = matchFor(source, seriesId);
     final meta = (m?['metadata'] is Map) ? Map<String, dynamic>.from(m!['metadata'] as Map) : const <String, dynamic>{};
     for (final entry in tagFilters.entries) {
       if (entry.value.isEmpty) continue;
@@ -321,8 +353,8 @@ class NautiljonService {
     return true;
   }
 
-  Future<void> deleteMatch(int seriesId) async {
-    _matches.remove('$seriesId');
+  Future<void> deleteMatch(String source, String seriesId) async {
+    _matches.remove(matchKey(source, seriesId));
     await _saveMatches();
   }
 
@@ -502,6 +534,7 @@ class NautiljonService {
   // résultats existent mais aucun exact) part en suggestion, à valider ou
   // refuser à la main.
   Future<AutoMatchResult> autoMatch(
+    String source,
     List<Map<String, dynamic>> seriesList, {
     void Function(int done, int total)? onProgress,
   }) async {
@@ -510,9 +543,10 @@ class NautiljonService {
     for (final s in seriesList) {
       done++;
       onProgress?.call(done, seriesList.length);
-      final sid = s['id'] as int?;
+      final sidRaw = s['id'];
       final name = (s['name'] as String? ?? '').trim();
-      if (sid == null || name.isEmpty || _matches.containsKey('$sid')) continue;
+      if (sidRaw == null || name.isEmpty || _matches.containsKey(matchKey(source, sidRaw.toString()))) continue;
+      final sid = sidRaw.toString();
 
       final nameSansEdition = stripEditionSuffix(name);
       final titres = List<String>.from(matchQueryVariants(name));
@@ -549,7 +583,9 @@ class NautiljonService {
       }
 
       if (exact != null && (exact['url'] ?? '').toString().isNotEmpty) {
-        await saveMatch(sid,
+        await saveMatch(
+            source: source,
+            seriesId: sid,
             nautiljonUrl: exact['url'] as String,
             title: (exact['title'] ?? '').toString(),
             cover: (exact['cover_url'] ?? '').toString(),
@@ -559,6 +595,7 @@ class NautiljonService {
         result.notFound++;
         if (sortedResults.isNotEmpty) {
           result.suggestions.add(KavitaMatchSuggestion(
+            source: source,
             seriesId: sid,
             seriesName: name,
             candidates: sortedResults.where((r) => (r['url'] ?? '').toString().isNotEmpty).map((r) => KavitaMatchCandidate(

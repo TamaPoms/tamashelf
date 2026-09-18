@@ -6,6 +6,8 @@ import 'services/progress_service.dart';
 import 'services/update_service.dart';
 import 'services/kavita_service.dart';
 import 'services/kavita_download_service.dart';
+import 'services/komga_service.dart';
+import 'services/komga_download_service.dart';
 import 'services/nautiljon_service.dart';
 import 'models/manga.dart';
 
@@ -14,12 +16,16 @@ class AppState extends ChangeNotifier {
   late final DownloadService downloads;
   late final ProgressService progress;
   final UpdateService _updateService = UpdateService();
-  // Kavita + Nautiljon (tamajon) : entièrement autonomes du serveur
+  // Kavita/Komga + Nautiljon (tamajon) : entièrement autonomes du serveur
   // TamaShelf -- config et associations mémorisées en local (voir les
-  // services), pour fonctionner même sans serveur TamaShelf configuré.
+  // services), pour fonctionner même sans serveur TamaShelf configuré. Le
+  // matching Nautiljon (NautiljonService) est PARTAGÉ entre Kavita et Komga
+  // (voir nautiljon_service.dart : clés "<source>:<seriesId>").
   final KavitaService kavita = KavitaService();
+  final KomgaService komga = KomgaService();
   final NautiljonService nautiljon = NautiljonService();
   late final KavitaDownloadService kavitaDownloads;
+  late final KomgaDownloadService komgaDownloads;
   UpdateInfo? updateInfo;
 
   bool isLoading = false;
@@ -39,6 +45,7 @@ class AppState extends ChangeNotifier {
   Map<int, int> ratings = {};
   Map<int, String> notes = {};
   bool showKavitaShortcut = true;
+  bool showKomgaShortcut = true;
 
   void notifyAllListeners() => notifyListeners();
 
@@ -49,6 +56,8 @@ class AppState extends ChangeNotifier {
     progress.addListener(notifyListeners);
     kavitaDownloads = KavitaDownloadService(kavita);
     kavitaDownloads.addListener(notifyListeners);
+    komgaDownloads = KomgaDownloadService(komga);
+    komgaDownloads.addListener(notifyListeners);
   }
 
   Future<void> init() async {
@@ -56,9 +65,11 @@ class AppState extends ChangeNotifier {
       await db.init();
       await progress.loadLocal();
       await kavita.init();
+      await komga.init();
       await nautiljon.init();
       final prefs = await SharedPreferences.getInstance();
       showKavitaShortcut = prefs.getBool('show_kavita_shortcut') ?? true;
+      showKomgaShortcut = prefs.getBool('show_komga_shortcut') ?? true;
       if (db.hasLocalDb) {
         await loadMangas();
         availableTags = await db.getAllTags();
@@ -269,6 +280,13 @@ class AppState extends ChangeNotifier {
     await prefs.setBool('show_kavita_shortcut', v);
   }
 
+  Future<void> setShowKomgaShortcut(bool v) async {
+    showKomgaShortcut = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('show_komga_shortcut', v);
+  }
+
   Future<void> checkForUpdate() async {
     final info = await _updateService.checkForUpdate();
     if (info != null) {
@@ -282,6 +300,7 @@ class AppState extends ChangeNotifier {
     downloads.removeListener(notifyListeners);
     progress.removeListener(notifyListeners);
     kavitaDownloads.removeListener(notifyListeners);
+    komgaDownloads.removeListener(notifyListeners);
     super.dispose();
   }
 }
