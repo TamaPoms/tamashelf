@@ -70,6 +70,12 @@ class KomgaService {
                   body: jsonBody != null ? jsonEncode(jsonBody) : null)
               .timeout(const Duration(seconds: 30));
           break;
+        case 'PATCH':
+          resp = await http.patch(uri,
+                  headers: {..._headers, if (jsonBody != null) 'Content-Type': 'application/json'},
+                  body: jsonBody != null ? jsonEncode(jsonBody) : null)
+              .timeout(const Duration(seconds: 30));
+          break;
         default:
           resp = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 30));
       }
@@ -113,6 +119,13 @@ class KomgaService {
   Future<Map<String, dynamic>> seriesDetail(String seriesId) async {
     final resp = await _request('GET', '/api/v1/series/$seriesId');
     return Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
+  }
+
+  // Patch partiel des métadonnées d'une série (résumé, genres, tags, ...) --
+  // contrairement à Kavita, l'API Komga ne modifie que les champs fournis
+  // (voir pushNautiljonToKomga dans komga_screen.dart).
+  Future<void> updateSeriesMetadata(String seriesId, Map<String, dynamic> patch) async {
+    await _request('PATCH', '/api/v1/series/$seriesId/metadata', jsonBody: patch);
   }
 
   Future<List<Map<String, dynamic>>> booksInSeries(String seriesId, {int pageSize = 500}) async {

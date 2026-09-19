@@ -17,6 +17,65 @@ import '../services/nautiljon_service.dart';
 import '../theme.dart';
 import 'reader_screen.dart';
 
+// PublicationStatus Kavita (API/Entities/Enums/PublicationStatus.cs) :
+// 0=OnGoing, 1=Hiatus, 2=Completed, 3=Cancelled, 4=Ended -- sérialisé en
+// entier (pas en chaîne) côté API. Mapping approximatif depuis le champ
+// "Statut" (texte libre en français) de Nautiljon ; renvoie null si aucun
+// mot-clé reconnu (le champ n'est alors pas touché).
+int? _kavitaPublicationStatus(String statut) {
+  final s = statut.toLowerCase();
+  if (s.contains('pause') || s.contains('hiatus')) return 1;
+  if (s.contains('arrêt') || s.contains('abandon')) return 3;
+  if (s.contains('terminé') || s.contains('fini') || s.contains('complet')) return 2;
+  if (s.contains('cours') || s.contains('publication')) return 0;
+  return null;
+}
+
+// Envoie le résumé/genres/thèmes/statut de la fiche Nautiljon associée vers
+// Kavita -- écrase uniquement ces champs (le reste de la fiche existante,
+// récupérée d'abord, est renvoyé tel quel) et les verrouille pour qu'un
+// futur scan Kavita ne les efface pas. Retourne un message d'erreur, ou
+// null si tout s'est bien passé.
+Future<String?> pushNautiljonToKavita(BuildContext context, {required int seriesId, required Map<String, dynamic> details}) async {
+  final state = context.read<AppState>();
+  try {
+    final current = await state.kavita.seriesMetadata(seriesId);
+    final updated = Map<String, dynamic>.from(current);
+    var touched = false;
+
+    final synopsis = (details['synopsis'] ?? '').toString().trim();
+    if (synopsis.isNotEmpty) {
+      updated['summary'] = synopsis;
+      updated['summaryLocked'] = true;
+      touched = true;
+    }
+    final genres = splitTagList((details['genres'] ?? '').toString());
+    if (genres.isNotEmpty) {
+      updated['genres'] = genres.map((g) => {'title': g}).toList();
+      updated['genresLocked'] = true;
+      touched = true;
+    }
+    final themes = splitTagList((details['themes'] ?? '').toString());
+    if (themes.isNotEmpty) {
+      updated['tags'] = themes.map((t) => {'title': t}).toList();
+      updated['tagsLocked'] = true;
+      touched = true;
+    }
+    final status = _kavitaPublicationStatus((details['status'] ?? '').toString());
+    if (status != null) {
+      updated['publicationStatus'] = status;
+      updated['publicationStatusLocked'] = true;
+      touched = true;
+    }
+    if (!touched) return 'Rien à envoyer (fiche Nautiljon vide)';
+
+    await state.kavita.updateSeriesMetadata(updated);
+    return null;
+  } catch (e) {
+    return '$e';
+  }
+}
+
 Volume _kavitaVolume(int seriesId, int chapterId, int totalPages) => Volume(
       id: chapterId,
       cbzFolder: 'kavita:series:$seriesId',
@@ -768,6 +827,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   bool _selectMode = false;
   final Set<int> _selected = {};
   bool _downloadBusy = false;
+  bool _pushing = false;
 
   @override
   void initState() {
@@ -831,6 +891,34 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   Future<void> _unmatch() async {
     await context.read<AppState>().nautiljon.deleteMatch('kavita', '${widget.seriesId}');
     if (mounted) setState(() => _details = null);
+  }
+
+  Future<void> _pushToServer() async {
+    if (_details == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Envoyer vers Kavita ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Le résumé, les genres, les thèmes et le statut de la fiche Nautiljon vont être écrits dans Kavita, puis verrouillés pour ne pas être effacés par un futur scan. Le reste de la fiche série n\'est pas modifié.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _pushing = true);
+    final error = await pushNautiljonToKavita(context, seriesId: widget.seriesId, details: _details!);
+    if (!mounted) return;
+    setState(() => _pushing = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(error == null ? 'Infos envoyées vers Kavita.' : 'Erreur : $error'),
+      backgroundColor: error == null ? AppTheme.grn : AppTheme.ros,
+    ));
   }
 
   Future<void> _refreshDownloaded() async {
@@ -1048,6 +1136,16 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
           if ((_details?['synopsis'] ?? '').toString().isNotEmpty) ...[
             const SizedBox(height: 10),
             Text(_details!['synopsis'].toString(), style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+          ],
+          if (match != null && _details != null) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _pushing ? null : _pushToServer,
+              icon: _pushing
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.cloud_upload_outlined, size: 16),
+              label: const Text('Envoyer les infos vers Kavita'),
+            ),
           ],
           if (_showSearch) ...[
             const SizedBox(height: 14),

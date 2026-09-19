@@ -198,6 +198,20 @@ class KavitaService {
     return Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
   }
 
+  // Métadonnées éditables d'une série (résumé, genres, tags, statut, ...) --
+  // voir pushNautiljonToKavita (kavita_screen.dart) pour l'usage : on
+  // récupère la fiche complète, on ne modifie que certains champs, puis on
+  // renvoie l'ensemble (l'API Kavita remplace tout le bloc SeriesMetadata,
+  // ce n'est pas un patch partiel comme Komga).
+  Future<Map<String, dynamic>> seriesMetadata(int seriesId) async {
+    final resp = await _request('GET', '/api/Series/metadata', params: {'seriesId': '$seriesId'});
+    return Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
+  }
+
+  Future<void> updateSeriesMetadata(Map<String, dynamic> metadata) async {
+    await _request('POST', '/api/Series/metadata', jsonBody: {'seriesMetadata': metadata});
+  }
+
   Future<List<Map<String, dynamic>>> volumes(int seriesId) async {
     final resp = await _request('GET', '/api/Series/volumes', params: {'seriesId': '$seriesId'});
     return (jsonDecode(resp.body) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();

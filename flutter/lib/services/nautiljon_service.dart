@@ -132,6 +132,18 @@ String stripEditionSuffix(String name) {
   return best > 0 ? n.substring(0, best).trim() : n;
 }
 
+// Découpe une valeur de métadonnée Nautiljon (genres/thèmes, ex.
+// "Action - Aventure - Drame") en liste de tags -- même séparateur que
+// allTags()/_seriesTags (écrans Kavita/Komga).
+List<String> splitTagList(String raw) {
+  if (raw.isEmpty) return [];
+  return raw
+      .split(RegExp(r'\s*[-,]\s*'))
+      .map((t) => t.trim())
+      .where((t) => t.isNotEmpty)
+      .toList();
+}
+
 // Trie une liste de résultats pour mettre en premier ceux dont le titre
 // commence par (ou contient) le titre de référence -- tamajon ne trie pas
 // forcément par pertinence, le bon résultat peut sinon se retrouver loin

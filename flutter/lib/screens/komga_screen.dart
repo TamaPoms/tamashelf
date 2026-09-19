@@ -22,6 +22,64 @@ import '../services/nautiljon_service.dart';
 import '../theme.dart';
 import 'reader_screen.dart';
 
+// Statut Komga (SeriesMetadataUpdateDto.status) : ENDED/ONGOING/ABANDONED/
+// HIATUS, une chaîne (contrairement à Kavita, sérialisé en entier). Mapping
+// approximatif depuis le champ "Statut" (texte libre en français) de
+// Nautiljon ; renvoie null si aucun mot-clé reconnu (le champ n'est alors
+// pas touché).
+String? _komgaStatus(String statut) {
+  final s = statut.toLowerCase();
+  if (s.contains('pause') || s.contains('hiatus')) return 'HIATUS';
+  if (s.contains('arrêt') || s.contains('abandon')) return 'ABANDONED';
+  if (s.contains('terminé') || s.contains('fini') || s.contains('complet')) return 'ENDED';
+  if (s.contains('cours') || s.contains('publication')) return 'ONGOING';
+  return null;
+}
+
+// Envoie le résumé/genres/thèmes/éditeur/statut de la fiche Nautiljon
+// associée vers Komga -- l'API Komga patch uniquement les champs fournis
+// (pas besoin de récupérer la fiche existante d'abord, contrairement à
+// Kavita), verrouillés pour qu'un futur scan Komga ne les efface pas.
+// Retourne un message d'erreur, ou null si tout s'est bien passé.
+Future<String?> pushNautiljonToKomga(BuildContext context, {required String seriesId, required Map<String, dynamic> details}) async {
+  final state = context.read<AppState>();
+  try {
+    final patch = <String, dynamic>{};
+
+    final synopsis = (details['synopsis'] ?? '').toString().trim();
+    if (synopsis.isNotEmpty) {
+      patch['summary'] = synopsis;
+      patch['summaryLock'] = true;
+    }
+    final genres = splitTagList((details['genres'] ?? '').toString());
+    if (genres.isNotEmpty) {
+      patch['genres'] = genres;
+      patch['genresLock'] = true;
+    }
+    final themes = splitTagList((details['themes'] ?? '').toString());
+    if (themes.isNotEmpty) {
+      patch['tags'] = themes;
+      patch['tagsLock'] = true;
+    }
+    final publisher = (details['publisher'] ?? '').toString().trim();
+    if (publisher.isNotEmpty) {
+      patch['publisher'] = publisher;
+      patch['publisherLock'] = true;
+    }
+    final status = _komgaStatus((details['status'] ?? '').toString());
+    if (status != null) {
+      patch['status'] = status;
+      patch['statusLock'] = true;
+    }
+    if (patch.isEmpty) return 'Rien à envoyer (fiche Nautiljon vide)';
+
+    await state.komga.updateSeriesMetadata(seriesId, patch);
+    return null;
+  } catch (e) {
+    return '$e';
+  }
+}
+
 Volume _komgaVolume(String seriesId, String bookId, int totalPages) => Volume(
       id: bookId.hashCode,
       cbzFolder: 'komga:series:$seriesId',
@@ -748,6 +806,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   bool _selectMode = false;
   final Set<String> _selected = {};
   bool _downloadBusy = false;
+  bool _pushing = false;
 
   @override
   void initState() {
@@ -805,6 +864,34 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   Future<void> _unmatch() async {
     await context.read<AppState>().nautiljon.deleteMatch('komga', widget.seriesId);
     if (mounted) setState(() => _details = null);
+  }
+
+  Future<void> _pushToServer() async {
+    if (_details == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Envoyer vers Komga ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Le résumé, les genres, les thèmes, l\'éditeur et le statut de la fiche Nautiljon vont être écrits dans Komga, puis verrouillés pour ne pas être effacés par un futur scan. Le reste de la fiche série n\'est pas modifié.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _pushing = true);
+    final error = await pushNautiljonToKomga(context, seriesId: widget.seriesId, details: _details!);
+    if (!mounted) return;
+    setState(() => _pushing = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(error == null ? 'Infos envoyées vers Komga.' : 'Erreur : $error'),
+      backgroundColor: error == null ? AppTheme.grn : AppTheme.ros,
+    ));
   }
 
   Future<void> _refreshDownloaded() async {
@@ -1001,6 +1088,16 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                 if ((_details?['synopsis'] ?? '').toString().isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(_details!['synopsis'].toString(), style: TextStyle(color: AppTheme.t2, fontSize: 12)),
+                ],
+                if (match != null && _details != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _pushing ? null : _pushToServer,
+                    icon: _pushing
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.cloud_upload_outlined, size: 16),
+                    label: const Text('Envoyer les infos vers Komga'),
+                  ),
                 ],
                 if (_showSearch) ...[
                   const SizedBox(height: 14),
