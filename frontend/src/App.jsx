@@ -13,6 +13,18 @@ function isCbzLikePath(path) {
   return /\.(cbz|cbr|zip)$/i.test(String(path || '').trim());
 }
 
+// Cover d'un item de progression de lecture : les entrées Kavita utilisent
+// un manga_url synthétique "kavita:series:<id>" (voir openKavitaChapter) qui
+// ne correspond à aucun dossier CBZ local -- il faut passer par la cover
+// Kavita plutôt que par folder-cover.
+function progressCoverUrl(mangaUrl) {
+  const s = String(mangaUrl || '');
+  if (s.startsWith('kavita:series:')) {
+    return api.kavitaCoverUrl(s.slice('kavita:series:'.length));
+  }
+  return api.cbzFolderCoverUrl(s);
+}
+
 // Lien "Télécharger l'appli Android" : public -- utilisable sur l'écran de connexion,
 // avant même d'avoir un compte.
 function ApkDownloadLink({ compact = false }) {
@@ -28,7 +40,7 @@ function ApkDownloadLink({ compact = false }) {
 }
 
 function ReadingPreview({ progressItem, size = 60, radius = 8 }) {
-  const coverSrc = api.cbzFolderCoverUrl(progressItem?.manga_url || progressItem?.mangaUrl || '');
+  const coverSrc = progressCoverUrl(progressItem?.manga_url || progressItem?.mangaUrl || '');
   const volumeId = String(progressItem?.volume_id || progressItem?.volumeId || '');
   const canPreview = isCbzLikePath(volumeId);
   const thumbs = canPreview ? [0, 1, 2].map(i => api.cbzPageThumbUrl(volumeId, i)) : [];
@@ -98,6 +110,51 @@ function nautiljonMiniUrl(raw) {
 }
 
 const SEARCH_TAG_KEYS = ["Type", "Types", "Genres", "Thème", "Thèmes", "Auteur", "Scénariste", "Dessinateur"];
+const ALPHA_LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
+
+// Variantes de ponctuation pour la recherche Nautiljon côté Kavita (voir
+// _match_query_variants côté backend, même logique en plus simple ici :
+// seule la première occurrence de " - "/" : "/": " est le séparateur
+// titre/sous-titre, ex. "Detroit - Become Human - Tokyo Stories" ->
+// "Detroit: Become Human - Tokyo Stories", pas "Detroit: Become Human:
+// Tokyo Stories").
+function titleSearchVariants(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return [];
+  const variants = [raw];
+  const addOnce = (v) => { if (v && !variants.includes(v)) variants.push(v); };
+  const replaceFirst = (s, sep, rep) => { const i = s.indexOf(sep); return i === -1 ? s : s.slice(0, i) + rep + s.slice(i + sep.length); };
+  if (raw.includes(" - ")) {
+    addOnce(replaceFirst(raw, " - ", " : "));
+    addOnce(replaceFirst(raw, " - ", ": "));
+  }
+  if (raw.includes(" : ")) {
+    addOnce(replaceFirst(raw, " : ", " - "));
+    addOnce(replaceFirst(raw, " : ", ": "));
+  } else if (raw.includes(": ")) {
+    addOnce(replaceFirst(raw, ": ", " - "));
+    addOnce(replaceFirst(raw, ": ", " : "));
+  }
+  return variants;
+}
+
+// Cherche sur Nautiljon avec toutes les variantes de ponctuation du titre et
+// fusionne les résultats (dédupliqués par URL) -- pour que "Cyberpunk -
+// Edgerunners MADNESS" retrouve bien "Cyberpunk: Edgerunners MADNESS" sans
+// que l'utilisateur ait à retaper la requête à la main.
+async function searchNautiljonAllVariants(name, limitPerVariant = 12) {
+  const seen = new Set();
+  const merged = [];
+  for (const v of titleSearchVariants(name)) {
+    try {
+      const r = await api.nautiljonSearch(v, limitPerVariant);
+      for (const row of (r.results || r.rows || [])) {
+        if (row.url && !seen.has(row.url)) { seen.add(row.url); merged.push(row); }
+      }
+    } catch { /* une variante en échec ne doit pas bloquer les autres */ }
+  }
+  return merged;
+}
 
 const TAG_COLORS = [
   "#FF6B6B", "#FFB347", "#6BCB77", "#4ECDC4", "#45B7D1",
@@ -472,6 +529,14 @@ function MainApp({ session, doLogout, show, toast }) {
   const [rShowNextPrompt, setRShowNextPrompt] = useState(false);
   const [rBookmarks, setRBookmarks] = useState([]); // [pageIndex, ...]
   const [rShowThumbs, setRShowThumbs] = useState(false);
+  // Mode page à page : scinder une planche double (scannée en une seule
+  // image large) en deux pages successives.
+  const [rSplitWide, setRSplitWide] = useState(false);
+  const [rSubPage, setRSubPage] = useState(0); // 0 = première moitié, 1 = seconde
+  const [rPageDims, setRPageDims] = useState({}); // url -> {w, h} des pages déjà chargées
+  // Empêche la détection auto du mode webtoon (voir plus bas) de se
+  // redéclencher à chaque page tournée -- une seule tentative par ouverture.
+  const [rAutoWebtoonChecked, setRAutoWebtoonChecked] = useState(false);
   const rScrollRef = useRef(null);
   const rImgRefs = useRef([]);
   const rTouchStart = useRef(null);
@@ -483,6 +548,21 @@ function MainApp({ session, doLogout, show, toast }) {
   const [ue, setUe] = useState("");
   const [cfg, setCfg] = useState({ nautiljon_db_available: false, nautiljon_db_path: "", cbz_path: "" });
   const [amLog, setAmLog] = useState([]); const [amRun, setAmRun] = useState(false);
+  // Revue des suggestions du matching auto CBZ (même principe que Kavita) :
+  // mangas sans correspondance exacte mais avec des candidats, à
+  // valider/refuser un par un.
+  const [cbzReviewQueue, setCbzReviewQueue] = useState([]);
+  const [cbzReviewIndex, setCbzReviewIndex] = useState(0);
+  const [cbzReviewBusy, setCbzReviewBusy] = useState(false);
+  // Fenêtre "Match" CBZ : mangas non associés un par un, recherche Nautiljon
+  // auto-lancée à l'affichage + barre éditable (mêmes helpers que Kavita).
+  const [cbzShowMatchAll, setCbzShowMatchAll] = useState(false);
+  const [cbzMatchAllQueue, setCbzMatchAllQueue] = useState([]);
+  const [cbzMatchAllIndex, setCbzMatchAllIndex] = useState(0);
+  const [cbzMatchQuery, setCbzMatchQuery] = useState("");
+  const [cbzMatchResults, setCbzMatchResults] = useState([]);
+  const [cbzMatchSearching, setCbzMatchSearching] = useState(false);
+  const [cbzMatchDirectUrl, setCbzMatchDirectUrl] = useState("");
   const [showP, setShowP] = useState(false);
   const [pf, setPf] = useState({ old: "", n1: "", n2: "" }); const [pe, setPe] = useState("");
   const sRef = useRef(null);
@@ -584,7 +664,7 @@ function MainApp({ session, doLogout, show, toast }) {
   const filtered = getFiltered();
   const allTags = extractAllTags(groupedMangas);
   const activeTagCount = Object.values(tagFilters).reduce((s, v) => s + (v?.length || 0), 0);
-  const alphaLetters = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
+  const alphaLetters = ALPHA_LETTERS;
 
   const toggleTag = (cat, tag) => {
     setTagFilters(prev => {
@@ -678,14 +758,41 @@ function MainApp({ session, doLogout, show, toast }) {
       return;
     }
     setRP(c);
+    setRSubPage(0);
     if (rUrl) {
       await saveProg(rUrl, rVol, c, rPg.length, rTitle);
       if (c % 5 === 0) try { setProgress(await api.getProgress()); } catch {}
     }
   };
 
-  const rdrNext = () => rdrGo(rP + (rMode === 'double' ? 2 : 1));
-  const rdrPrev = () => rdrGo(rP - (rMode === 'double' ? 2 : 1));
+  // Une page est "large" (probable planche double scannée en une seule
+  // image) une fois ses dimensions naturelles connues (après chargement).
+  const isWidePage = (url) => {
+    const d = rPageDims[url];
+    return !!d && d.w > d.h * 1.2;
+  };
+  const splitActive = rMode === 'paged' && rSplitWide;
+  const rCurWide = splitActive && isWidePage(rPg[rP]);
+
+  const recordPageDims = (url, e) => {
+    const w = e.target.naturalWidth, h = e.target.naturalHeight;
+    if (!w || !h) return;
+    setRPageDims(prev => (prev[url]?.w === w && prev[url]?.h === h) ? prev : { ...prev, [url]: { w, h } });
+  };
+
+  const rdrNext = () => {
+    if (splitActive && isWidePage(rPg[rP]) && rSubPage === 0) { setRSubPage(1); return; }
+    rdrGo(rP + (rMode === 'double' ? 2 : 1));
+  };
+  const rdrPrev = () => {
+    if (splitActive && isWidePage(rPg[rP]) && rSubPage === 1) { setRSubPage(0); return; }
+    const target = Math.max(0, rP - (rMode === 'double' ? 2 : 1));
+    const changed = target !== rP;
+    rdrGo(target);
+    // En revenant en arrière sur une planche double, on arrive par sa
+    // seconde moitié (celle qui touche la page suivante).
+    if (changed && splitActive && isWidePage(rPg[target])) setRSubPage(1);
+  };
 
   const toggleBookmark = (page) => {
     setRBookmarks(prev => prev.includes(page) ? prev.filter(p => p !== page) : [...prev, page].sort((a, b) => a - b));
@@ -724,6 +831,7 @@ function MainApp({ session, doLogout, show, toast }) {
         const meta = (det?.metadata_json && typeof det.metadata_json === 'object') ? det.metadata_json : (manga?.metadata_json || {});
         const metaTxt = normalizeSearchText([meta?.Type, meta?.Types, meta?.Format, meta?.ReadingMode, meta?.reading_mode].filter(Boolean).join(' '));
         setRMode(metaTxt.includes('webtoon') ? 'webtoon' : 'paged');
+        setRAutoWebtoonChecked(metaTxt.includes('webtoon'));
         setRP(Math.max(0, Math.min(startPage, info.total_pages - 1)));
         setRZoom(1);
         setRCbz(null);
@@ -741,13 +849,44 @@ function MainApp({ session, doLogout, show, toast }) {
       const meta = (det?.metadata_json && typeof det.metadata_json === 'object') ? det.metadata_json : (manga?.metadata_json || {});
       const metaTxt = normalizeSearchText([meta?.Type, meta?.Types, meta?.Format, meta?.ReadingMode, meta?.reading_mode].filter(Boolean).join(' '));
       setRMode(metaTxt.includes('webtoon') ? 'webtoon' : 'paged');
+      setRAutoWebtoonChecked(metaTxt.includes('webtoon'));
       setRP(Math.max(0, Math.min(startPage, info.total_pages - 1))); setRZoom(1); setRCbz({ filepath: tome.path }); setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false); enterFullscreen();
       findNextVolume(manga, tome);
     } catch (e) { show(`Erreur: ${e.message}`); }
   };
 
+  // Ouvre un chapitre d'une série d'un serveur Kavita externe (voir
+  // KavitaBrowser) dans le lecteur existant -- celui-ci ne connaît que
+  // rPg (un tableau d'URLs d'images), donc aucune modification du lecteur
+  // n'est nécessaire pour cette source. manga_url/volume_id suivent le même
+  // principe de préfixe que "imgvol:" pour rester compatibles avec la table
+  // de progression existante (voir resumeReading ci-dessous).
+  const openKavitaChapter = (seriesId, seriesName, chapterId, totalPages, startPage = 0) => {
+    const pages = Array.from({ length: totalPages }, (_, i) => api.kavitaPageUrl(chapterId, i));
+    setRPg(pages);
+    setRTitle(seriesName);
+    setRUrl(`kavita:series:${seriesId}`);
+    setRVol(`kavita:chapter:${chapterId}`);
+    setRMode('paged');
+    setRAutoWebtoonChecked(false);
+    setRP(Math.max(0, Math.min(startPage, totalPages - 1)));
+    setRZoom(1);
+    setRCbz(null);
+    setRNextVol(null); // pas d'auto-avance "tome suivant" pour Kavita dans cette première version
+    setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false);
+    enterFullscreen();
+  };
+
   const resumeReading = async (p) => {
-    // Resume supports both CBZ and "imgvol:".
+    // Resume supports CBZ, "imgvol:" and "kavita:chapter:".
+    if (String(p.volume_id || '').startsWith('kavita:chapter:')) {
+      const chapterId = String(p.volume_id).split(':')[2];
+      try {
+        const info = await api.kavitaChapterInfo(chapterId);
+        openKavitaChapter(info.seriesId, p.title || info.seriesName || 'Kavita', chapterId, info.pages, p.current_page);
+      } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+      return;
+    }
     if (String(p.volume_id || '').startsWith('imgvol:')) {
       const parts = String(p.volume_id).split(':');
       const folder = parts.slice(1, -1).join(':');
@@ -759,6 +898,7 @@ function MainApp({ session, doLogout, show, toast }) {
       setRUrl(p.manga_url);
       setRVol(p.volume_id);
       setRMode('paged');
+      setRAutoWebtoonChecked(false);
       setRZoom(1);
       setRP(Math.max(0, Math.min(p.current_page, info.total_pages - 1)));
       setRCbz(null);
@@ -771,6 +911,7 @@ function MainApp({ session, doLogout, show, toast }) {
     setRUrl(p.manga_url);
     setRVol(p.volume_id);
     setRMode('paged');
+    setRAutoWebtoonChecked(false);
     setRZoom(1);
     setRP(Math.max(0, Math.min(p.current_page, p.total_pages - 1)));
     setRCbz({ filepath: p.volume_id });
@@ -778,6 +919,20 @@ function MainApp({ session, doLogout, show, toast }) {
   };
 
   useEffect(() => { rImgRefs.current = []; }, [rdr, rMode, rPg.length]);
+
+  // Détection auto du mode webtoon (repli quand les métadonnées ne le
+  // précisent pas) : une fois les dimensions réelles de la page affichée
+  // connues, si elle est bien plus haute que large (planche webtoon
+  // découpée en bande verticale plutôt qu'une page de manga classique),
+  // on bascule automatiquement en mode défilement. Une seule tentative par
+  // ouverture (rAutoWebtoonChecked), pour ne pas re-décider à chaque page.
+  useEffect(() => {
+    if (!rdr || rMode !== 'paged' || rAutoWebtoonChecked) return;
+    const dims = rPageDims[rPg[rP]];
+    if (!dims) return;
+    setRAutoWebtoonChecked(true);
+    if (dims.h > dims.w * 2.5) setRMode('webtoon');
+  }, [rdr, rMode, rPg, rP, rPageDims, rAutoWebtoonChecked]);
 
   const rdrScrollBy = (dy) => {
     const el = rScrollRef.current;
@@ -868,8 +1023,8 @@ function MainApp({ session, doLogout, show, toast }) {
       return;
     }
     if (rMode === 'paged' || rMode === 'double') {
-      if (cx <= 0.25) rdrGo(rRTL ? rP + (rMode === 'double' ? 2 : 1) : rP - (rMode === 'double' ? 2 : 1));
-      else if (cx >= 0.75) rdrGo(rRTL ? rP - (rMode === 'double' ? 2 : 1) : rP + (rMode === 'double' ? 2 : 1));
+      if (cx <= 0.25) rRTL ? rdrNext() : rdrPrev();
+      else if (cx >= 0.75) rRTL ? rdrPrev() : rdrNext();
     }
   };
 
@@ -915,7 +1070,17 @@ function MainApp({ session, doLogout, show, toast }) {
   const openEditU = (u) => { setEditU(u); setUf({ name: u.username, pass: "", role: u.role, readOnly: !!u.perm_read_only, canDownload: !!u.perm_can_download, canChangePassword: u.perm_can_change_password !== 0 }); setUe(""); setShowUM(true); };
   const saveUser = async () => { try { if (editU) await api.updateUser(editU.id, { username: uf.name.trim(), password: uf.pass || undefined, role: uf.role, perm_read_only: uf.readOnly, perm_can_download: uf.canDownload, perm_can_change_password: uf.canChangePassword }); else { if (!uf.name.trim() || !uf.pass) { setUe("Champs requis"); return; } await api.createUser({ username: uf.name.trim(), password: uf.pass, role: uf.role, perm_read_only: uf.readOnly, perm_can_download: uf.canDownload, perm_can_change_password: uf.canChangePassword }); } setShowUM(false); loadUsers(); show(editU ? "Modifié" : "Créé"); } catch (e) { setUe(e.message); } };
   const delUser = async (u) => { try { await api.deleteUser(u.id); loadUsers(); } catch (e) { show(e.message); } };
-  const saveCfg = async () => { try { await api.updateConfig(cfg); show("Sauvegardé"); } catch (e) { show(e.message); } };
+  const saveCfg = async () => {
+    try {
+      const payload = { ...cfg };
+      // Le champ clé API reste vide au chargement (jamais renvoyée par le
+      // serveur) : ne l'envoyer que si l'admin y a tapé une nouvelle valeur,
+      // sinon on écraserait la clé déjà enregistrée avec une chaîne vide.
+      if (!payload.kavita_api_key) delete payload.kavita_api_key;
+      await api.updateConfig(payload);
+      show("Sauvegardé");
+    } catch (e) { show(e.message); }
+  };
 
   const runAutoMatch = async () => {
     setAmRun(true); setAmLog(["🚀 Matching des dossiers CBZ…"]);
@@ -923,9 +1088,92 @@ function MainApp({ session, doLogout, show, toast }) {
       const r = await api.autoMatch();
       setAmLog(p => [...p, `✅ ${r.auto_matched} matchés, ${r.not_found} non trouvés, ${r.errors} erreurs, ${r.covers} covers`]);
       loadAll(activeLibId);
+      if (r.suggestions?.length) {
+        setCbzReviewQueue(r.suggestions);
+        setCbzReviewIndex(0);
+      }
     } catch (e) { setAmLog(p => [...p, `❌ ${e.message}`]); }
     setAmRun(false);
   };
+
+  const cbzReviewAdvance = () => {
+    const next = cbzReviewIndex + 1;
+    if (next >= cbzReviewQueue.length) {
+      setCbzReviewQueue([]); setCbzReviewIndex(0);
+      show("✅ Revue terminée");
+    } else {
+      setCbzReviewIndex(next);
+    }
+  };
+  const cbzReviewAccept = async (url) => {
+    const item = cbzReviewQueue[cbzReviewIndex];
+    if (!item || !url) return;
+    setCbzReviewBusy(true);
+    try { await api.validateMatch(item.manga_id, url); show("✅ Associé"); loadAll(activeLibId); }
+    catch (e) { show(`❌ ${e.message}`); }
+    setCbzReviewBusy(false);
+    cbzReviewAdvance();
+  };
+  const cbzReviewReject = () => cbzReviewAdvance();
+  const cbzReviewCancel = () => { setCbzReviewQueue([]); setCbzReviewIndex(0); };
+
+  // Fenêtre "Match" CBZ : tous les mangas non associés, un par un, avec
+  // recherche Nautiljon auto-lancée à l'affichage (mêmes helpers que
+  // Kavita : titleSearchVariants/searchNautiljonAllVariants).
+  const openCbzMatchAll = () => {
+    const queue = allMangas.filter(m => m.match_status === "unmatched" || m.match_status === "pending");
+    if (queue.length === 0) { show("Tous les mangas sont déjà associés."); return; }
+    setCbzMatchAllQueue(queue);
+    setCbzMatchAllIndex(0);
+    setCbzShowMatchAll(true);
+  };
+
+  useEffect(() => {
+    if (!cbzShowMatchAll) return;
+    const item = cbzMatchAllQueue[cbzMatchAllIndex];
+    if (!item) return;
+    let cancelled = false;
+    const titre = item.title || item.cbz_folder || "";
+    setCbzMatchQuery(titre);
+    setCbzMatchResults([]);
+    setCbzMatchDirectUrl("");
+    (async () => {
+      setCbzMatchSearching(true);
+      try {
+        const results = await searchNautiljonAllVariants(titre, 12);
+        if (!cancelled) setCbzMatchResults(results);
+      } catch { /* recherche auto ratée -- la barre reste utilisable à la main */ }
+      if (!cancelled) setCbzMatchSearching(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cbzShowMatchAll, cbzMatchAllIndex, cbzMatchAllQueue]);
+
+  const doCbzMatchSearch = async () => {
+    if (!cbzMatchQuery.trim()) return;
+    setCbzMatchSearching(true);
+    try { setCbzMatchResults(await searchNautiljonAllVariants(cbzMatchQuery.trim())); }
+    catch (e) { show(e.message); }
+    setCbzMatchSearching(false);
+  };
+
+  const cbzMatchAllAdvance = () => {
+    const next = cbzMatchAllIndex + 1;
+    if (next >= cbzMatchAllQueue.length) {
+      setCbzShowMatchAll(false);
+      show("✅ Terminé");
+    } else {
+      setCbzMatchAllIndex(next);
+    }
+  };
+  const cbzMatchAllPick = async (url) => {
+    const item = cbzMatchAllQueue[cbzMatchAllIndex];
+    if (!item || !url) return;
+    try { await api.validateMatch(item.id, url); show("✅ Associé"); loadAll(activeLibId); cbzMatchAllAdvance(); }
+    catch (e) { show(`❌ ${e.message}`); }
+  };
+  const cbzMatchAllSkip = () => cbzMatchAllAdvance();
+  const cbzMatchAllCancel = () => { setCbzShowMatchAll(false); setCbzMatchAllQueue([]); setCbzMatchAllIndex(0); };
 
   const changePw = async () => { if (pf.n1.length < 4) { setPe("Trop court"); return; } if (pf.n1 !== pf.n2) { setPe("Différents"); return; } try { await api.changePassword({ old_password: pf.old, new_password: pf.n1 }); setShowP(false); show("MDP changé"); } catch (e) { setPe(e.message); } };
   const stCls = (s) => { if (!s) return ""; const l = s.toLowerCase(); return l.includes("cours") ? "st-on" : l.includes("termin") ? "st-end" : ""; };
@@ -960,6 +1208,7 @@ function MainApp({ session, doLogout, show, toast }) {
           <div className={`sb-item ${nav === "stats" ? "on" : ""}`} onClick={() => setNav("stats")}>📊 <span>Stats</span></div>
           <div className={`sb-item ${nav === "activity" ? "on" : ""}`} onClick={() => { setNav("activity"); api.getActivity().then(setActivity).catch(() => {}); }}>👥 <span>Activité</span></div>
           <div className={`sb-item ${nav === "app-android" ? "on" : ""}`} onClick={() => setNav("app-android")}>📱 <span>App Android</span></div>
+          <div className={`sb-item ${nav === "kavita" ? "on" : ""}`} onClick={() => setNav("kavita")}>🌐 <span>Kavita</span></div>
           {isAdmin && <><div className="sb-sep" /><div className="sb-label">Admin</div>
             <div className={`sb-item ${nav === "admin-users" ? "on" : ""}`} onClick={() => setNav("admin-users")}>👥 <span>Utilisateurs</span></div>
             <div className={`sb-item ${nav === "admin-config" ? "on" : ""}`} onClick={() => setNav("admin-config")}>⚙️ <span>Config</span></div>
@@ -1120,6 +1369,9 @@ function MainApp({ session, doLogout, show, toast }) {
 
           {/* ══ APP ANDROID ══ */}
           {nav === "app-android" && <AppAndroidView />}
+
+          {/* ══ KAVITA (serveur externe) ══ */}
+          {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} isAdmin={isAdmin} progress={progress} onResume={resumeReading} />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -1418,6 +1670,22 @@ function MainApp({ session, doLogout, show, toast }) {
                 <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 4 }}>⚠️ Après modification, relancez un scan pour que les changements prennent effet.</div>
               </div>
 
+              <div style={{ marginTop: 16, padding: 14, background: "var(--c1)", borderRadius: "var(--r)", border: "1px solid var(--brd)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "var(--t1)" }}>📚 Serveur Kavita (optionnel)</div>
+                <div style={{ fontSize: 10, color: "var(--t3)", marginBottom: 10 }}>
+                  Parcourir et lire les séries d'un serveur <a href="https://www.kavitareader.com/" target="_blank" rel="noreferrer" style={{ color: "var(--ac)" }}>Kavita</a> externe depuis TamaShelf, sans dupliquer les fichiers. La clé API se génère dans Kavita, Compte → Clés API.
+                </div>
+                <div className="fld">
+                  <label>URL du serveur</label>
+                  <input value={cfg.kavita_url || ""} onChange={e => setCfg(c => ({ ...c, kavita_url: e.target.value }))} placeholder="http://192.168.1.50:5000" />
+                </div>
+                <div className="fld">
+                  <label>Clé API</label>
+                  <input type="password" value={cfg.kavita_api_key || ""} onChange={e => setCfg(c => ({ ...c, kavita_api_key: e.target.value }))} placeholder={cfg.kavita_configured ? "Déjà configurée — laisser vide pour ne pas la changer" : "Coller la clé API ici"} />
+                </div>
+                {cfg.kavita_configured && <div className="hint" style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="dot d-on" />Clé API enregistrée</div>}
+              </div>
+
               <button className="btn btn-p" style={{ marginTop: 16 }} onClick={saveCfg}>Sauvegarder</button>
             </div>
           </>}
@@ -1437,6 +1705,7 @@ function MainApp({ session, doLogout, show, toast }) {
               <button className="btn btn-p" onClick={async () => { show("Scan…"); try { const r = await api.scanFolders(); show(`✅ ${r.added} nouveaux dossiers`); loadAll(activeLibId); } catch (e) { show(`❌ ${e.message}`); } }}>📁 Scanner dossiers</button>
               <button className="btn" onClick={async () => { show("Re-parse types…"); try { const r = await api.rescanTypes(); show(`✅ ${r.updated} volumes mis à jour`); loadAll(activeLibId); } catch (e) { show(`❌ ${e.message}`); } }} title="Re-détecte Tome/Chapitre/One-Shot sans re-scanner les fichiers">🏷️ Re-parser types</button>
               <button className="btn btn-p" onClick={runAutoMatch} disabled={amRun}>{amRun ? "En cours…" : "🔄 Matching auto"}</button>
+              <button className="btn" onClick={openCbzMatchAll}>🔍 Match</button>
               <button className="btn btn-g" onClick={async () => { show("Covers…"); try { const r = await api.generateCovers(); show(`✅ ${r.generated} covers`); } catch (e) { show(`❌ ${e.message}`); } }}>🖼️ Covers</button>
             </div>
             {amLog.length > 0 && <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 12, maxHeight: 200, overflowY: "auto", fontFamily: "monospace", fontSize: 11, color: "var(--t2)", marginBottom: 14 }}>{amLog.map((l, i) => <div key={i}>{l}</div>)}</div>}
@@ -1678,8 +1947,9 @@ function MainApp({ session, doLogout, show, toast }) {
             <button className="ib" onClick={closeReader}>✕</button>
             <div className="tit">{rTitle}</div>
             <span className="pg">{rP + 1}{rMode === 'double' && rP + 1 < rPg.length ? `-${rP + 2}` : ''}/{rPg.length}</span>
-            <button className="ib" title="Mode webtoon" onClick={() => setRMode(m => m === 'webtoon' ? 'paged' : 'webtoon')} style={{ color: rMode === 'webtoon' ? 'var(--ac)' : undefined }}>{rMode === 'webtoon' ? '📄' : '📜'}</button>
-            <button className="ib" title="Double page" onClick={() => setRMode(m => m === 'double' ? 'paged' : 'double')} style={{ color: rMode === 'double' ? 'var(--ac)' : undefined }}>📖</button>
+            <button className="ib" title="Mode webtoon" onClick={() => { setRMode(m => m === 'webtoon' ? 'paged' : 'webtoon'); setRSubPage(0); }} style={{ color: rMode === 'webtoon' ? 'var(--ac)' : undefined }}>{rMode === 'webtoon' ? '📄' : '📜'}</button>
+            <button className="ib" title="Double page" onClick={() => { setRMode(m => m === 'double' ? 'paged' : 'double'); setRSubPage(0); }} style={{ color: rMode === 'double' ? 'var(--ac)' : undefined }}>📖</button>
+            {rMode === 'paged' && <button className="ib" title="Scinder les planches doubles" onClick={() => { setRSplitWide(v => !v); setRSubPage(0); }} style={{ color: rSplitWide ? 'var(--ac)' : undefined }}>✂️</button>}
             <button className="ib" title={rRTL ? "Lecture ← (manga)" : "Lecture → (occidental)"} onClick={() => setRRTL(r => !r)}>{rRTL ? '←' : '→'}</button>
             <button className="ib" onClick={() => setRZoom(z => Math.max(z - .2, .4))}>−</button>
             <span style={{ fontSize: 10, color: "#aaa" }}>{Math.round(rZoom * 100)}%</span>
@@ -1728,7 +1998,33 @@ function MainApp({ session, doLogout, show, toast }) {
           </div>
         ) : (
           <div className="rdr-cv" onClick={handleReaderClick}>
-            {rPg[rP] && <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} />}
+            {rPg[rP] && (rCurWide ? (
+              <div style={{
+                height: '100vh',
+                aspectRatio: `${rPageDims[rPg[rP]].w / 2} / ${rPageDims[rPg[rP]].h}`,
+                overflow: 'hidden',
+                position: 'relative',
+                transform: rZoom !== 1 ? `scale(${rZoom})` : undefined,
+              }}>
+                <img
+                  src={rPg[rP]}
+                  alt=""
+                  draggable={false}
+                  onLoad={(e) => recordPageDims(rPg[rP], e)}
+                  style={{
+                    position: 'absolute', top: 0,
+                    // rSubPage suit l'ordre de LECTURE (0 = première moitié lue,
+                    // 1 = seconde), indépendant de l'écran : en RTL on lit la
+                    // moitié droite en premier.
+                    left: (rRTL ? rSubPage === 1 : rSubPage === 0) ? '0%' : '-100%',
+                    height: '100%', width: '200%', maxWidth: 'none',
+                    objectFit: 'cover',
+                  }}
+                />
+              </div>
+            ) : (
+              <img src={rPg[rP]} alt="" style={{ transform: `scale(${rZoom})` }} draggable={false} onLoad={(e) => recordPageDims(rPg[rP], e)} />
+            ))}
           </div>
         )}
 
@@ -1839,6 +2135,96 @@ function MainApp({ session, doLogout, show, toast }) {
 
       {/* Keyboard Config Modal */}
       {showKeyConfig && <KeyboardConfigModal keyConfig={keyConfig} onSave={(cfg) => { setKeyConfig(cfg); localStorage.setItem("tamashelf_keys", JSON.stringify(cfg)); setShowKeyConfig(false); show("Raccourcis sauvegardés"); }} onClose={() => setShowKeyConfig(false)} />}
+
+      {/* Revue des suggestions du matching auto CBZ (même principe que Kavita) */}
+      {cbzReviewQueue.length > 0 && cbzReviewIndex < cbzReviewQueue.length && (() => {
+        const item = cbzReviewQueue[cbzReviewIndex];
+        const candidates = item.candidates || [];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) cbzReviewCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {cbzReviewIndex + 1} / {cbzReviewQueue.length}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                <img src={api.cbzFolderCoverUrl(item.folder)} alt="" style={{ width: 130, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Manga</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.title}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 10 }}>
+                {candidates.length > 1 ? `${candidates.length} suggestions Nautiljon -- choisis celle qui correspond :` : "Suggestion Nautiljon :"}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {candidates.map((c, i) => {
+                  let cov = c.cover || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: cbzReviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: cbzReviewBusy ? .5 : 1 }} onClick={() => !cbzReviewBusy && cbzReviewAccept(c.url)}>
+                      <div style={{ width: "100%", aspectRatio: "2/3", position: "relative" }}>
+                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 5, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{c.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={cbzReviewReject} disabled={cbzReviewBusy}>❌ Aucun ne correspond</button>
+                <button className="btn btn-s" onClick={cbzReviewCancel} disabled={cbzReviewBusy}>🛑 Annuler</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Fenêtre "Match" CBZ : mangas non associés, un par un, recherche live */}
+      {cbzShowMatchAll && cbzMatchAllQueue[cbzMatchAllIndex] && (() => {
+        const item = cbzMatchAllQueue[cbzMatchAllIndex];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) cbzMatchAllCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 720, width: "95%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Match — {cbzMatchAllIndex + 1} / {cbzMatchAllQueue.length} manga(s) non associé(s)</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
+                <img src={api.cbzFolderCoverUrl(item.cbz_folder)} alt="" style={{ width: 110, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Manga</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.title || item.cbz_folder}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                <input style={{ flex: 1, fontSize: 12, padding: "5px 8px" }} value={cbzMatchQuery} onChange={e => setCbzMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doCbzMatchSearch()} />
+                <button className="btn btn-s btn-p" onClick={doCbzMatchSearch} disabled={cbzMatchSearching}>{cbzMatchSearching ? "…" : "🔍"}</button>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+                <input style={{ flex: 1, fontSize: 11, padding: "5px 8px" }} value={cbzMatchDirectUrl} onChange={e => setCbzMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && cbzMatchDirectUrl.trim() && cbzMatchAllPick(cbzMatchDirectUrl.trim())} />
+                <button className="btn btn-s" onClick={() => cbzMatchAllPick(cbzMatchDirectUrl.trim())} disabled={!cbzMatchDirectUrl.trim()}>🔗 Associer</button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 8 }}>
+                {cbzMatchSearching ? "Recherche…" : cbzMatchResults.length > 0 ? `${cbzMatchResults.length} résultat(s) -- choisis celui qui correspond :` : "Aucun résultat."}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {cbzMatchResults.map((r, i) => {
+                  let cov = r.cover_url || r.image_url || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => cbzMatchAllPick(r.url)}>
+                      {cov
+                        ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 5 }} onError={e => { e.target.style.display = "none"; }} />
+                        : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 5, background: "var(--c1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{r.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={cbzMatchAllSkip}>⏭️ Passer</button>
+                <button className="btn btn-s" onClick={cbzMatchAllCancel}>🛑 Arrêter</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {toast && <div className="toast">{toast}</div>}
     </>
@@ -2045,6 +2431,635 @@ function AppAndroidView() {
         <p style={{ color: "var(--t2)", fontSize: 12, marginTop: 6 }}>App Android native (Flutter), distribuée via GitHub Releases.</p>
         <a className="btn btn-p" style={{ marginTop: 12, textDecoration: "none", display: "inline-block" }} href={APK_DOWNLOAD_URL}>⬇️ Télécharger le .apk</a>
       </div>
+    </>
+  );
+}
+
+// Parcourt un serveur Kavita externe (configuré par l'admin dans
+// Admin -> Config) et ouvre les chapitres dans le lecteur existant via
+// onOpenChapter (voir App.openKavitaChapter). Lecture seule : aucune
+// tentative de fusion avec les mangas CBZ locaux ou leur matching Nautiljon
+// -- volontairement une source à part pour cette première version.
+function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
+  const [available, setAvailable] = useState(null); // null = vérification en cours
+  const [errMsg, setErrMsg] = useState(null);
+  const [libraries, setLibraries] = useState([]);
+  const [libId, setLibId] = useState(null);
+  const [seriesList, setSeriesList] = useState([]);
+  const [loadingSeries, setLoadingSeries] = useState(false);
+  const [sel, setSel] = useState(null); // série sélectionnée (SeriesDto Kavita)
+  const [volumes, setVolumes] = useState([]);
+  const [loadingVolumes, setLoadingVolumes] = useState(false);
+  const [nautMatch, setNautMatch] = useState(null); // fiche Nautiljon complète du match persisté (kavita_matches, voir backend)
+  const [loadingNaut, setLoadingNaut] = useState(false);
+  const [suggested, setSuggested] = useState(null); // résultat de recherche auto, à valider avant de persister
+  const [showMatchSearch, setShowMatchSearch] = useState(false);
+  const [matchQuery, setMatchQuery] = useState("");
+  const [matchResults, setMatchResults] = useState([]);
+  const [matchSearching, setMatchSearching] = useState(false);
+  const [matchDirectUrl, setMatchDirectUrl] = useState("");
+  const [alphaFilter, setAlphaFilter] = useState(null);
+  const [seriesSearch, setSeriesSearch] = useState("");
+  const [matchStatusFilter, setMatchStatusFilter] = useState(null); // null | "matched" | "unmatched"
+  const [tagFilters, setTagFilters] = useState({});
+  const [showTagPanel, setShowTagPanel] = useState(false);
+  const [matchesMap, setMatchesMap] = useState({}); // {kavita_series_id: {nautiljon_url, metadata_json}}, pour les badges + le filtre par tag
+  const [autoMatching, setAutoMatching] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState([]); // suggestions du matching auto sans correspondance exacte, à valider/refuser une par une
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewCoverRetry, setReviewCoverRetry] = useState(0); // incrémenté pour forcer un rechargement de la cover Kavita (proxy Kavita parfois en 502 passager)
+  const [showMatchAll, setShowMatchAll] = useState(false); // fenêtre "Match" : séries non associées, une par une, avec recherche live
+  const [matchAllQueue, setMatchAllQueue] = useState([]);
+  const [matchAllIndex, setMatchAllIndex] = useState(0);
+
+  const refreshMatchesMap = useCallback(() => {
+    api.kavitaMatches().then(setMatchesMap).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await api.kavitaHealth();
+        setAvailable(h.available);
+        setErrMsg(h.error || null);
+        if (h.available) {
+          const libs = await api.kavitaLibraries();
+          setLibraries(libs);
+          if (libs.length) setLibId(libs[0].id);
+          refreshMatchesMap();
+        }
+      } catch (e) {
+        setAvailable(false);
+        setErrMsg(e.message || null);
+      }
+    })();
+  }, [refreshMatchesMap]);
+
+  useEffect(() => {
+    if (libId == null) return;
+    let cancelled = false;
+    setLoadingSeries(true);
+    setSel(null);
+    setAlphaFilter(null);
+    setSeriesSearch("");
+    setMatchStatusFilter(null);
+    setTagFilters({});
+    setShowTagPanel(false);
+    setShowMatchAll(false);
+    setMatchAllQueue([]);
+    setMatchAllIndex(0);
+    api.kavitaSeries(libId)
+      .then(list => { if (!cancelled) setSeriesList(list); })
+      .catch(e => show(e.message))
+      .finally(() => { if (!cancelled) setLoadingSeries(false); });
+    return () => { cancelled = true; };
+  }, [libId]);
+
+  useEffect(() => { setReviewCoverRetry(0); }, [reviewIndex]);
+
+  const runAutoMatch = async () => {
+    if (libId == null) return;
+    setAutoMatching(true);
+    try {
+      const r = await api.kavitaAutoMatch(libId);
+      if (r.error) { show(`❌ ${r.error}`); return; }
+      show(`✅ ${r.auto_matched} associée(s), ${r.not_found} sans correspondance exacte`);
+      refreshMatchesMap();
+      if (r.suggestions?.length) {
+        setReviewQueue(r.suggestions);
+        setReviewIndex(0);
+      }
+    } catch (e) { show(`❌ ${e.message}`); }
+    setAutoMatching(false);
+  };
+
+  // Revue des suggestions du matching auto : une série + ses candidats à la
+  // fois (plusieurs si l'auto-match en a trouvé plusieurs), on choisit celui
+  // qui correspond -- ou aucun (Refuser) -- puis on avance. Annuler vide
+  // toute la file.
+  const reviewAccept = async (url) => {
+    const item = reviewQueue[reviewIndex];
+    if (!item) return;
+    setReviewBusy(true);
+    await saveMatchFor(item.series_id, url);
+    setReviewBusy(false);
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("✅ Revue terminée");
+  };
+  const reviewReject = () => {
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("Revue terminée");
+  };
+  const reviewCancel = () => { setReviewQueue([]); setReviewIndex(0); };
+
+  // Matching Nautiljon persisté par série Kavita (table kavita_matches,
+  // séparée de `matches`/`manga_library` -- voir backend) : contrairement à
+  // la 1re version qui refaisait une recherche à chaque ouverture (peu
+  // fiable, jamais enregistrée), on lit/écrit maintenant un vrai match.
+  const openSeries = async (series) => {
+    setSel(series);
+    setVolumes([]);
+    setLoadingVolumes(true);
+    setMatchQuery(series.name || "");
+    try {
+      setVolumes(await api.kavitaVolumes(series.id));
+    } catch (e) {
+      show(e.message);
+    } finally {
+      setLoadingVolumes(false);
+    }
+    await loadMatchFor(series);
+  };
+
+  // Prend `series` en paramètre plutôt que de lire `sel` (state) : au
+  // premier appel depuis openSeries(), sel n'est pas encore à jour au
+  // moment où cette closure est créée.
+  const loadMatchFor = async (series) => {
+    setLoadingNaut(true);
+    setNautMatch(null);
+    setSuggested(null);
+    setShowMatchSearch(false);
+    setMatchResults([]);
+    try {
+      const m = await api.kavitaGetMatch(series.id);
+      if (m.matched && m.nautiljon_url) {
+        setNautMatch(await api.nautiljonManga(m.nautiljon_url));
+      } else if (isAdmin) {
+        try {
+          const results = await searchNautiljonAllVariants(series.name || "", 4);
+          const best = results[0];
+          if (best?.url) setSuggested(best); else setShowMatchSearch(true);
+        } catch { setShowMatchSearch(true); }
+      }
+    } catch { /* pas de fiche affichée */ }
+    setLoadingNaut(false);
+  };
+
+  const doMatchSearch = async () => {
+    if (!matchQuery.trim()) return;
+    setMatchSearching(true);
+    try {
+      setMatchResults(await searchNautiljonAllVariants(matchQuery.trim()));
+    } catch (e) { show(e.message); }
+    setMatchSearching(false);
+  };
+
+  // Save "brut", sans dépendre de sel/rafraîchir la fiche détail -- utilisé
+  // par la revue du matching auto et le "Match" en masse, qui agissent sur
+  // n'importe quelle série de la liste, pas forcément celle ouverte (sel).
+  const saveMatchFor = async (seriesId, url) => {
+    if (!seriesId || !url) return false;
+    try {
+      await api.kavitaSaveMatch(seriesId, url);
+      refreshMatchesMap();
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
+  };
+
+  const saveMatch = async (url) => {
+    if (!sel) return;
+    const ok = await saveMatchFor(sel.id, url);
+    if (ok) { show("✅ Associé"); await loadMatchFor(sel); }
+  };
+
+  const unmatchFor = async (seriesId) => {
+    if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return false;
+    try {
+      await api.kavitaDeleteMatch(seriesId);
+      refreshMatchesMap();
+      show("Dissocié");
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
+  };
+
+  const unmatch = async () => {
+    if (!sel) return;
+    if (await unmatchFor(sel.id)) await loadMatchFor(sel);
+  };
+
+  // Fenêtre "Match" : toutes les séries non associées de la bibliothèque,
+  // une par une -- comme la revue du matching auto (même recherche
+  // automatique à l'affichage), mais avec une barre de recherche éditable
+  // pour obtenir de nouvelles suggestions au lieu de juste accepter/refuser
+  // celles trouvées automatiquement.
+  const openMatchAll = () => {
+    const queue = seriesList.filter(s => !matchesMap[s.id]);
+    if (queue.length === 0) { show("Toutes les séries sont déjà associées."); return; }
+    setMatchAllQueue(queue);
+    setMatchAllIndex(0);
+    setShowMatchAll(true);
+  };
+
+  useEffect(() => {
+    if (!showMatchAll) return;
+    const item = matchAllQueue[matchAllIndex];
+    if (!item) return;
+    let cancelled = false;
+    setMatchQuery(item.name || "");
+    setMatchResults([]);
+    setMatchDirectUrl("");
+    (async () => {
+      setMatchSearching(true);
+      try {
+        const results = await searchNautiljonAllVariants(item.name || "", 12);
+        if (!cancelled) setMatchResults(results);
+      } catch { /* recherche auto ratée -- la barre reste utilisable à la main */ }
+      if (!cancelled) setMatchSearching(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showMatchAll, matchAllIndex, matchAllQueue]);
+
+  const matchAllAdvance = () => {
+    const next = matchAllIndex + 1;
+    if (next >= matchAllQueue.length) {
+      setShowMatchAll(false);
+      show("✅ Terminé");
+    } else {
+      setMatchAllIndex(next);
+    }
+  };
+  const matchAllPick = async (url) => {
+    const item = matchAllQueue[matchAllIndex];
+    if (!item || !url) return;
+    const ok = await saveMatchFor(item.id, url);
+    if (ok) { show("✅ Associé"); matchAllAdvance(); }
+  };
+  const matchAllSkip = () => matchAllAdvance();
+  const matchAllCancel = () => { setShowMatchAll(false); setMatchAllQueue([]); setMatchAllIndex(0); };
+
+  if (available === null) return <div className="empty"><p>Chargement…</p></div>;
+  if (available === false) return (
+    <div className="empty">
+      <div className="ei">🌐</div>
+      <p>{errMsg ? "Connexion au serveur Kavita impossible." : "Aucun serveur Kavita configuré."}</p>
+      {errMsg
+        ? <p style={{ fontSize: 11, color: "var(--t3)" }}>{errMsg}</p>
+        : <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>}
+    </div>
+  );
+
+  const toggleTag = (cat, tag) => {
+    setTagFilters(prev => {
+      const cur = prev[cat] || [];
+      const next = cur.includes(tag) ? cur.filter(t => t !== tag) : [...cur, tag];
+      return { ...prev, [cat]: next };
+    });
+  };
+
+  if (sel) {
+    return (
+      <>
+        <div className="sec-h">
+          <button className="btn btn-s" onClick={() => setSel(null)}>← Retour</button>
+          <span className="sec-t" style={{ marginLeft: 8 }}>{sel.name}</span>
+        </div>
+        {loadingNaut && <p style={{ fontSize: 11, color: "var(--t3)", padding: "0 12px 8px" }}>Recherche Nautiljon…</p>}
+
+        {nautMatch && (() => {
+          // /api/nautiljon/manga renvoie {details, editions, cached} -- les
+          // vraies infos (titre, synopsis, table de métadonnées) sont sous
+          // .details, avec la table clé/valeur dans .details.raw_infos_json
+          // (même donnée que det.metadata_json dans la bibliothèque locale,
+          // juste un nom de champ différent à ce niveau de l'API).
+          const d = nautMatch.details || {};
+          let cov = d.cover_url || d.image_url || "";
+          if (cov) cov = nautiljonMiniUrl(cov);
+          const infos = (d.raw_infos_json && typeof d.raw_infos_json === "object") ? d.raw_infos_json : {};
+          return (
+            <div style={{ display: "flex", gap: 14, padding: "0 12px 14px", alignItems: "flex-start" }}>
+              {cov && <img src={cov} alt="" style={{ width: 90, height: 126, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  📚 {d.title || sel.name} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span>
+                  {isAdmin && <>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={() => setShowMatchSearch(v => !v)}>🔁 Changer</button>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={unmatch}>✕ Dissocier</button>
+                  </>}
+                </div>
+                {(infos.Type || infos.Genres) && <div className="dp-tags" style={{ marginTop: 4 }}>
+                  {infos.Type && <span className="dp-tag genre-badge genre-badge-filled" style={{ background: "var(--ac)" }}>{infos.Type}</span>}
+                  {String(infos.Genres || "").split(/\s*[-,]\s*/).filter(Boolean).slice(0, 5).map((g, i) => <span key={i} className="dp-tag genre-badge genre-badge-outline" style={{ color: tagColor(g), borderColor: tagColor(g) + "88" }}>{g}</span>)}
+                </div>}
+                {d.synopsis && <p className="syn" style={{ fontSize: 11, color: "var(--t2)", marginTop: 6 }}>{d.synopsis}</p>}
+                {Object.keys(infos).length > 0 && (
+                  <div className="mg2" style={{ marginTop: 8 }}>
+                    {Object.entries(infos).map(([k, v]) => {
+                      const isTag = SEARCH_TAG_KEYS.includes(k);
+                      const tags = isTag ? String(v).split(/\s*[-,]\s*/).filter(Boolean) : [];
+                      return <div key={k} className="mi"><div className="l">{k}</div><div className="v">{isTag && tags.length ? <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{tags.map((t, i) => <span key={i} className="genre-badge genre-badge-outline" style={{ color: tagColor(t), borderColor: tagColor(t) + "55", fontSize: 10 }}>{t}</span>)}</div> : String(v)}</div></div>;
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {!nautMatch && !loadingNaut && suggested && !showMatchSearch && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <span style={{ fontSize: 11, color: "var(--t2)", flex: 1 }}>Suggestion Nautiljon : <b style={{ color: "var(--t1)" }}>{suggested.title}</b></span>
+            <button className="btn btn-s btn-p" style={{ fontSize: 10 }} onClick={() => saveMatch(suggested.url)}>✅ Associer</button>
+            <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => { setSuggested(null); setShowMatchSearch(true); }}>Autre…</button>
+          </div>
+        )}
+
+        {isAdmin && !nautMatch && !loadingNaut && showMatchSearch && (
+          <div style={{ padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+              <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+            </div>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 10, padding: "4px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && saveMatch(matchDirectUrl.trim())} />
+              <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => saveMatch(matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗 Associer</button>
+            </div>
+            {matchResults.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
+              {matchResults.map((r, i) => {
+                let cov = r.cover_url || r.image_url || "";
+                if (cov) cov = nautiljonMiniUrl(cov);
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
+                    {cov && <img src={cov} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                    <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                  </div>
+                );
+              })}
+            </div>}
+          </div>
+        )}
+        {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
+          <div className="vg vg-lg">
+            {volumes.flatMap(v => (v.chapters || []).map(c => {
+              // Kavita utilise le nombre sentinelle -100000 pour "pas de
+              // numéro de chapitre applicable" (volume à chapitre unique) --
+              // l'afficher tel quel donnerait "Ch. -100000".
+              const noChapNum = String(c.number) === "-100000";
+              return (
+                <div
+                  key={c.id}
+                  className="vc"
+                  onClick={async () => {
+                    // Déclenche la mise en cache des pages côté Kavita avant
+                    // de demander les images -- sans cet appel préalable, la
+                    // première lecture d'un chapitre renvoie des pages
+                    // vides/noires.
+                    try {
+                      const info = await api.kavitaChapterInfo(c.id);
+                      onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0);
+                    } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+                  }}
+                  title={c.title || (noChapNum ? `Volume ${v.number}` : `Chapitre ${c.number}`)}
+                >
+                  <img
+                    className="vcov"
+                    src={api.kavitaChapterCoverUrl(c.id)}
+                    alt="" loading="lazy"
+                    onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
+                  />
+                  <div className="vcph" style={{ display: "none" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
+                  <div className="vn">{v.number > 0 ? (noChapNum ? `Volume ${v.number}` : `Volume ${v.number} — Ch. ${c.number}`) : (noChapNum ? (c.title || "Chapitre") : `Chapitre ${c.number}`)}</div>
+                </div>
+              );
+            }))}
+            {!loadingVolumes && volumes.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun volume/chapitre.</p>}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  const kavitaInProgress = (progress || []).filter(p =>
+    String(p.volume_id || '').startsWith('kavita:chapter:') &&
+    p.current_page > 0 && p.current_page < (p.total_pages || 1) - 1
+  );
+
+  return (
+    <>
+      {kavitaInProgress.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="sec-h"><span className="sec-t">📖 En cours de lecture</span><span className="cnt">{kavitaInProgress.length}</span></div>
+          <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+            {kavitaInProgress.map(p => {
+              const pct = p.total_pages > 0 ? Math.round(p.current_page / p.total_pages * 100) : 0;
+              const seriesId = String(p.manga_url || '').slice('kavita:series:'.length);
+              return (
+                <div key={`${p.manga_url}__${p.volume_id}`} onClick={() => onResume && onResume(p)} style={{ minWidth: 100, maxWidth: 100, cursor: "pointer", flexShrink: 0 }}>
+                  <div style={{ position: "relative", width: 100, height: 142, borderRadius: "var(--r)", overflow: "hidden", background: "var(--c2)", border: "1px solid var(--brd)" }}>
+                    <img src={api.kavitaCoverUrl(seriesId)} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4, background: "var(--brd)" }}>
+                      <div style={{ width: pct + "%", height: "100%", background: "var(--ac)" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--t1)", marginTop: 4, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title || "Kavita"}</div>
+                  <div style={{ fontSize: 9, color: "var(--t3)" }}>{pct}%</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {libraries.length > 1 && libraries.map(l => (
+          <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
+        ))}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" style={{ marginLeft: "auto" }} onClick={runAutoMatch} disabled={autoMatching}>
+            {autoMatching ? "…" : "🪄 Matching auto"}
+          </button>
+        )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={openMatchAll}>🔍 Match</button>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          style={{ flex: 1, minWidth: 160, fontSize: 12, padding: "5px 8px" }}
+          value={seriesSearch}
+          onChange={e => setSeriesSearch(e.target.value)}
+          placeholder="Rechercher une série…"
+        />
+        <button className={`btn btn-s${!matchStatusFilter ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(null)}>Toutes</button>
+        <button className={`btn btn-s${matchStatusFilter === "matched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "matched" ? null : "matched")}>✓ Matchées</button>
+        <button className={`btn btn-s${matchStatusFilter === "unmatched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "unmatched" ? null : "unmatched")}>✗ Non matchées</button>
+        {(() => {
+          const activeTagCount = Object.values(tagFilters).reduce((s, v) => s + (v?.length || 0), 0);
+          return (
+            <button className={`ib${showTagPanel ? " on" : ""}`} onClick={() => setShowTagPanel(p => !p)} style={{ position: "relative" }} title="Filtrer par tags">
+              🏷️{activeTagCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, background: "var(--ac)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 8, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeTagCount}</span>}
+            </button>
+          );
+        })()}
+      </div>
+      {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
+        seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
+        (() => {
+          // Tags dérivés des métadonnées mises en cache au moment du match
+          // (kavita_matches.metadata_json, voir backend) -- seules les
+          // séries déjà associées à Nautiljon contribuent des tags,
+          // logique : c'est de là que vient l'info (genres, auteur...).
+          const allTags = extractAllTags(seriesList.map(s => ({ metadata_json: matchesMap[s.id]?.metadata_json || {} })));
+          const q = seriesSearch.trim().toLowerCase();
+          const base = seriesList.filter(s => {
+            if (q && !String(s.name || "").toLowerCase().includes(q)) return false;
+            const isMatched = !!matchesMap[s.id];
+            if (matchStatusFilter === "matched" && !isMatched) return false;
+            if (matchStatusFilter === "unmatched" && isMatched) return false;
+            if (!matchesTagFilters({ metadata_json: matchesMap[s.id]?.metadata_json || {} }, tagFilters)) return false;
+            return true;
+          });
+          const alphaIndex = {};
+          for (const s of base) {
+            const first = (s.name || "?")[0]?.toUpperCase?.() || "#";
+            const key = /[A-Z]/.test(first) ? first : "#";
+            alphaIndex[key] = (alphaIndex[key] || 0) + 1;
+          }
+          const filtered = alphaFilter
+            ? base.filter(s => { const f = (s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
+            : base;
+          return (
+            <>
+              {showTagPanel && (
+                <div className="tag-panel" style={{ marginBottom: 10 }}>
+                  {Object.keys(allTags).length === 0
+                    ? <p style={{ fontSize: 11, color: "var(--t3)" }}>Pas encore de tags -- associez des séries à Nautiljon (matching auto ou manuel) pour les voir apparaître ici.</p>
+                    : Object.entries(allTags).map(([cat, tags]) => (
+                      <div key={cat} className="tag-cat">
+                        <div className="tag-cat-title">{cat}</div>
+                        <div className="tag-chips">
+                          {tags.slice(0, 30).map(([tag, count]) => {
+                            const isOn = (tagFilters[cat] || []).includes(tag);
+                            const col = tagColor(tag);
+                            return (
+                              <span key={tag} className="tag-chip" onClick={() => toggleTag(cat, tag)}
+                                style={{ background: isOn ? col : "transparent", color: isOn ? "#fff" : col, borderColor: isOn ? col : col + "44" }}>
+                                {tag} <span style={{ opacity: .6, fontSize: 9 }}>({count})</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0, position: "sticky", top: 0, alignSelf: "flex-start" }}>
+                <button onClick={() => setAlphaFilter(null)} style={{ padding: "3px 6px", fontSize: 9, fontWeight: !alphaFilter ? 700 : 400, background: !alphaFilter ? "var(--ac)" : "var(--c2)", color: !alphaFilter ? "#fff" : "var(--t3)", border: "1px solid var(--brd)", borderRadius: 3, cursor: "pointer" }}>All</button>
+                {ALPHA_LETTERS.map(l => <button key={l} onClick={() => setAlphaFilter(l === alphaFilter ? null : l)} disabled={!alphaIndex[l]} style={{ padding: "2px 6px", fontSize: 9, fontWeight: l === alphaFilter ? 700 : 400, background: l === alphaFilter ? "var(--ac)" : "transparent", color: !alphaIndex[l] ? "var(--brd)" : l === alphaFilter ? "#fff" : "var(--t3)", border: "none", borderRadius: 2, cursor: alphaIndex[l] ? "pointer" : "default", fontFamily: "monospace", lineHeight: 1.4 }}>{l}</button>)}
+              </div>
+              {filtered.length === 0 ? (
+                <div className="empty" style={{ flex: 1 }}><p>Aucune série ne correspond.</p></div>
+              ) : (
+                <div className="mg" style={{ flex: 1 }}>
+                  {filtered.map(s => (
+                    <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+                      {matchesMap[s.id] && <div className="mc-match" title="Associé à Nautiljon"><span className="badge bg">✓</span></div>}
+                      <img className="mc-cov" src={api.kavitaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
+                      <div className="mc-info"><div className="mc-tit">{s.name}</div></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            </>
+          );
+        })()
+      }
+      {reviewQueue.length > 0 && reviewIndex < reviewQueue.length && (() => {
+        const item = reviewQueue[reviewIndex];
+        const candidates = item.candidates || [];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                <div style={{ width: 130, aspectRatio: "2/3", position: "relative", flexShrink: 0 }}>
+                  <img key={reviewCoverRetry} src={`${api.kavitaCoverUrl(item.series_id)}&_r=${reviewCoverRetry}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                  <div style={{ display: "none", position: "absolute", inset: 0, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", fontSize: 28 }}>
+                    📖
+                    <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => setReviewCoverRetry(n => n + 1)}>🔄 Actualiser</button>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Kavita</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 10 }}>
+                {candidates.length > 1 ? `${candidates.length} suggestions Nautiljon -- choisis celle qui correspond :` : "Suggestion Nautiljon :"}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {candidates.map((c, i) => {
+                  let cov = c.cover || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: reviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: reviewBusy ? .5 : 1 }} onClick={() => !reviewBusy && reviewAccept(c.url)}>
+                      <div style={{ width: "100%", aspectRatio: "2/3", position: "relative" }}>
+                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 5, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{c.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={reviewReject} disabled={reviewBusy}>❌ Aucun ne correspond</button>
+                <button className="btn btn-s" onClick={reviewCancel} disabled={reviewBusy}>🛑 Annuler</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {showMatchAll && matchAllQueue[matchAllIndex] && (() => {
+        const item = matchAllQueue[matchAllIndex];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) matchAllCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 720, width: "95%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Match — {matchAllIndex + 1} / {matchAllQueue.length} série(s) non associée(s)</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
+                <img src={api.kavitaCoverUrl(item.id)} alt="" style={{ width: 110, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Kavita</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.name}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                <input style={{ flex: 1, fontSize: 12, padding: "5px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+                <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+                <input style={{ flex: 1, fontSize: 11, padding: "5px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && matchDirectUrl.trim() && matchAllPick(matchDirectUrl.trim())} />
+                <button className="btn btn-s" onClick={() => matchAllPick(matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗 Associer</button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 8 }}>
+                {matchSearching ? "Recherche…" : matchResults.length > 0 ? `${matchResults.length} résultat(s) -- choisis celui qui correspond :` : "Aucun résultat."}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {matchResults.map((r, i) => {
+                  let cov = r.cover_url || r.image_url || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => matchAllPick(r.url)}>
+                      {cov
+                        ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 5 }} onError={e => { e.target.style.display = "none"; }} />
+                        : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 5, background: "var(--c1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{r.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={matchAllSkip}>⏭️ Passer</button>
+                <button className="btn btn-s" onClick={matchAllCancel}>🛑 Arrêter</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -2514,7 +3529,7 @@ function HomepageView({ onOpenManga, onResumeReading, allMangas, show }) {
             return (
               <div key={`${p.manga_url}__${p.volume_id}`} onClick={() => onResumeReading(p)} style={{ minWidth: 100, maxWidth: 100, cursor: "pointer", flexShrink: 0 }}>
                 <div style={{ position: "relative", width: 100, height: 142, borderRadius: "var(--r)", overflow: "hidden", background: "var(--c2)", border: "1px solid var(--brd)" }}>
-                  <img src={api.cbzFolderCoverUrl(p.manga_url)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
+                  <img src={progressCoverUrl(p.manga_url)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
                   <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4, background: "var(--brd)" }}>
                     <div style={{ width: pct + "%", height: "100%", background: "var(--ac)" }} />
                   </div>

@@ -176,6 +176,31 @@ export const api = {
     return `/api/imgvol/page/${encodedFolder}?volume=${encodeURIComponent(volume)}&page=${page}&token=${encodeURIComponent(token)}`;
   },
 
+  // Kavita (serveur externe, lecture seule -- voir kavita_client.py)
+  kavitaHealth: () => request("/kavita/health"),
+  kavitaLibraries: () => request("/kavita/libraries"),
+  kavitaSeries: (libraryId) => request(`/kavita/series?libraryId=${encodeURIComponent(libraryId)}`),
+  kavitaSeriesDetail: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}`),
+  kavitaVolumes: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}/volumes`),
+  kavitaChapterInfo: (chapterId) => request(`/kavita/chapter-info/${encodeURIComponent(chapterId)}`),
+  kavitaCoverUrl: (seriesId) => {
+    const token = getToken();
+    return `/api/kavita/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
+  },
+  kavitaChapterCoverUrl: (chapterId) => {
+    const token = getToken();
+    return `/api/kavita/chapter-cover/${encodeURIComponent(chapterId)}?token=${encodeURIComponent(token)}`;
+  },
+  kavitaPageUrl: (chapterId, page) => {
+    const token = getToken();
+    return `/api/kavita/read/${encodeURIComponent(chapterId)}?page=${page}&token=${encodeURIComponent(token)}`;
+  },
+  kavitaGetMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`),
+  kavitaSaveMatch: (seriesId, nautiljonUrl) => request(`/kavita/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
+  kavitaDeleteMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
+  kavitaMatches: () => request(`/kavita/matches`),
+  kavitaAutoMatch: (libraryId) => request(`/kavita/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
+
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),
 

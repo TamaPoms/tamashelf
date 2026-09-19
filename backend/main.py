@@ -17,6 +17,7 @@ import unicodedata
 import subprocess
 import tempfile
 import shutil
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 import httpx
 
 import nautiljon_db
+from kavita_client import KavitaError, get_kavita_client
 
 # Optional (used for cover thumbnails). Added to requirements.
 try:
@@ -144,11 +146,23 @@ def _match_query_variants(text: str) -> list[str]:
     add(raw)
 
     # Variantes de ponctuation fréquentes (aident la recherche API)
-    # ex: "Agenda - Attraction !" <-> "Agenda : Attraction !"
+    # ex: "Agenda - Attraction !" <-> "Agenda : Attraction !" (typo FR, espace
+    # avant le ":") <-> "Cyberpunk: Edgerunners" (typo EN/titre original, PAS
+    # d'espace avant le ":" -- fréquent sur les titres non-FR référencés tels
+    # quels sur Nautiljon). count=1 : seule la PREMIÈRE occurrence est le
+    # séparateur titre/sous-titre -- un titre comme "Detroit - Become Human -
+    # Tokyo Stories" doit donner "Detroit: Become Human - Tokyo Stories" (le
+    # 2e " - " fait partie du sous-titre, pas un second séparateur), jamais
+    # "Detroit: Become Human: Tokyo Stories".
     if " - " in raw:
-        add(raw.replace(" - ", " : "))
+        add(raw.replace(" - ", " : ", 1))
+        add(raw.replace(" - ", ": ", 1))
     if " : " in raw:
-        add(raw.replace(" : ", " - "))
+        add(raw.replace(" : ", " - ", 1))
+        add(raw.replace(" : ", ": ", 1))
+    if ": " in raw and " : " not in raw:
+        add(raw.replace(": ", " - ", 1))
+        add(raw.replace(": ", " : ", 1))
 
     # Titre (Le/La/Les/The/L') -> Le Titre
     m = re.match(r"^(.*?)\s*\((le|la|les|the|l['’]?|un|une|des)\)\s*$", raw, flags=re.IGNORECASE)
@@ -299,6 +313,14 @@ def init_db():
         manga_url TEXT UNIQUE NOT NULL,
         cbz_folder TEXT NOT NULL,
         matched_by TEXT,
+        created_at REAL NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS kavita_matches (
+        kavita_series_id INTEGER PRIMARY KEY,
+        nautiljon_url TEXT NOT NULL,
+        matched_by TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
         created_at REAL NOT NULL DEFAULT (unixepoch())
     );
 
@@ -582,6 +604,15 @@ def migrate_db():
     except:
         pass  # Table might not exist yet
 
+    # Migration: ajouter metadata_json à kavita_matches (pour le filtre par tag)
+    try:
+        km_cols = [row[1] for row in db.execute("PRAGMA table_info(kavita_matches)").fetchall()]
+        if "metadata_json" not in km_cols:
+            db.execute("ALTER TABLE kavita_matches ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+            db.commit()
+    except:
+        pass  # Table might not exist yet
+
     db.close()
 
 init_db()
@@ -806,6 +837,8 @@ class ConfigUpdateRequest(BaseModel):
     tome_keywords: Optional[str] = None
     chapter_keywords: Optional[str] = None
     oneshot_keywords: Optional[str] = None
+    kavita_url: Optional[str] = None
+    kavita_api_key: Optional[str] = None
 
 class SaveProgressRequest(BaseModel):
     manga_url: str
@@ -1008,6 +1041,10 @@ def get_config(admin=Depends(require_admin)):
             "tome_keywords": get_config_val(db, "tome_keywords", "Tome,T,Vol,Volume"),
             "chapter_keywords": get_config_val(db, "chapter_keywords", "Chapitre,Chapter,Ch,Ep,Episode"),
             "oneshot_keywords": get_config_val(db, "oneshot_keywords", "OS,One Shot,One-Shot,Oneshot"),
+            "kavita_url": get_config_val(db, "kavita_url", ""),
+            # La clé API elle-même n'est jamais renvoyée une fois enregistrée,
+            # seulement si une est configurée (comme un mot de passe).
+            "kavita_configured": bool(get_config_val(db, "kavita_api_key", "")),
         }
         return result
 
@@ -1022,6 +1059,10 @@ def update_config(req: ConfigUpdateRequest, admin=Depends(require_admin)):
             set_config_val(db, "chapter_keywords", req.chapter_keywords.strip())
         if hasattr(req, 'oneshot_keywords') and req.oneshot_keywords is not None:
             set_config_val(db, "oneshot_keywords", req.oneshot_keywords.strip())
+        if req.kavita_url is not None:
+            set_config_val(db, "kavita_url", req.kavita_url.strip())
+        if req.kavita_api_key is not None:
+            set_config_val(db, "kavita_api_key", req.kavita_api_key.strip())
         # Invalidate keyword cache
         _kw_cache["tome"] = None
         _kw_cache["ts"] = 0
@@ -1606,6 +1647,242 @@ async def nautiljon_list(
     user=Depends(get_current_user)
 ):
     return nautiljon_db.list_series(limit=limit, offset=offset)
+
+
+    # ═══════════════════════════════════════════
+    #  Routes: Kavita (serveur externe, lecture seule)
+    # ═══════════════════════════════════════════
+
+def _get_kavita_client(db):
+    url = get_config_val(db, "kavita_url", "").strip()
+    api_key = get_config_val(db, "kavita_api_key", "").strip()
+    if not url or not api_key:
+        raise HTTPException(400, "Serveur Kavita non configuré (Admin -> Configuration).")
+    return get_kavita_client(url, api_key)
+
+@app.get("/api/kavita/health")
+async def kavita_health(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        url = get_config_val(db, "kavita_url", "").strip()
+        api_key = get_config_val(db, "kavita_api_key", "").strip()
+    if not url or not api_key:
+        return {"available": False}
+    try:
+        await get_kavita_client(url, api_key).libraries()
+        return {"available": True}
+    except KavitaError as e:
+        return {"available": False, "error": str(e)}
+
+@app.get("/api/kavita/libraries")
+async def kavita_libraries(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.libraries()
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series")
+async def kavita_series(library_id: int = Query(..., alias="libraryId"), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.series_in_library(library_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series/{series_id}")
+async def kavita_series_detail(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.series_detail(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/series/{series_id}/volumes")
+async def kavita_series_volumes(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.volumes(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/chapter-info/{chapter_id}")
+async def kavita_chapter_info(chapter_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        return await client.chapter_info(chapter_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/kavita/cover/{series_id}")
+async def kavita_cover(series_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.series_cover_bytes(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
+@app.get("/api/kavita/chapter-cover/{chapter_id}")
+async def kavita_chapter_cover(chapter_id: int, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.chapter_cover_bytes(chapter_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
+@app.get("/api/kavita/read/{chapter_id}")
+async def kavita_read_page(chapter_id: int, page: int = Query(0, ge=0), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        content, content_type = await client.page_bytes(chapter_id, page)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type)
+
+def _kavita_match_metadata(nautiljon_url: str) -> dict:
+    """Table clé/valeur (Type, Genres, Thème, Auteur...) pour le filtre par tag --
+    même source que le matching CBZ (nautiljon_db.manga_auto().raw_infos_json), mise en
+    cache dans kavita_matches.metadata_json au moment du match plutôt que refetchée à
+    chaque affichage de la grille."""
+    try:
+        details = nautiljon_db.manga_auto(nautiljon_url)
+    except Exception:
+        details = None
+    infos = (details or {}).get("raw_infos_json") or {}
+    return infos if isinstance(infos, dict) else {}
+
+@app.get("/api/kavita/match/{series_id}")
+async def kavita_get_match(series_id: int, user=Depends(get_current_user)):
+    """Match Nautiljon persisté pour une série Kavita (voir kavita_matches --
+    séparé de `matches`/`manga_library` qui sont spécifiques aux CBZ locaux)."""
+    with get_db_ctx() as db:
+        row = db.execute("SELECT nautiljon_url, metadata_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+    if not row:
+        return {"matched": False, "nautiljon_url": None}
+    try:
+        meta = json.loads(row["metadata_json"] or "{}")
+    except Exception:
+        meta = {}
+    return {"matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta}
+
+@app.post("/api/kavita/match/{series_id}")
+async def kavita_save_match(series_id: int, nautiljon_url: str, admin=Depends(require_admin)):
+    meta = _kavita_match_metadata(nautiljon_url)
+    with get_db_ctx() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (series_id, nautiljon_url, admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
+        )
+        db.commit()
+    return {"ok": True}
+
+@app.delete("/api/kavita/match/{series_id}")
+async def kavita_delete_match(series_id: int, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        db.execute("DELETE FROM kavita_matches WHERE kavita_series_id = ?", (series_id,))
+        db.commit()
+    return {"ok": True}
+
+@app.get("/api/kavita/matches")
+async def kavita_list_matches(user=Depends(get_current_user)):
+    """Tous les matchs persistés {kavita_series_id: {nautiljon_url, metadata_json}},
+    pour les badges + le filtre par tag de la grille sans un appel par série."""
+    with get_db_ctx() as db:
+        rows = db.execute("SELECT kavita_series_id, nautiljon_url, metadata_json FROM kavita_matches").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            meta = json.loads(r["metadata_json"] or "{}")
+        except Exception:
+            meta = {}
+        out[str(r["kavita_series_id"])] = {"nautiljon_url": r["nautiljon_url"], "metadata_json": meta}
+    return out
+
+@app.post("/api/kavita/auto-match/{library_id}")
+async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
+    """Matching auto pour une bibliothèque Kavita : uniquement les correspondances
+    exactes (titre normalisé identique, voir _normalize_match_key -- insensible à la
+    casse/aux accents/à la ponctuation, mais rien d'approximatif). Comme le matching
+    auto CBZ, on cherche avec plusieurs variantes du titre (_match_query_variants :
+    ponctuation " - " <-> " : " <-> ": ", ex. "Cyberpunk - Edgerunners MADNESS" <->
+    "Cyberpunk: Edgerunners MADNESS") ET sa version sans suffixe d'édition
+    (_strip_edition_suffix, ex. "A Certain Scientific Railgun - Édition Deluxe" -> "A
+    Certain Scientific Railgun") -- indispensable ici : la comparaison normalisée
+    traiterait déjà ces variantes comme identiques, mais la RECHERCHE (LIKE substring
+    côté app.py) ne remonte le bon résultat que si l'une des requêtes correspond
+    effectivement au texte stocké sur Nautiljon. Les séries déjà matchées sont laissées
+    intactes ; pas de résultat exact -> ignorée (reste à faire manuellement)."""
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+        already = {r["kavita_series_id"] for r in db.execute("SELECT kavita_series_id FROM kavita_matches").fetchall()}
+    if not nautiljon_db.is_available():
+        return {"error": f"Base Nautiljon injoignable via {nautiljon_db.APP_PY_URL}"}
+    try:
+        series_list = await client.series_in_library(library_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+    auto_matched = 0
+    not_found = 0
+    suggestions = []  # séries sans match exact mais avec au moins un candidat --
+                       # à valider/refuser à la main (voir /api/kavita/match).
+    for s in series_list:
+        sid = s.get("id")
+        name = (s.get("name") or "").strip()
+        if not sid or sid in already or not name:
+            continue
+        name_sans_edition = _strip_edition_suffix(name)
+        titres = list(_match_query_variants(name))
+        if name_sans_edition and name_sans_edition != name:
+            for t in _match_query_variants(name_sans_edition):
+                if t not in titres:
+                    titres.append(t)
+        keys = {k for k in (_normalize_match_key(t) for t in titres) if k}
+
+        results = []
+        seen = set()
+        for titre in titres:
+            for r in (nautiljon_db.search_local(titre, limit=8, offset=0).get("results") or []):
+                u = (r.get("url") or "").strip()
+                if u and u not in seen:
+                    seen.add(u)
+                    results.append(r)
+
+        exact = next((r for r in results if _normalize_match_key(r.get("title") or "") in keys), None)
+        if exact and exact.get("url"):
+            meta = _kavita_match_metadata(exact["url"])
+            with get_db_ctx() as db:
+                db.execute(
+                    "INSERT OR REPLACE INTO kavita_matches (kavita_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (sid, exact["url"], admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
+                )
+                db.commit()
+            auto_matched += 1
+        else:
+            not_found += 1
+            if results:
+                suggestions.append({
+                    "series_id": sid,
+                    "series_name": name,
+                    "candidates": [
+                        {
+                            "title": r.get("title") or "",
+                            "url": r.get("url"),
+                            "cover": r.get("cover_url") or r.get("image_url") or "",
+                        }
+                        for r in results[:6] if r.get("url")
+                    ],
+                })
+    return {"auto_matched": auto_matched, "not_found": not_found, "suggestions": suggestions}
 
 
 @app.get("/api/library")
@@ -2222,6 +2499,9 @@ async def auto_match(admin=Depends(require_admin)):
         not_found = 0
         errors = 0
         pending = 0
+        suggestions = []  # mangas sans match exact mais avec au moins un candidat --
+                           # à valider/refuser à la main (revue après le matching auto,
+                           # même principe que pour Kavita).
 
         for row in unmatched:
             manga_id = row["id"]
@@ -2304,8 +2584,23 @@ async def auto_match(admin=Depends(require_admin)):
                         db2.close()
                         pending += 1
                 else:
-                    # Pas exact → reste unmatched, l'admin cherchera manuellement
+                    # Pas exact → reste unmatched, mais on garde les candidats trouvés
+                    # pour la revue manuelle (voir suggestions dans la réponse).
                     not_found += 1
+                    if results:
+                        suggestions.append({
+                            "manga_id": manga_id,
+                            "folder": folder,
+                            "title": titre_base,
+                            "candidates": [
+                                {
+                                    "title": r.get("title") or "",
+                                    "url": r.get("url"),
+                                    "cover": r.get("cover_url") or r.get("image_url") or "",
+                                }
+                                for r in results[:6] if r.get("url")
+                            ],
+                        })
 
             except Exception as e:
                 errors += 1
@@ -2332,7 +2627,7 @@ async def auto_match(admin=Depends(require_admin)):
             if folder_base and _extract_folder_cover(folder_base, folder):
                 covers += 1
 
-        return {"auto_matched": auto_matched, "not_found": not_found, "errors": errors, "covers": covers}
+        return {"auto_matched": auto_matched, "not_found": not_found, "errors": errors, "covers": covers, "suggestions": suggestions}
 
 
 def _store_details(manga_id, nautiljon_url, title):
@@ -2741,6 +3036,53 @@ async def nautiljon_img(chemin: str):
         cache_path.write_bytes(r.content)
     except OSError:
         pass  # le cache est un bonus -- une écriture ratée n'empêche pas de servir l'image
+
+    return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+
+
+_NAUTILJON_IMG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Referer": "https://www.nautiljon.com/mangas/",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+}  # mêmes headers que le téléchargeur de tamajon.py (_HEADERS_SCRAPING) -- nautiljon.com
+   # bloque le hotlinking direct sans ça.
+
+@app.get("/api/nautiljon/img-external")
+async def nautiljon_img_external(url: str):
+    """Repli pour les entrées de la base app.py où seule l'URL nautiljon.com brute est
+    connue (image_jpg jamais téléchargée localement, résidu d'un scraping ancien -- voir
+    nautiljon_db._image_url). On sert quand même depuis NOTRE domaine : jamais de lien
+    direct vers nautiljon.com donné au client (bloqué sans le bon Referer de toute façon,
+    et cohérent avec le reste -- tout passe par le cache local d'images)."""
+    if urlparse(url).netloc not in ("www.nautiljon.com", "nautiljon.com"):
+        raise HTTPException(400, "URL non autorisée")
+    ext = Path(urlparse(url).path).suffix.lower().lstrip(".")
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/jpeg")
+
+    cache_root = IMG_CACHE_DIR.resolve()
+    cache_name = "_external_" + hashlib.sha1(url.encode()).hexdigest() + (f".{ext}" if ext else "")
+    cache_path = (cache_root / cache_name).resolve()
+    if cache_root != cache_path and cache_root not in cache_path.parents:
+        raise HTTPException(400, "Chemin invalide")
+
+    if cache_path.is_file():
+        return FileResponse(str(cache_path), media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
+
+    try:
+        async with httpx.AsyncClient(timeout=nautiljon_db.APP_PY_TIMEOUT, headers=_NAUTILJON_IMG_HEADERS) as client:
+            r = await client.get(url)
+    except (httpx.RequestError, TimeoutError):
+        raise HTTPException(502, "nautiljon.com injoignable")
+    if r.status_code != 200:
+        raise HTTPException(404, "Image introuvable")
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    except OSError:
+        pass
 
     return Response(content=r.content, media_type=mime, headers={"Cache-Control": "public, max-age=86400"})
 
