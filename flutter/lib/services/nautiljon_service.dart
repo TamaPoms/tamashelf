@@ -141,7 +141,10 @@ String stripEditionSuffix(String name) {
 // l'espace parasite laissé juste avant une ponctuation.
 String cleanSynopsis(String raw) {
   var s = raw.replaceAll(RegExp(r'\s+'), ' ');
-  s = s.replaceAll(RegExp(r'\s+([,.;:!?])'), r'$1');
+  // replaceAllMapped (pas replaceAll) : contrairement à d'autres langages,
+  // le remplacement String de RegExp.replaceAll en Dart est littéral --
+  // "$1" n'y désigne PAS le groupe capturé, il serait inséré tel quel.
+  s = s.replaceAllMapped(RegExp(r'\s+([,.;:!?])'), (m) => m.group(1)!);
   return s.trim();
 }
 

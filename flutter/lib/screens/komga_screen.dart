@@ -243,9 +243,31 @@ class _KomgaScreenState extends State<KomgaScreen> {
 
   Future<void> _refreshTags() async {
     if (_refreshingTags) return;
+    // "Tout forcer" -- indispensable après une mise à jour de l'appli qui
+    // change la façon dont les tags sont extraits (ex. genres/thèmes
+    // désormais réunis depuis plusieurs clés Nautiljon au lieu d'une seule) :
+    // sans ça, une association qui a DÉJÀ des tags (même incomplets/anciens)
+    // n'est jamais retouchée par le rafraîchissement normal.
+    final force = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Rafraîchir les tags', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Associations sans aucun tag uniquement, ou tout recalculer (utile après une mise à jour de l\'appli, même si des tags existent déjà) ?',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Sans tag uniquement')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Tout recalculer')),
+        ],
+      ),
+    );
+    if (force == null || !mounted) return;
     setState(() { _refreshingTags = true; _refreshTagsStatus = ''; });
     try {
-      final updated = await _naut.refreshMissingTags(onProgress: (done, total) {
+      final updated = await _naut.refreshMissingTags(force: force, onProgress: (done, total) {
         if (mounted) setState(() => _refreshTagsStatus = '$done/$total');
       });
       if (!mounted) return;
