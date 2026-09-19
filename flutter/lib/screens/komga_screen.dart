@@ -145,6 +145,8 @@ class _KomgaScreenState extends State<KomgaScreen> {
   bool _showTagPanel = false;
   bool _refreshingTags = false;
   String _refreshTagsStatus = '';
+  bool _pushingAll = false;
+  String _pushAllStatus = '';
 
   KomgaService get _komga => context.read<AppState>().komga;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -256,6 +258,56 @@ class _KomgaScreenState extends State<KomgaScreen> {
       setState(() => _refreshingTags = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur : $e'), backgroundColor: AppTheme.ros));
     }
+  }
+
+  // Envoie les infos Nautiljon de TOUTES les séries associées vers Komga en
+  // une fois (voir pushNautiljonToKomga) -- une fiche à la fois, avec
+  // progression.
+  Future<void> _pushAllToServer() async {
+    if (_pushingAll) return;
+    final matched = _seriesList.where((s) => _naut.matchFor('komga', s['id'] as String) != null).toList();
+    if (matched.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Aucune série associée à envoyer.')));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Tout envoyer vers Komga ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Le résumé, les genres, les thèmes, l\'éditeur et le statut Nautiljon vont être écrits (et verrouillés) dans les ${matched.length} série(s) associée(s). Peut prendre un moment.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() { _pushingAll = true; _pushAllStatus = '0/${matched.length}'; });
+    var ok = 0;
+    var failed = 0;
+    for (var i = 0; i < matched.length; i++) {
+      final sid = matched[i]['id'] as String;
+      final match = _naut.matchFor('komga', sid)!;
+      final details = await _naut.mangaDetails(match['nautiljon_url'] as String);
+      if (details != null) {
+        final error = await pushNautiljonToKomga(context, seriesId: sid, details: details);
+        if (error == null) { ok++; } else { failed++; }
+      } else {
+        failed++;
+      }
+      if (mounted) setState(() => _pushAllStatus = '${i + 1}/${matched.length}');
+    }
+    if (!mounted) return;
+    setState(() => _pushingAll = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$ok envoyée(s)${failed > 0 ? ', $failed en erreur' : ''}.'),
+      backgroundColor: failed > 0 ? AppTheme.ros : AppTheme.grn,
+    ));
   }
 
   Future<void> _resumeBook({required String mangaUrl, required String volumeId, required String title, required int startPage, required int totalPages}) async {
@@ -526,6 +578,17 @@ class _KomgaScreenState extends State<KomgaScreen> {
                     ),
                   ),
                 ]),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _pushingAll ? null : _pushAllToServer,
+                    icon: _pushingAll
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.cloud_upload_outlined, size: 16),
+                    label: Text(_pushingAll ? 'Envoi… $_pushAllStatus' : 'Envoyer toutes les infos vers Komga', style: const TextStyle(fontSize: 12)),
+                  ),
+                ),
                 const SizedBox(height: 12),
                 if (_loadingSeries) ...[
                   LinearProgressIndicator(color: AppTheme.ac, backgroundColor: AppTheme.brd),
