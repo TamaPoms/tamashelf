@@ -31,11 +31,11 @@ int? _kavitaPublicationStatus(String statut) {
   return null;
 }
 
-// Envoie le résumé/genres/thèmes/statut de la fiche Nautiljon associée vers
-// Kavita -- écrase uniquement ces champs (le reste de la fiche existante,
-// récupérée d'abord, est renvoyé tel quel) et les verrouille pour qu'un
-// futur scan Kavita ne les efface pas. Retourne un message d'erreur, ou
-// null si tout s'est bien passé.
+// Envoie le résumé/genres/thèmes/statut/auteur/dessinateur/éditeur de la
+// fiche Nautiljon associée vers Kavita -- écrase uniquement ces champs (le
+// reste de la fiche existante, récupérée d'abord, est renvoyé tel quel) et
+// les verrouille pour qu'un futur scan Kavita ne les efface pas. Retourne
+// un message d'erreur, ou null si tout s'est bien passé.
 Future<String?> pushNautiljonToKavita(BuildContext context, {required int seriesId, required Map<String, dynamic> details}) async {
   final state = context.read<AppState>();
   try {
@@ -65,6 +65,26 @@ Future<String?> pushNautiljonToKavita(BuildContext context, {required int series
     if (status != null) {
       updated['publicationStatus'] = status;
       updated['publicationStatusLocked'] = true;
+      touched = true;
+    }
+    // Auteur -> Writers, Dessinateur -> Pencillers (le plus proche de
+    // "artiste" côté PersonRole Kavita), Éditeur -> Publishers.
+    final writers = splitTagList((details['author'] ?? '').toString());
+    if (writers.isNotEmpty) {
+      updated['writers'] = writers.map((n) => {'name': n}).toList();
+      updated['writerLocked'] = true;
+      touched = true;
+    }
+    final pencillers = splitTagList((details['artist'] ?? '').toString());
+    if (pencillers.isNotEmpty) {
+      updated['pencillers'] = pencillers.map((n) => {'name': n}).toList();
+      updated['pencillerLocked'] = true;
+      touched = true;
+    }
+    final publishers = splitTagList((details['publisher'] ?? '').toString());
+    if (publishers.isNotEmpty) {
+      updated['publishers'] = publishers.map((n) => {'name': n}).toList();
+      updated['publisherLocked'] = true;
       touched = true;
     }
     if (!touched) return 'Rien à envoyer (fiche Nautiljon vide)';
@@ -333,7 +353,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
         backgroundColor: AppTheme.bg,
         title: Text('Tout envoyer vers Kavita ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
         content: Text(
-          'Le résumé, les genres, les thèmes et le statut Nautiljon vont être écrits (et verrouillés) dans les ${matched.length} série(s) associée(s). Peut prendre un moment.',
+          'Le résumé, les genres, les thèmes, le statut, l\'auteur, le dessinateur et l\'éditeur Nautiljon vont être écrits (et verrouillés) dans les ${matched.length} série(s) associée(s). Peut prendre un moment.',
           style: TextStyle(color: AppTheme.t2, fontSize: 12),
         ),
         actions: [
@@ -988,7 +1008,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         backgroundColor: AppTheme.bg,
         title: Text('Envoyer vers Kavita ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
         content: Text(
-          'Le résumé, les genres, les thèmes et le statut de la fiche Nautiljon vont être écrits dans Kavita, puis verrouillés pour ne pas être effacés par un futur scan. Le reste de la fiche série n\'est pas modifié.',
+          'Le résumé, les genres, les thèmes, le statut, l\'auteur, le dessinateur et l\'éditeur de la fiche Nautiljon vont être écrits dans Kavita, puis verrouillés pour ne pas être effacés par un futur scan. Le reste de la fiche série n\'est pas modifié.',
           style: TextStyle(color: AppTheme.t2, fontSize: 12),
         ),
         actions: [
@@ -1192,6 +1212,10 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                             Text(_details!['type'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                           if ((_details?['author'] ?? '').toString().isNotEmpty)
                             Text('✍️ ${_details!['author']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                          if ((_details?['artist'] ?? '').toString().isNotEmpty && _details!['artist'] != _details!['author'])
+                            Text('🖌️ ${_details!['artist']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                          if ((_details?['publisher'] ?? '').toString().isNotEmpty)
+                            Text('🏢 ${_details!['publisher']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                           if ((_details?['status'] ?? '').toString().isNotEmpty)
                             Text(_details!['status'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                           const SizedBox(height: 8),

@@ -1142,6 +1142,10 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                                   Text(_details!['type'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                                 if ((_details?['author'] ?? '').toString().isNotEmpty)
                                   Text('✍️ ${_details!['author']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                if ((_details?['artist'] ?? '').toString().isNotEmpty && _details!['artist'] != _details!['author'])
+                                  Text('🖌️ ${_details!['artist']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
+                                if ((_details?['publisher'] ?? '').toString().isNotEmpty)
+                                  Text('🏢 ${_details!['publisher']}', style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                                 if ((_details?['status'] ?? '').toString().isNotEmpty)
                                   Text(_details!['status'].toString(), style: TextStyle(color: AppTheme.t3, fontSize: 11)),
                                 const SizedBox(height: 8),
