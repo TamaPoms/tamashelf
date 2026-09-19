@@ -132,6 +132,19 @@ String stripEditionSuffix(String name) {
   return best > 0 ? n.substring(0, best).trim() : n;
 }
 
+// Nettoie un synopsis scrapé sur Nautiljon : le texte source contient des
+// liens vers les personnages/noms cités (<a>Nom</a>), et le scraping les
+// laisse chacun sur leur propre ligne -- ça casse des phrases en plein
+// milieu ("Karine\n, jeune collégienne..."). On aplatit tous les retours à
+// la ligne en simples espaces (un synopsis Nautiljon est un paragraphe
+// unique, pas la peine de préserver une mise en page) puis on retire
+// l'espace parasite laissé juste avant une ponctuation.
+String cleanSynopsis(String raw) {
+  var s = raw.replaceAll(RegExp(r'\s+'), ' ');
+  s = s.replaceAll(RegExp(r'\s+([,.;:!?])'), r'$1');
+  return s.trim();
+}
+
 // Découpe une valeur de métadonnée Nautiljon (genres/thèmes, ex.
 // "Action - Aventure - Drame") en liste de tags -- même séparateur que
 // allTags()/_seriesTags (écrans Kavita/Komga).
@@ -454,7 +467,7 @@ class NautiljonService {
     } else if ((row['image'] ?? '').toString().isNotEmpty) {
       cover = imageUrl(row['image'] as String);
     }
-    final synopsis = (row['synopsis'] ?? '').toString();
+    final synopsis = cleanSynopsis((row['synopsis'] ?? '').toString());
     return {
       'url': row['url'],
       'title': row['titre'],
@@ -527,6 +540,26 @@ class NautiljonService {
       }
       return '';
     }
+    // Contrairement à pick() (premier candidat non vide), réunit TOUS les
+    // candidats non vides -- nécessaire pour genres/thèmes/auteurs : les
+    // clés scrapées "singulier" et "pluriel" (ex. "Genre" vs "Genres") ne
+    // sont pas de simples variantes d'orthographe, elles peuvent coexister
+    // avec un contenu différent sur une fiche Nautiljon (ex. "Genre" =
+    // démographie principale type "Shōnen", "Genres" = liste complète) --
+    // ne garder que le premier candidat en perdait silencieusement une
+    // partie (tags manquants sur la fiche, et donc aussi à l'envoi vers
+    // Kavita/Komga qui repart de ces mêmes champs).
+    String pickAll(List<String> keys) {
+      final vals = <String>[];
+      final seen = <String>{};
+      for (final k in keys) {
+        final v = infos[k]?.toString().trim() ?? '';
+        if (v.isEmpty || seen.contains(v)) continue;
+        seen.add(v);
+        vals.add(v);
+      }
+      return vals.join(' - ');
+    }
 
     var coverUrl = '';
     if ((row['image_jpg'] ?? '').toString().isNotEmpty) {
@@ -539,16 +572,16 @@ class NautiljonService {
       'title': row['titre'] ?? '',
       'url': url,
       'cover_url': coverUrl,
-      'synopsis': row['synopsis'] ?? '',
+      'synopsis': cleanSynopsis((row['synopsis'] ?? '').toString()),
       'type': row['type'] ?? pick(['Type']),
       'status': pick(['Statut']),
       'country': row['origine'] ?? pick(['Origine']),
-      'author': pick(['Auteur', 'Auteurs']),
-      'artist': pick(['Dessinateur', 'Dessinateurs']),
-      'publisher': pick(['Éditeur VF', 'Éditeurs VF', 'Éditeur VO', 'Éditeurs VO']),
+      'author': pickAll(['Auteur', 'Auteurs']),
+      'artist': pickAll(['Dessinateur', 'Dessinateurs']),
+      'publisher': pickAll(['Éditeur VF', 'Éditeurs VF', 'Éditeur VO', 'Éditeurs VO']),
       'year': row['annee_vf'] ?? row['annee_vo'] ?? pick(['Année VF', 'Année VO']),
-      'genres': pick(['Genre', 'Genres']),
-      'themes': pick(['Thème', 'Thèmes', 'Theme', 'Themes']),
+      'genres': pickAll(['Genre', 'Genres']),
+      'themes': pickAll(['Thème', 'Thèmes', 'Theme', 'Themes']),
     };
   }
 
