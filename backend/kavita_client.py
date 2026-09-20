@@ -184,6 +184,34 @@ class KavitaClient:
         resp = await self._request("GET", "/api/Reader/chapter-info", params={"chapterId": chapter_id})
         return resp.json()
 
+    # Métadonnées éditables d'une série (résumé, genres, tags, statut, ...) -- l'API
+    # Kavita ne fait pas de patch partiel : il faut récupérer l'existant, ne modifier
+    # que certains champs, puis tout renvoyer (voir push_series_to_kavita, main.py).
+    async def series_metadata(self, series_id: int) -> dict:
+        resp = await self._request("GET", "/api/Series/metadata", params={"seriesId": series_id})
+        return resp.json()
+
+    async def update_series_metadata(self, metadata: dict) -> None:
+        await self._request("POST", "/api/Series/metadata", json={"seriesMetadata": metadata})
+
+    # Métadonnées d'un chapitre -- même principe (pas de patch partiel), voir
+    # push_volumes_to_kavita (main.py), qui pousse titre/résumé/ISBN/... tome par tome.
+    async def chapter_metadata(self, chapter_id: int) -> dict:
+        resp = await self._request("GET", "/api/Chapter", params={"chapterId": chapter_id})
+        return resp.json()
+
+    async def update_chapter(self, chapter: dict) -> None:
+        await self._request("POST", "/api/Chapter/update", json=chapter)
+
+    # Progression de lecture (page courante) -- écrite à chaque changement de page
+    # pendant la lecture dans TamaShelf, pour que Kavita (et ses propres apps) la voie
+    # aussi. Les 4 identifiants sont requis par l'API (ProgressDto).
+    async def push_progress(self, series_id: int, volume_id: int, chapter_id: int, library_id: int, page_num: int) -> None:
+        await self._request("POST", "/api/Reader/progress", json={
+            "seriesId": series_id, "volumeId": volume_id, "chapterId": chapter_id,
+            "libraryId": library_id, "pageNum": page_num,
+        })
+
     async def page_bytes(self, chapter_id: int, page: int) -> tuple[bytes, str]:
         # Contrairement aux autres endpoints, /api/Reader/image exige la clé
         # API en paramètre de requête même avec un Bearer JWT valide --

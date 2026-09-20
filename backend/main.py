@@ -31,6 +31,7 @@ import httpx
 
 import nautiljon_db
 from kavita_client import KavitaError, get_kavita_client
+from komga_client import KomgaError, get_komga_client, komga_series_title
 
 # Optional (used for cover thumbnails). Added to requirements.
 try:
@@ -318,6 +319,14 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS kavita_matches (
         kavita_series_id INTEGER PRIMARY KEY,
+        nautiljon_url TEXT NOT NULL,
+        matched_by TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at REAL NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS komga_matches (
+        komga_series_id TEXT PRIMARY KEY,
         nautiljon_url TEXT NOT NULL,
         matched_by TEXT,
         metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -839,6 +848,8 @@ class ConfigUpdateRequest(BaseModel):
     oneshot_keywords: Optional[str] = None
     kavita_url: Optional[str] = None
     kavita_api_key: Optional[str] = None
+    komga_url: Optional[str] = None
+    komga_api_key: Optional[str] = None
 
 class SaveProgressRequest(BaseModel):
     manga_url: str
@@ -1045,6 +1056,8 @@ def get_config(admin=Depends(require_admin)):
             # La clé API elle-même n'est jamais renvoyée une fois enregistrée,
             # seulement si une est configurée (comme un mot de passe).
             "kavita_configured": bool(get_config_val(db, "kavita_api_key", "")),
+            "komga_url": get_config_val(db, "komga_url", ""),
+            "komga_configured": bool(get_config_val(db, "komga_api_key", "")),
         }
         return result
 
@@ -1063,6 +1076,10 @@ def update_config(req: ConfigUpdateRequest, admin=Depends(require_admin)):
             set_config_val(db, "kavita_url", req.kavita_url.strip())
         if req.kavita_api_key is not None:
             set_config_val(db, "kavita_api_key", req.kavita_api_key.strip())
+        if req.komga_url is not None:
+            set_config_val(db, "komga_url", req.komga_url.strip())
+        if req.komga_api_key is not None:
+            set_config_val(db, "komga_api_key", req.komga_api_key.strip())
         # Invalidate keyword cache
         _kw_cache["tome"] = None
         _kw_cache["ts"] = 0
@@ -1883,6 +1900,531 @@ async def kavita_auto_match(library_id: int, admin=Depends(require_admin)):
                     ],
                 })
     return {"auto_matched": auto_matched, "not_found": not_found, "suggestions": suggestions}
+
+
+# ═══════════════════════════════════════════
+#  Routes: Kavita / Komga — envoi des infos Nautiljon (métadonnées) + progression
+# ═══════════════════════════════════════════
+
+def _kavita_publication_status(statut: str) -> Optional[int]:
+    """PublicationStatus Kavita (API/Entities/Enums/PublicationStatus.cs) : 0=OnGoing,
+    1=Hiatus, 2=Completed, 3=Cancelled, 4=Ended -- sérialisé en entier. Mapping
+    approximatif depuis le champ "Statut" (texte libre) de Nautiljon ; None si aucun
+    mot-clé reconnu (le champ n'est alors pas touché). Portage de
+    _kavitaPublicationStatus (kavita_screen.dart)."""
+    s = (statut or "").lower()
+    if "pause" in s or "hiatus" in s:
+        return 1
+    if "arrêt" in s or "abandon" in s:
+        return 3
+    if "terminé" in s or "fini" in s or "complet" in s:
+        return 2
+    if "cours" in s or "publication" in s:
+        return 0
+    return None
+
+
+def _komga_status(statut: str) -> Optional[str]:
+    """Portage de _komgaStatus (komga_screen.dart) -- équivalent Komga (une chaîne,
+    contrairement à Kavita)."""
+    s = (statut or "").lower()
+    if "pause" in s or "hiatus" in s:
+        return "HIATUS"
+    if "arrêt" in s or "abandon" in s:
+        return "ABANDONED"
+    if "terminé" in s or "fini" in s or "complet" in s:
+        return "ENDED"
+    if "cours" in s or "publication" in s:
+        return "ONGOING"
+    return None
+
+
+def _volume_extra_val(extra: dict, *keys) -> str:
+    for k in keys:
+        v = extra.get(k)
+        if v is not None:
+            s = str(v).strip()
+            if s:
+                return s
+    return ""
+
+
+def _matched_nautiljon_url(db, table: str, id_col: str, series_id) -> Optional[str]:
+    row = db.execute(f"SELECT nautiljon_url FROM {table} WHERE {id_col} = ?", (series_id,)).fetchone()
+    return row["nautiljon_url"] if row else None
+
+
+@app.post("/api/kavita/push-series/{series_id}")
+async def kavita_push_series(series_id: int, admin=Depends(require_admin)):
+    """Envoie résumé/genres/thèmes/statut/auteur/dessinateur/éditeur de la fiche
+    Nautiljon associée vers Kavita -- écrase uniquement ces champs (le reste de la fiche
+    existante, récupérée d'abord, est renvoyé tel quel) et les verrouille. Portage de
+    pushNautiljonToKavita (kavita_screen.dart)."""
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+        url = _matched_nautiljon_url(db, "kavita_matches", "kavita_series_id", series_id)
+    if not url:
+        raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+    details = nautiljon_db.manga_auto(url)
+    if not details:
+        raise HTTPException(502, "Fiche Nautiljon introuvable.")
+    try:
+        updated = dict(await client.series_metadata(series_id))
+        touched = False
+        synopsis = (details.get("synopsis") or "").strip()
+        if synopsis:
+            updated["summary"] = synopsis; updated["summaryLocked"] = True; touched = True
+        genres = details.get("genres") or []
+        if genres:
+            updated["genres"] = [{"title": g} for g in genres]; updated["genresLocked"] = True; touched = True
+        themes = details.get("themes") or []
+        if themes:
+            updated["tags"] = [{"title": t} for t in themes]; updated["tagsLocked"] = True; touched = True
+        status = _kavita_publication_status(details.get("status") or "")
+        if status is not None:
+            updated["publicationStatus"] = status; updated["publicationStatusLocked"] = True; touched = True
+        writers = nautiljon_db.split_tag_list(details.get("author") or "")
+        if writers:
+            updated["writers"] = [{"name": n} for n in writers]; updated["writerLocked"] = True; touched = True
+        pencillers = nautiljon_db.split_tag_list(details.get("artist") or "")
+        if pencillers:
+            updated["pencillers"] = [{"name": n} for n in pencillers]; updated["pencillerLocked"] = True; touched = True
+        publishers = nautiljon_db.split_tag_list(details.get("publisher") or "")
+        if publishers:
+            updated["publishers"] = [{"name": n} for n in publishers]; updated["publisherLocked"] = True; touched = True
+        if not touched:
+            return {"ok": False, "error": "Rien à envoyer (fiche Nautiljon vide)"}
+        await client.update_series_metadata(updated)
+        return {"ok": True}
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/kavita/push-volumes/{series_id}")
+async def kavita_push_volumes(series_id: int, admin=Depends(require_admin)):
+    """Associe chaque tome Nautiljon (par numéro) au(x) chapitre(s) Kavita du même
+    numéro de volume, et pousse titre/résumé/ISBN/date de parution/genres/thèmes/
+    auteur/traducteur/éditeur. Portage de pushNautVolumesToKavita (kavita_screen.dart)."""
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+        url = _matched_nautiljon_url(db, "kavita_matches", "kavita_series_id", series_id)
+    if not url:
+        raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+    try:
+        series = await client.series_detail(series_id)
+        volumes = await client.volumes(series_id)
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+    editions = nautiljon_db.manga_editions(url)
+    edition = nautiljon_db.pick_edition((editions or {}).get("editions") or [], series.get("name") or "")
+    naut_volumes = (edition or {}).get("volumes") or []
+
+    chapters = []
+    for v in volumes:
+        for c in (v.get("chapters") or []):
+            chapters.append({"volume": v, "chapter": c})
+
+    sent = 0
+    unmatched = 0
+    for nv in naut_volumes:
+        try:
+            vol_num = float(str(nv.get("number") or "").strip())
+        except ValueError:
+            unmatched += 1
+            continue
+        matches = [it for it in chapters if it["volume"].get("number") == vol_num]
+        if not matches:
+            unmatched += 1
+            continue
+        title = (nv.get("title") or "").strip()
+        synopsis = (nv.get("synopsis") or "").strip()
+        extra = nv.get("extra") or {}
+        isbn = _volume_extra_val(extra, "Code EAN", "ISBN", "EAN")
+        release_date = nautiljon_db.parse_french_date(_volume_extra_val(extra, "Date de parution VF", "Date de parution VO"))
+        genres = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Genres", "Genre"))
+        themes = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Thème", "Thèmes", "Theme", "Themes"))
+        writers = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Auteur", "Auteurs"))
+        translators = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Traducteur", "Traducteurs"))
+        publishers = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Éditeur VF", "Éditeurs VF", "Éditeur VO", "Éditeurs VO"))
+        if not any([title, synopsis, isbn, release_date, genres, themes, writers, translators, publishers]):
+            continue
+        for it in matches:
+            chapter_id = it["chapter"]["id"]
+            try:
+                updated = dict(await client.chapter_metadata(chapter_id))
+                updated["id"] = chapter_id
+                if title:
+                    updated["titleName"] = title; updated["titleNameLocked"] = True
+                if synopsis:
+                    updated["summary"] = synopsis; updated["summaryLocked"] = True
+                if isbn:
+                    updated["isbn"] = isbn; updated["isbnLocked"] = True
+                if release_date:
+                    updated["releaseDate"] = release_date; updated["releaseDateLocked"] = True
+                if genres:
+                    updated["genres"] = [{"title": g} for g in genres]; updated["genresLocked"] = True
+                if themes:
+                    updated["tags"] = [{"title": t} for t in themes]; updated["tagsLocked"] = True
+                if writers:
+                    updated["writers"] = [{"name": n} for n in writers]; updated["writerLocked"] = True
+                if translators:
+                    updated["translators"] = [{"name": n} for n in translators]; updated["translatorLocked"] = True
+                if publishers:
+                    updated["publishers"] = [{"name": n} for n in publishers]; updated["publisherLocked"] = True
+                await client.update_chapter(updated)
+                sent += 1
+            except KavitaError:
+                pass
+    return {"ok": True, "sent": sent, "unmatched": unmatched}
+
+
+class KavitaProgressRequest(BaseModel):
+    seriesId: int
+    volumeId: int
+    chapterId: int
+    libraryId: int
+    pageNum: int
+
+@app.post("/api/kavita/progress")
+async def kavita_push_progress(req: KavitaProgressRequest, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_kavita_client(db)
+    try:
+        await client.push_progress(req.seriesId, req.volumeId, req.chapterId, req.libraryId, req.pageNum)
+        return {"ok": True}
+    except KavitaError as e:
+        raise HTTPException(502, str(e))
+
+
+# ═══════════════════════════════════════════
+#  Routes: Komga (serveur externe, lecture seule)
+# ═══════════════════════════════════════════
+
+def _get_komga_client(db):
+    url = get_config_val(db, "komga_url", "").strip()
+    api_key = get_config_val(db, "komga_api_key", "").strip()
+    if not url or not api_key:
+        raise HTTPException(400, "Serveur Komga non configuré (Admin -> Configuration).")
+    return get_komga_client(url, api_key)
+
+@app.get("/api/komga/health")
+async def komga_health(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        url = get_config_val(db, "komga_url", "").strip()
+        api_key = get_config_val(db, "komga_api_key", "").strip()
+    if not url or not api_key:
+        return {"available": False}
+    try:
+        await get_komga_client(url, api_key).libraries()
+        return {"available": True}
+    except KomgaError as e:
+        return {"available": False, "error": str(e)}
+
+@app.get("/api/komga/libraries")
+async def komga_libraries(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        return await client.libraries()
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/komga/series")
+async def komga_series(library_id: str = Query(..., alias="libraryId"), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        return await client.series_in_library(library_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/komga/series/{series_id}")
+async def komga_series_detail(series_id: str, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        return await client.series_detail(series_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/komga/series/{series_id}/books")
+async def komga_series_books(series_id: str, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        return await client.books_in_series(series_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/komga/cover/{series_id}")
+async def komga_cover(series_id: str, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        content, content_type = await client.series_cover_bytes(series_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
+@app.get("/api/komga/book-cover/{book_id}")
+async def komga_book_cover(book_id: str, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        content, content_type = await client.book_cover_bytes(book_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "public, max-age=3600"})
+
+@app.get("/api/komga/read/{book_id}")
+async def komga_read_page(book_id: str, page: int = Query(0, ge=0), user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        content, content_type = await client.page_bytes(book_id, page)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+    return Response(content=content, media_type=content_type)
+
+def _komga_match_metadata(nautiljon_url: str) -> dict:
+    try:
+        details = nautiljon_db.manga_auto(nautiljon_url)
+    except Exception:
+        details = None
+    infos = (details or {}).get("raw_infos_json") or {}
+    return infos if isinstance(infos, dict) else {}
+
+@app.get("/api/komga/match/{series_id}")
+async def komga_get_match(series_id: str, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        row = db.execute("SELECT nautiljon_url, metadata_json FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone()
+    if not row:
+        return {"matched": False, "nautiljon_url": None}
+    try:
+        meta = json.loads(row["metadata_json"] or "{}")
+    except Exception:
+        meta = {}
+    return {"matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta}
+
+@app.post("/api/komga/match/{series_id}")
+async def komga_save_match(series_id: str, nautiljon_url: str, admin=Depends(require_admin)):
+    meta = _komga_match_metadata(nautiljon_url)
+    with get_db_ctx() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO komga_matches (komga_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (series_id, nautiljon_url, admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
+        )
+        db.commit()
+    return {"ok": True}
+
+@app.delete("/api/komga/match/{series_id}")
+async def komga_delete_match(series_id: str, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        db.execute("DELETE FROM komga_matches WHERE komga_series_id = ?", (series_id,))
+        db.commit()
+    return {"ok": True}
+
+@app.get("/api/komga/matches")
+async def komga_list_matches(user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        rows = db.execute("SELECT komga_series_id, nautiljon_url, metadata_json FROM komga_matches").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            meta = json.loads(r["metadata_json"] or "{}")
+        except Exception:
+            meta = {}
+        out[str(r["komga_series_id"])] = {"nautiljon_url": r["nautiljon_url"], "metadata_json": meta}
+    return out
+
+@app.post("/api/komga/auto-match/{library_id}")
+async def komga_auto_match(library_id: str, admin=Depends(require_admin)):
+    """Voir kavita_auto_match -- même logique (matching exact uniquement, avec
+    variantes de titre/suffixe d'édition), portée pour des séries Komga (id string)."""
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+        already = {r["komga_series_id"] for r in db.execute("SELECT komga_series_id FROM komga_matches").fetchall()}
+    if not nautiljon_db.is_available():
+        return {"error": f"Base Nautiljon injoignable via {nautiljon_db.APP_PY_URL}"}
+    try:
+        series_list = await client.series_in_library(library_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+    auto_matched = 0
+    not_found = 0
+    suggestions = []
+    for s in series_list:
+        sid = s.get("id")
+        name = komga_series_title(s)
+        if not sid or sid in already or not name:
+            continue
+        name_sans_edition = _strip_edition_suffix(name)
+        titres = list(_match_query_variants(name))
+        if name_sans_edition and name_sans_edition != name:
+            for t in _match_query_variants(name_sans_edition):
+                if t not in titres:
+                    titres.append(t)
+        keys = {k for k in (_normalize_match_key(t) for t in titres) if k}
+
+        results = []
+        seen = set()
+        for titre in titres:
+            for r in (nautiljon_db.search_local(titre, limit=8, offset=0).get("results") or []):
+                u = (r.get("url") or "").strip()
+                if u and u not in seen:
+                    seen.add(u)
+                    results.append(r)
+
+        exact = next((r for r in results if _normalize_match_key(r.get("title") or "") in keys), None)
+        if exact and exact.get("url"):
+            meta = _komga_match_metadata(exact["url"])
+            with get_db_ctx() as db:
+                db.execute(
+                    "INSERT OR REPLACE INTO komga_matches (komga_series_id, nautiljon_url, matched_by, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (sid, exact["url"], admin["username"], json.dumps(meta, ensure_ascii=False), time.time())
+                )
+                db.commit()
+            auto_matched += 1
+        else:
+            not_found += 1
+            if results:
+                suggestions.append({
+                    "series_id": sid,
+                    "series_name": name,
+                    "candidates": [
+                        {
+                            "title": r.get("title") or "",
+                            "url": r.get("url"),
+                            "cover": r.get("cover_url") or r.get("image_url") or "",
+                        }
+                        for r in results[:6] if r.get("url")
+                    ],
+                })
+    return {"auto_matched": auto_matched, "not_found": not_found, "suggestions": suggestions}
+
+
+@app.post("/api/komga/push-series/{series_id}")
+async def komga_push_series(series_id: str, admin=Depends(require_admin)):
+    """Portage de pushNautiljonToKomga (komga_screen.dart) -- patch partiel, pas besoin
+    de récupérer la fiche existante d'abord (contrairement à Kavita)."""
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+        url = _matched_nautiljon_url(db, "komga_matches", "komga_series_id", series_id)
+    if not url:
+        raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+    details = nautiljon_db.manga_auto(url)
+    if not details:
+        raise HTTPException(502, "Fiche Nautiljon introuvable.")
+    patch = {}
+    synopsis = (details.get("synopsis") or "").strip()
+    if synopsis:
+        patch["summary"] = synopsis; patch["summaryLock"] = True
+    genres = details.get("genres") or []
+    if genres:
+        patch["genres"] = genres; patch["genresLock"] = True
+    themes = details.get("themes") or []
+    if themes:
+        patch["tags"] = themes; patch["tagsLock"] = True
+    publisher = (details.get("publisher") or "").strip()
+    if publisher:
+        patch["publisher"] = publisher; patch["publisherLock"] = True
+    status = _komga_status(details.get("status") or "")
+    if status:
+        patch["status"] = status; patch["statusLock"] = True
+    if not patch:
+        return {"ok": False, "error": "Rien à envoyer (fiche Nautiljon vide)"}
+    try:
+        await client.series_metadata_update(series_id, patch)
+        return {"ok": True}
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/komga/push-volumes/{series_id}")
+async def komga_push_volumes(series_id: str, admin=Depends(require_admin)):
+    """Portage de pushNautVolumesToKomga (komga_screen.dart) -- un livre = un tome,
+    matché par numéro (b['number'])."""
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+        url = _matched_nautiljon_url(db, "komga_matches", "komga_series_id", series_id)
+    if not url:
+        raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+    try:
+        series = await client.series_detail(series_id)
+        books = await client.books_in_series(series_id)
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
+    editions = nautiljon_db.manga_editions(url)
+    edition = nautiljon_db.pick_edition((editions or {}).get("editions") or [], komga_series_title(series))
+    naut_volumes = (edition or {}).get("volumes") or []
+
+    sent = 0
+    unmatched = 0
+    for nv in naut_volumes:
+        try:
+            vol_num = float(str(nv.get("number") or "").strip())
+        except ValueError:
+            unmatched += 1
+            continue
+        matches = [b for b in books if b.get("number") == vol_num]
+        if not matches:
+            unmatched += 1
+            continue
+        title = (nv.get("title") or "").strip()
+        synopsis = (nv.get("synopsis") or "").strip()
+        extra = nv.get("extra") or {}
+        isbn = _volume_extra_val(extra, "Code EAN", "ISBN", "EAN")
+        release_date = nautiljon_db.parse_french_date(_volume_extra_val(extra, "Date de parution VF", "Date de parution VO"))
+        genres = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Genres", "Genre"))
+        themes = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Thème", "Thèmes", "Theme", "Themes"))
+        tags = [*genres, *themes]
+        writers = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Auteur", "Auteurs"))
+        translators = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Traducteur", "Traducteurs"))
+        publishers = nautiljon_db.split_tag_list(_volume_extra_val(extra, "Éditeur VF", "Éditeurs VF", "Éditeur VO", "Éditeurs VO"))
+        if not any([title, synopsis, isbn, release_date, tags, writers, translators, publishers]):
+            continue
+        authors = [
+            *({"name": n, "role": "writer"} for n in writers),
+            *({"name": n, "role": "translator"} for n in translators),
+            *({"name": n, "role": "publisher"} for n in publishers),
+        ]
+        for b in matches:
+            book_id = b["id"]
+            patch = {}
+            if title:
+                patch["title"] = title; patch["titleLock"] = True
+            if synopsis:
+                patch["summary"] = synopsis; patch["summaryLock"] = True
+            if isbn:
+                patch["isbn"] = isbn; patch["isbnLock"] = True
+            if release_date:
+                patch["releaseDate"] = release_date; patch["releaseDateLock"] = True
+            if tags:
+                patch["tags"] = tags; patch["tagsLock"] = True
+            if authors:
+                patch["authors"] = authors; patch["authorsLock"] = True
+            try:
+                await client.book_metadata_update(book_id, patch)
+                sent += 1
+            except KomgaError:
+                pass
+    return {"ok": True, "sent": sent, "unmatched": unmatched}
+
+
+class KomgaProgressRequest(BaseModel):
+    bookId: str
+    page: int
+
+@app.post("/api/komga/progress")
+async def komga_push_progress(req: KomgaProgressRequest, user=Depends(get_current_user)):
+    with get_db_ctx() as db:
+        client = _get_komga_client(db)
+    try:
+        await client.push_progress(req.bookId, req.page)
+        return {"ok": True}
+    except KomgaError as e:
+        raise HTTPException(502, str(e))
 
 
 @app.get("/api/library")

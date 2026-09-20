@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { api, getToken, setToken } from "./api";
+import * as offline from "./offlineStore";
 import "./index.css";
 
 
@@ -537,6 +538,10 @@ function MainApp({ session, doLogout, show, toast }) {
   // Empêche la détection auto du mode webtoon (voir plus bas) de se
   // redéclencher à chaque page tournée -- une seule tentative par ouverture.
   const [rAutoWebtoonChecked, setRAutoWebtoonChecked] = useState(false);
+  // Contexte Kavita du chapitre ouvert (seriesId/volumeId/libraryId, connus via
+  // chapter-info) -- nécessaire pour pousser la progression vers Kavita à chaque
+  // changement de page (ProgressDto exige les 4 identifiants). null hors Kavita.
+  const [rKavitaCtx, setRKavitaCtx] = useState(null);
   const rScrollRef = useRef(null);
   const rImgRefs = useRef([]);
   const rTouchStart = useRef(null);
@@ -733,8 +738,22 @@ function MainApp({ session, doLogout, show, toast }) {
   };
 
   // Progress
+  // Écrit aussi la progression vers Kavita/Komga à chaque changement de page (comme
+  // dans l'appli mobile, voir onlineProgressPusher) -- écriture seule, best-effort
+  // (erreurs avalées : un Kavita/Komga injoignable ne doit jamais bloquer la lecture).
+  const pushOnlineProgress = (volId, pg) => {
+    const v = String(volId || '');
+    if (v.startsWith('kavita:chapter:') && rKavitaCtx) {
+      const chapterId = Number(v.slice('kavita:chapter:'.length));
+      api.kavitaPushProgress({ seriesId: rKavitaCtx.seriesId, volumeId: rKavitaCtx.volumeId, chapterId, libraryId: rKavitaCtx.libraryId, pageNum: pg }).catch(() => {});
+    } else if (v.startsWith('komga:book:')) {
+      const bookId = v.slice('komga:book:'.length);
+      api.komgaPushProgress({ bookId, page: pg }).catch(() => {});
+    }
+  };
   const saveProg = async (mangaId, volId, pg, tot, title) => {
     try { await api.saveProgress({ manga_url: String(mangaId), volume_id: volId, current_page: pg, total_pages: tot, title }); } catch {}
+    pushOnlineProgress(volId, pg);
   };
 
   // Reader
@@ -861,8 +880,13 @@ function MainApp({ session, doLogout, show, toast }) {
   // n'est nécessaire pour cette source. manga_url/volume_id suivent le même
   // principe de préfixe que "imgvol:" pour rester compatibles avec la table
   // de progression existante (voir resumeReading ci-dessous).
-  const openKavitaChapter = (seriesId, seriesName, chapterId, totalPages, startPage = 0) => {
-    const pages = Array.from({ length: totalPages }, (_, i) => api.kavitaPageUrl(chapterId, i));
+  const openKavitaChapter = async (seriesId, seriesName, chapterId, totalPages, startPage = 0, volumeId = null, libraryId = null) => {
+    // Lecture hors-ligne : si ce chapitre a été téléchargé (voir offlineStore.js), on
+    // lit ses pages depuis IndexedDB (blob: URLs) plutôt que le réseau -- fonctionne
+    // même si Kavita est injoignable. Sinon, comportement inchangé (réseau).
+    const offKey = offline.offlineKey('kavita', chapterId);
+    const offPages = await offline.getOfflinePages(offKey);
+    const pages = offPages || Array.from({ length: totalPages }, (_, i) => api.kavitaPageUrl(chapterId, i));
     setRPg(pages);
     setRTitle(seriesName);
     setRUrl(`kavita:series:${seriesId}`);
@@ -873,6 +897,31 @@ function MainApp({ session, doLogout, show, toast }) {
     setRZoom(1);
     setRCbz(null);
     setRNextVol(null); // pas d'auto-avance "tome suivant" pour Kavita dans cette première version
+    // Nécessaire pour pousser la progression vers Kavita (voir pushOnlineProgress) --
+    // connu seulement quand chapter-info a été appelé avant l'ouverture.
+    setRKavitaCtx((volumeId != null && libraryId != null) ? { seriesId: Number(seriesId), volumeId, libraryId } : null);
+    setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false);
+    enterFullscreen();
+  };
+
+  // Ouvre un livre d'une série d'un serveur Komga externe (voir KomgaBrowser) --
+  // même principe qu'openKavitaChapter, mais Komga n'a besoin d'aucun identifiant
+  // supplémentaire pour la progression (juste bookId+page, voir pushOnlineProgress).
+  const openKomgaBook = async (seriesId, seriesName, bookId, totalPages, startPage = 0) => {
+    const offKey = offline.offlineKey('komga', bookId);
+    const offPages = await offline.getOfflinePages(offKey);
+    const pages = offPages || Array.from({ length: totalPages }, (_, i) => api.komgaPageUrl(bookId, i));
+    setRPg(pages);
+    setRTitle(seriesName);
+    setRUrl(`komga:series:${seriesId}`);
+    setRVol(`komga:book:${bookId}`);
+    setRMode('paged');
+    setRAutoWebtoonChecked(false);
+    setRP(Math.max(0, Math.min(startPage, totalPages - 1)));
+    setRZoom(1);
+    setRCbz(null);
+    setRNextVol(null);
+    setRKavitaCtx(null);
     setRdr(true); setRBarVisible(false); setRBookmarks([]); setRShowNextPrompt(false); setRShowThumbs(false);
     enterFullscreen();
   };
@@ -883,8 +932,19 @@ function MainApp({ session, doLogout, show, toast }) {
       const chapterId = String(p.volume_id).split(':')[2];
       try {
         const info = await api.kavitaChapterInfo(chapterId);
-        openKavitaChapter(info.seriesId, p.title || info.seriesName || 'Kavita', chapterId, info.pages, p.current_page);
+        openKavitaChapter(info.seriesId, p.title || info.seriesName || 'Kavita', chapterId, info.pages, p.current_page, info.volumeId, info.libraryId);
       } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+      return;
+    }
+    if (String(p.volume_id || '').startsWith('komga:book:')) {
+      const bookId = String(p.volume_id).slice('komga:book:'.length);
+      const seriesId = String(p.manga_url || '').slice('komga:series:'.length);
+      try {
+        const books = await api.komgaBooks(seriesId);
+        const book = books.find(b => b.id === bookId);
+        const totalPages = (book?.media?.pagesCount) || p.total_pages || 0;
+        openKomgaBook(seriesId, p.title || 'Komga', bookId, totalPages, p.current_page);
+      } catch (e) { show(`Erreur Komga : ${e.message}`); }
       return;
     }
     if (String(p.volume_id || '').startsWith('imgvol:')) {
@@ -1077,6 +1137,7 @@ function MainApp({ session, doLogout, show, toast }) {
       // serveur) : ne l'envoyer que si l'admin y a tapé une nouvelle valeur,
       // sinon on écraserait la clé déjà enregistrée avec une chaîne vide.
       if (!payload.kavita_api_key) delete payload.kavita_api_key;
+      if (!payload.komga_api_key) delete payload.komga_api_key;
       await api.updateConfig(payload);
       show("Sauvegardé");
     } catch (e) { show(e.message); }
@@ -1209,6 +1270,8 @@ function MainApp({ session, doLogout, show, toast }) {
           <div className={`sb-item ${nav === "activity" ? "on" : ""}`} onClick={() => { setNav("activity"); api.getActivity().then(setActivity).catch(() => {}); }}>👥 <span>Activité</span></div>
           <div className={`sb-item ${nav === "app-android" ? "on" : ""}`} onClick={() => setNav("app-android")}>📱 <span>App Android</span></div>
           <div className={`sb-item ${nav === "kavita" ? "on" : ""}`} onClick={() => setNav("kavita")}>🌐 <span>Kavita</span></div>
+          <div className={`sb-item ${nav === "komga" ? "on" : ""}`} onClick={() => setNav("komga")}>🌐 <span>Komga</span></div>
+          <div className={`sb-item ${nav === "downloads" ? "on" : ""}`} onClick={() => setNav("downloads")}>📥 <span>Téléchargements</span></div>
           {isAdmin && <><div className="sb-sep" /><div className="sb-label">Admin</div>
             <div className={`sb-item ${nav === "admin-users" ? "on" : ""}`} onClick={() => setNav("admin-users")}>👥 <span>Utilisateurs</span></div>
             <div className={`sb-item ${nav === "admin-config" ? "on" : ""}`} onClick={() => setNav("admin-config")}>⚙️ <span>Config</span></div>
@@ -1372,6 +1435,8 @@ function MainApp({ session, doLogout, show, toast }) {
 
           {/* ══ KAVITA (serveur externe) ══ */}
           {nav === "kavita" && <KavitaBrowser onOpenChapter={openKavitaChapter} show={show} isAdmin={isAdmin} progress={progress} onResume={resumeReading} />}
+          {nav === "komga" && <KomgaBrowser onOpenBook={openKomgaBook} show={show} isAdmin={isAdmin} progress={progress} onResume={resumeReading} />}
+          {nav === "downloads" && <OfflineDownloadsView show={show} onOpenKavita={openKavitaChapter} onOpenKomga={openKomgaBook} />}
 
           {nav === "library" && <>
             {libraries.length > 1 && (
@@ -1684,6 +1749,22 @@ function MainApp({ session, doLogout, show, toast }) {
                   <input type="password" value={cfg.kavita_api_key || ""} onChange={e => setCfg(c => ({ ...c, kavita_api_key: e.target.value }))} placeholder={cfg.kavita_configured ? "Déjà configurée — laisser vide pour ne pas la changer" : "Coller la clé API ici"} />
                 </div>
                 {cfg.kavita_configured && <div className="hint" style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="dot d-on" />Clé API enregistrée</div>}
+              </div>
+
+              <div style={{ marginTop: 16, padding: 14, background: "var(--c1)", borderRadius: "var(--r)", border: "1px solid var(--brd)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "var(--t1)" }}>📚 Serveur Komga (optionnel)</div>
+                <div style={{ fontSize: 10, color: "var(--t3)", marginBottom: 10 }}>
+                  Parcourir et lire les séries d'un serveur <a href="https://komga.org/" target="_blank" rel="noreferrer" style={{ color: "var(--ac)" }}>Komga</a> externe depuis TamaShelf, sans dupliquer les fichiers. La clé API se génère dans Komga, Paramètres → Clés API.
+                </div>
+                <div className="fld">
+                  <label>URL du serveur</label>
+                  <input value={cfg.komga_url || ""} onChange={e => setCfg(c => ({ ...c, komga_url: e.target.value }))} placeholder="http://192.168.1.50:25600" />
+                </div>
+                <div className="fld">
+                  <label>Clé API</label>
+                  <input type="password" value={cfg.komga_api_key || ""} onChange={e => setCfg(c => ({ ...c, komga_api_key: e.target.value }))} placeholder={cfg.komga_configured ? "Déjà configurée — laisser vide pour ne pas la changer" : "Coller la clé API ici"} />
+                </div>
+                {cfg.komga_configured && <div className="hint" style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="dot d-on" />Clé API enregistrée</div>}
               </div>
 
               <button className="btn btn-p" style={{ marginTop: 16 }} onClick={saveCfg}>Sauvegarder</button>
@@ -2440,6 +2521,72 @@ function AppAndroidView() {
 // onOpenChapter (voir App.openKavitaChapter). Lecture seule : aucune
 // tentative de fusion avec les mangas CBZ locaux ou leur matching Nautiljon
 // -- volontairement une source à part pour cette première version.
+// Choisit l'édition Nautiljon à afficher pour une série -- même logique que
+// nautiljon_db.pick_edition (backend) / pickEdition (nautiljon_service.dart, appli
+// mobile) : si le titre source (bibliothèque Kavita/Komga) mentionne une édition, on
+// prend celle dont le nom correspond ; sinon on retombe sur l'édition "standard" (nom
+// vide ou contenant "standard"), sinon la première. Les tomes viennent déjà avec toutes
+// leurs infos (cover/synopsis/extra) via /api/nautiljon/manga, pas besoin d'un appel
+// réseau supplémentaire pour les afficher.
+function pickEditionJs(editions, seriesTitle) {
+  if (!editions || !editions.length) return null;
+  const titleLow = (seriesTitle || "").toLowerCase();
+  for (const ed of editions) {
+    const nom = (ed.name || ed.nom || "").trim().toLowerCase();
+    if (nom && titleLow.includes(nom)) return ed;
+  }
+  for (const ed of editions) {
+    const nom = (ed.name || ed.nom || "").trim().toLowerCase();
+    if (!nom || nom.includes("standard")) return ed;
+  }
+  return editions[0];
+}
+
+// Carte "tome Nautiljon" en 3 colonnes (cover à gauche, synopsis au milieu, infos à
+// droite) -- cliquable pour ouvrir directement la lecture du chapitre/livre associé
+// (par numéro de tome), sans passer par la grille de chapitres/livres brute (qui
+// affiche les mêmes covers en double, voir onOpen). Partagée entre KavitaBrowser et
+// KomgaBrowser.
+function NautVolumeCard({ v, onOpen, onDownload, downloaded, downloading }) {
+  const extra = v.extra || {};
+  const entries = Object.entries(extra).filter(([, val]) => val !== null && val !== undefined && String(val).trim() !== "");
+  return (
+    <div
+      onClick={onOpen}
+      style={{ display: "flex", gap: 10, padding: 10, background: "var(--c2)", border: "1px solid var(--brd)", borderRadius: "var(--r)", cursor: onOpen ? "pointer" : "default", marginBottom: 8, position: "relative" }}
+    >
+      {(v.cover_full || v.cover_url) && (
+        <img src={v.cover_full || v.cover_url} alt="" loading="lazy" style={{ width: 80, height: 113, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>{v.title || `Tome ${v.number}`}</div>
+        {v.synopsis && <p style={{ fontSize: 11, color: "var(--t2)", margin: 0 }}>{v.synopsis}</p>}
+      </div>
+      {entries.length > 0 && (
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+          {entries.map(([k, val]) => (
+            <div key={k} style={{ fontSize: 10 }}>
+              <span style={{ color: "var(--t3)" }}>{k} : </span>
+              <span style={{ color: "var(--t2)" }}>{String(val)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {onDownload && (
+        <button
+          className="btn btn-s"
+          style={{ position: "absolute", top: 6, right: 6, fontSize: 9 }}
+          onClick={e => { e.stopPropagation(); onDownload(); }}
+          disabled={downloading}
+          title={downloaded ? "Déjà téléchargé (hors-ligne)" : "Télécharger pour lecture hors-ligne"}
+        >
+          {downloading ? "…" : downloaded ? "✅" : "⬇️"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
   const [available, setAvailable] = useState(null); // null = vérification en cours
   const [errMsg, setErrMsg] = useState(null);
@@ -2472,10 +2619,69 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
   const [showMatchAll, setShowMatchAll] = useState(false); // fenêtre "Match" : séries non associées, une par une, avec recherche live
   const [matchAllQueue, setMatchAllQueue] = useState([]);
   const [matchAllIndex, setMatchAllIndex] = useState(0);
+  const [pushingSeries, setPushingSeries] = useState(false);
+  const [pushingVolumes, setPushingVolumes] = useState(false);
 
   const refreshMatchesMap = useCallback(() => {
     api.kavitaMatches().then(setMatchesMap).catch(() => {});
   }, []);
+
+  const pushSeriesToKavita = async () => {
+    if (!sel) return;
+    setPushingSeries(true);
+    try {
+      const r = await api.kavitaPushSeries(sel.id);
+      show(r.ok ? "✅ Infos série envoyées à Kavita" : `⚠️ ${r.error}`);
+    } catch (e) { show(`❌ ${e.message}`); }
+    setPushingSeries(false);
+  };
+  const pushVolumesToKavita = async () => {
+    if (!sel) return;
+    setPushingVolumes(true);
+    try {
+      const r = await api.kavitaPushVolumes(sel.id);
+      show(`✅ ${r.sent} tome(s) envoyé(s), ${r.unmatched} sans correspondance`);
+    } catch (e) { show(`❌ ${e.message}`); }
+    setPushingVolumes(false);
+  };
+  const [downloadedSet, setDownloadedSet] = useState(new Set());
+  const [downloadingKey, setDownloadingKey] = useState(null);
+  const refreshDownloaded = useCallback(() => {
+    offline.listDownloads().then(list => setDownloadedSet(new Set(list.filter(d => d.source === 'kavita').map(d => d.itemId)))).catch(() => {});
+  }, []);
+  useEffect(() => { refreshDownloaded(); }, [refreshDownloaded]);
+  const downloadKavitaChapter = async (chapterId, label, coverUrl) => {
+    if (!sel) return;
+    setDownloadingKey(chapterId);
+    try {
+      const info = await api.kavitaChapterInfo(chapterId);
+      const totalPages = info.pages;
+      const pageUrls = Array.from({ length: totalPages }, (_, i) => api.kavitaPageUrl(chapterId, i));
+      await offline.downloadItem({
+        key: offline.offlineKey('kavita', chapterId), source: 'kavita',
+        seriesId: sel.id, seriesName: sel.name, itemId: chapterId, itemLabel: label,
+        pageUrls, coverUrl,
+      });
+      show(`✅ Téléchargé (${totalPages} pages)`);
+      refreshDownloaded();
+    } catch (e) { show(`❌ ${e.message}`); }
+    setDownloadingKey(null);
+  };
+  const [pushingAllVolumes, setPushingAllVolumes] = useState(false);
+  const pushAllVolumesToKavita = async () => {
+    const ids = seriesList.filter(s => matchesMap[s.id]).map(s => s.id);
+    if (ids.length === 0) { show("Aucune série associée à envoyer."); return; }
+    setPushingAllVolumes(true);
+    let sent = 0, unmatched = 0, errors = 0;
+    for (const id of ids) {
+      try {
+        const r = await api.kavitaPushVolumes(id);
+        sent += r.sent || 0; unmatched += r.unmatched || 0;
+      } catch { errors++; }
+    }
+    setPushingAllVolumes(false);
+    show(`✅ ${sent} tome(s) envoyé(s) sur ${ids.length} série(s)${errors ? `, ${errors} erreur(s)` : ""}`);
+  };
 
   useEffect(() => {
     (async () => {
@@ -2738,6 +2944,8 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
                   {isAdmin && <>
                     <button className="btn btn-s" style={{ fontSize: 9 }} onClick={() => setShowMatchSearch(v => !v)}>🔁 Changer</button>
                     <button className="btn btn-s" style={{ fontSize: 9 }} onClick={unmatch}>✕ Dissocier</button>
+                    <button className="btn btn-s btn-p" style={{ fontSize: 9 }} onClick={pushSeriesToKavita} disabled={pushingSeries}>{pushingSeries ? "…" : "⬆️ Envoyer série"}</button>
+                    <button className="btn btn-s btn-p" style={{ fontSize: 9 }} onClick={pushVolumesToKavita} disabled={pushingVolumes}>{pushingVolumes ? "…" : "⬆️ Envoyer tomes"}</button>
                   </>}
                 </div>
                 {(infos.Type || infos.Genres) && <div className="dp-tags" style={{ marginTop: 4 }}>
@@ -2791,43 +2999,99 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             </div>}
           </div>
         )}
-        {loadingVolumes ? <div className="empty"><p>Chargement…</p></div> : (
-          <div className="vg vg-lg">
-            {volumes.flatMap(v => (v.chapters || []).map(c => {
-              // Kavita utilise le nombre sentinelle -100000 pour "pas de
-              // numéro de chapitre applicable" (volume à chapitre unique) --
-              // l'afficher tel quel donnerait "Ch. -100000".
-              const noChapNum = String(c.number) === "-100000";
-              return (
-                <div
-                  key={c.id}
-                  className="vc"
-                  onClick={async () => {
-                    // Déclenche la mise en cache des pages côté Kavita avant
-                    // de demander les images -- sans cet appel préalable, la
-                    // première lecture d'un chapitre renvoie des pages
-                    // vides/noires.
-                    try {
-                      const info = await api.kavitaChapterInfo(c.id);
-                      onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0);
-                    } catch (e) { show(`Erreur Kavita : ${e.message}`); }
-                  }}
-                  title={c.title || (noChapNum ? `Volume ${v.number}` : `Chapitre ${c.number}`)}
-                >
-                  <img
-                    className="vcov"
-                    src={api.kavitaChapterCoverUrl(c.id)}
-                    alt="" loading="lazy"
-                    onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
-                  />
-                  <div className="vcph" style={{ display: "none" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
-                  <div className="vn">{v.number > 0 ? (noChapNum ? `Volume ${v.number}` : `Volume ${v.number} — Ch. ${c.number}`) : (noChapNum ? (c.title || "Chapitre") : `Chapitre ${c.number}`)}</div>
-                </div>
-              );
-            }))}
-            {!loadingVolumes && volumes.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun volume/chapitre.</p>}
-          </div>
-        )}
+        {(() => {
+          // Tomes Nautiljon (cover + synopsis + toutes les infos scrapées) -- déjà
+          // chargés avec nautMatch (/api/nautiljon/manga), aucun appel réseau
+          // supplémentaire. Remplace la grille de chapitres bruts (mêmes covers en
+          // double sinon) : chaque carte ouvre directement le chapitre Kavita du même
+          // numéro de tome.
+          const editions = nautMatch?.editions?.editions || [];
+          const edition = pickEditionJs(editions, sel.name);
+          const nautVolumes = edition?.volumes || [];
+          if (nautVolumes.length > 0) {
+            const chapterForNumber = (numStr) => {
+              const n = parseFloat(numStr);
+              for (const v of volumes) {
+                if (v.number === n) {
+                  const c = (v.chapters || [])[0];
+                  if (c) return c;
+                }
+              }
+              return null;
+            };
+            const openForNumber = async (numStr) => {
+              const c = chapterForNumber(numStr);
+              if (!c) { show("Aucun chapitre Kavita ne correspond à ce tome."); return; }
+              try {
+                const info = await api.kavitaChapterInfo(c.id);
+                onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0, info.volumeId, info.libraryId);
+              } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+            };
+            return (
+              <div style={{ padding: "0 12px" }}>
+                {nautVolumes.map((v, i) => {
+                  const c = chapterForNumber(v.number);
+                  return (
+                    <NautVolumeCard
+                      key={v.id || i} v={v} onOpen={() => openForNumber(v.number)}
+                      onDownload={c ? () => downloadKavitaChapter(c.id, v.title || `Tome ${v.number}`, v.cover_full || v.cover_url) : null}
+                      downloaded={c ? downloadedSet.has(c.id) : false}
+                      downloading={c ? downloadingKey === c.id : false}
+                    />
+                  );
+                })}
+              </div>
+            );
+          }
+          if (loadingVolumes) return <div className="empty"><p>Chargement…</p></div>;
+          return (
+            <div className="vg vg-lg">
+              {volumes.flatMap(v => (v.chapters || []).map(c => {
+                // Kavita utilise le nombre sentinelle -100000 pour "pas de
+                // numéro de chapitre applicable" (volume à chapitre unique) --
+                // l'afficher tel quel donnerait "Ch. -100000".
+                const noChapNum = String(c.number) === "-100000";
+                return (
+                  <div
+                    key={c.id}
+                    className="vc"
+                    style={{ position: "relative" }}
+                    onClick={async () => {
+                      // Déclenche la mise en cache des pages côté Kavita avant
+                      // de demander les images -- sans cet appel préalable, la
+                      // première lecture d'un chapitre renvoie des pages
+                      // vides/noires.
+                      try {
+                        const info = await api.kavitaChapterInfo(c.id);
+                        onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0, info.volumeId, info.libraryId);
+                      } catch (e) { show(`Erreur Kavita : ${e.message}`); }
+                    }}
+                    title={c.title || (noChapNum ? `Volume ${v.number}` : `Chapitre ${c.number}`)}
+                  >
+                    <img
+                      className="vcov"
+                      src={api.kavitaChapterCoverUrl(c.id)}
+                      alt="" loading="lazy"
+                      onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
+                    />
+                    <div className="vcph" style={{ display: "none" }}>{v.number > 0 ? `T${v.number}` : (noChapNum ? "" : `Ch. ${c.number}`)}</div>
+                    <div className="vn">{v.number > 0 ? (noChapNum ? `Volume ${v.number}` : `Volume ${v.number} — Ch. ${c.number}`) : (noChapNum ? (c.title || "Chapitre") : `Chapitre ${c.number}`)}</div>
+                    <button
+                      className="btn btn-s"
+                      style={{ position: "absolute", top: 4, right: 4, fontSize: 9 }}
+                      onClick={e => { e.stopPropagation(); downloadKavitaChapter(c.id, c.title || `Volume ${v.number}`, api.kavitaChapterCoverUrl(c.id)); }}
+                      disabled={downloadingKey === c.id}
+                      title={downloadedSet.has(c.id) ? "Déjà téléchargé (hors-ligne)" : "Télécharger pour lecture hors-ligne"}
+                    >
+                      {downloadingKey === c.id ? "…" : downloadedSet.has(c.id) ? "✅" : "⬇️"}
+                    </button>
+                  </div>
+                );
+              }))}
+              {!loadingVolumes && volumes.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun volume/chapitre.</p>}
+            </div>
+          );
+        })()}
       </>
     );
   }
@@ -2873,6 +3137,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
         )}
         {isAdmin && libId != null && (
           <button className="btn btn-s" onClick={openMatchAll}>🔍 Match</button>
+        )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={pushAllVolumesToKavita} disabled={pushingAllVolumes}>{pushingAllVolumes ? "…" : "⬆️ Envoyer tous les tomes"}</button>
         )}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -3061,6 +3328,769 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
         );
       })()}
     </>
+  );
+}
+
+// Libellé d'un livre Komga : titre de métadonnée s'il existe, sinon "Livre <numéro>".
+// Portage de komga_book_label (komga_client.py).
+function komgaBookLabel(book) {
+  const metaTitle = (book?.metadata?.title || "").trim();
+  if (metaTitle) return metaTitle;
+  const number = book?.number;
+  return number != null ? `Livre ${number}` : (book?.name || "?");
+}
+
+// Titre à afficher pour une série Komga : metadata.title (éditable) si renseigné,
+// sinon name (nom de dossier brut). Portage de komga_series_title (komga_client.py).
+function komgaSeriesTitle(series) {
+  const metaTitle = (series?.metadata?.title || "").trim();
+  return metaTitle || (series?.name || "");
+}
+
+// Miroir de KavitaBrowser (voir plus haut) pour un serveur Komga externe. Différences :
+// identifiants en string (UUID), auth par simple clé API (transparent ici, géré côté
+// backend/komga_client.py), pas de notion volume/chapitre séparée (juste des "livres" à
+// plat, chacun avec son nombre de pages déjà connu -- pas d'appel chapter-info
+// préalable nécessaire avant d'ouvrir le lecteur), et aucun identifiant supplémentaire
+// requis pour la progression (juste bookId+page).
+function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
+  const [available, setAvailable] = useState(null);
+  const [errMsg, setErrMsg] = useState(null);
+  const [libraries, setLibraries] = useState([]);
+  const [libId, setLibId] = useState(null);
+  const [seriesList, setSeriesList] = useState([]);
+  const [loadingSeries, setLoadingSeries] = useState(false);
+  const [sel, setSel] = useState(null); // série sélectionnée (SeriesDto Komga)
+  const [books, setBooks] = useState([]);
+  const [loadingBooks, setLoadingBooks] = useState(false);
+  const [nautMatch, setNautMatch] = useState(null);
+  const [loadingNaut, setLoadingNaut] = useState(false);
+  const [suggested, setSuggested] = useState(null);
+  const [showMatchSearch, setShowMatchSearch] = useState(false);
+  const [matchQuery, setMatchQuery] = useState("");
+  const [matchResults, setMatchResults] = useState([]);
+  const [matchSearching, setMatchSearching] = useState(false);
+  const [matchDirectUrl, setMatchDirectUrl] = useState("");
+  const [alphaFilter, setAlphaFilter] = useState(null);
+  const [seriesSearch, setSeriesSearch] = useState("");
+  const [matchStatusFilter, setMatchStatusFilter] = useState(null);
+  const [tagFilters, setTagFilters] = useState({});
+  const [showTagPanel, setShowTagPanel] = useState(false);
+  const [matchesMap, setMatchesMap] = useState({});
+  const [autoMatching, setAutoMatching] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState([]);
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewCoverRetry, setReviewCoverRetry] = useState(0);
+  const [showMatchAll, setShowMatchAll] = useState(false);
+  const [matchAllQueue, setMatchAllQueue] = useState([]);
+  const [matchAllIndex, setMatchAllIndex] = useState(0);
+  const [pushingSeries, setPushingSeries] = useState(false);
+  const [pushingVolumes, setPushingVolumes] = useState(false);
+  const [pushingAllVolumes, setPushingAllVolumes] = useState(false);
+
+  const refreshMatchesMap = useCallback(() => {
+    api.komgaMatches().then(setMatchesMap).catch(() => {});
+  }, []);
+
+  const pushSeriesToKomga = async () => {
+    if (!sel) return;
+    setPushingSeries(true);
+    try {
+      const r = await api.komgaPushSeries(sel.id);
+      show(r.ok ? "✅ Infos série envoyées à Komga" : `⚠️ ${r.error}`);
+    } catch (e) { show(`❌ ${e.message}`); }
+    setPushingSeries(false);
+  };
+  const pushVolumesToKomga = async () => {
+    if (!sel) return;
+    setPushingVolumes(true);
+    try {
+      const r = await api.komgaPushVolumes(sel.id);
+      show(`✅ ${r.sent} tome(s) envoyé(s), ${r.unmatched} sans correspondance`);
+    } catch (e) { show(`❌ ${e.message}`); }
+    setPushingVolumes(false);
+  };
+  const [downloadedSet, setDownloadedSet] = useState(new Set());
+  const [downloadingKey, setDownloadingKey] = useState(null);
+  const refreshDownloaded = useCallback(() => {
+    offline.listDownloads().then(list => setDownloadedSet(new Set(list.filter(d => d.source === 'komga').map(d => d.itemId)))).catch(() => {});
+  }, []);
+  useEffect(() => { refreshDownloaded(); }, [refreshDownloaded]);
+  const downloadKomgaBook = async (bookId, label, totalPages, coverUrl) => {
+    if (!sel) return;
+    setDownloadingKey(bookId);
+    try {
+      const pageUrls = Array.from({ length: totalPages }, (_, i) => api.komgaPageUrl(bookId, i));
+      await offline.downloadItem({
+        key: offline.offlineKey('komga', bookId), source: 'komga',
+        seriesId: sel.id, seriesName: komgaSeriesTitle(sel) || sel.name, itemId: bookId, itemLabel: label,
+        pageUrls, coverUrl,
+      });
+      show(`✅ Téléchargé (${totalPages} pages)`);
+      refreshDownloaded();
+    } catch (e) { show(`❌ ${e.message}`); }
+    setDownloadingKey(null);
+  };
+  const pushAllVolumesToKomga = async () => {
+    const ids = seriesList.filter(s => matchesMap[s.id]).map(s => s.id);
+    if (ids.length === 0) { show("Aucune série associée à envoyer."); return; }
+    setPushingAllVolumes(true);
+    let sent = 0, unmatched = 0, errors = 0;
+    for (const id of ids) {
+      try {
+        const r = await api.komgaPushVolumes(id);
+        sent += r.sent || 0; unmatched += r.unmatched || 0;
+      } catch { errors++; }
+    }
+    setPushingAllVolumes(false);
+    show(`✅ ${sent} tome(s) envoyé(s) sur ${ids.length} série(s)${errors ? `, ${errors} erreur(s)` : ""}`);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await api.komgaHealth();
+        setAvailable(h.available);
+        setErrMsg(h.error || null);
+        if (h.available) {
+          const libs = await api.komgaLibraries();
+          setLibraries(libs);
+          if (libs.length) setLibId(libs[0].id);
+          refreshMatchesMap();
+        }
+      } catch (e) {
+        setAvailable(false);
+        setErrMsg(e.message || null);
+      }
+    })();
+  }, [refreshMatchesMap]);
+
+  useEffect(() => {
+    if (libId == null) return;
+    let cancelled = false;
+    setLoadingSeries(true);
+    setSel(null);
+    setAlphaFilter(null);
+    setSeriesSearch("");
+    setMatchStatusFilter(null);
+    setTagFilters({});
+    setShowTagPanel(false);
+    setShowMatchAll(false);
+    setMatchAllQueue([]);
+    setMatchAllIndex(0);
+    api.komgaSeries(libId)
+      .then(list => { if (!cancelled) setSeriesList(list); })
+      .catch(e => show(e.message))
+      .finally(() => { if (!cancelled) setLoadingSeries(false); });
+    return () => { cancelled = true; };
+  }, [libId]);
+
+  useEffect(() => { setReviewCoverRetry(0); }, [reviewIndex]);
+
+  const runAutoMatch = async () => {
+    if (libId == null) return;
+    setAutoMatching(true);
+    try {
+      const r = await api.komgaAutoMatch(libId);
+      if (r.error) { show(`❌ ${r.error}`); return; }
+      show(`✅ ${r.auto_matched} associée(s), ${r.not_found} sans correspondance exacte`);
+      refreshMatchesMap();
+      if (r.suggestions?.length) {
+        setReviewQueue(r.suggestions);
+        setReviewIndex(0);
+      }
+    } catch (e) { show(`❌ ${e.message}`); }
+    setAutoMatching(false);
+  };
+
+  const reviewAccept = async (url) => {
+    const item = reviewQueue[reviewIndex];
+    if (!item) return;
+    setReviewBusy(true);
+    await saveMatchFor(item.series_id, url);
+    setReviewBusy(false);
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("✅ Revue terminée");
+  };
+  const reviewReject = () => {
+    const next = reviewIndex + 1;
+    setReviewIndex(next);
+    if (next >= reviewQueue.length) show("Revue terminée");
+  };
+  const reviewCancel = () => { setReviewQueue([]); setReviewIndex(0); };
+
+  const openSeries = async (series) => {
+    setSel(series);
+    setBooks([]);
+    setLoadingBooks(true);
+    setMatchQuery(komgaSeriesTitle(series) || series.name || "");
+    try {
+      setBooks(await api.komgaBooks(series.id));
+    } catch (e) {
+      show(e.message);
+    } finally {
+      setLoadingBooks(false);
+    }
+    await loadMatchFor(series);
+  };
+
+  const loadMatchFor = async (series) => {
+    setLoadingNaut(true);
+    setNautMatch(null);
+    setSuggested(null);
+    setShowMatchSearch(false);
+    setMatchResults([]);
+    try {
+      const m = await api.komgaGetMatch(series.id);
+      if (m.matched && m.nautiljon_url) {
+        setNautMatch(await api.nautiljonManga(m.nautiljon_url));
+      } else if (isAdmin) {
+        try {
+          const results = await searchNautiljonAllVariants(komgaSeriesTitle(series) || series.name || "", 4);
+          const best = results[0];
+          if (best?.url) setSuggested(best); else setShowMatchSearch(true);
+        } catch { setShowMatchSearch(true); }
+      }
+    } catch { /* pas de fiche affichée */ }
+    setLoadingNaut(false);
+  };
+
+  const doMatchSearch = async () => {
+    if (!matchQuery.trim()) return;
+    setMatchSearching(true);
+    try {
+      setMatchResults(await searchNautiljonAllVariants(matchQuery.trim()));
+    } catch (e) { show(e.message); }
+    setMatchSearching(false);
+  };
+
+  const saveMatchFor = async (seriesId, url) => {
+    if (!seriesId || !url) return false;
+    try {
+      await api.komgaSaveMatch(seriesId, url);
+      refreshMatchesMap();
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
+  };
+
+  const saveMatch = async (url) => {
+    if (!sel) return;
+    const ok = await saveMatchFor(sel.id, url);
+    if (ok) { show("✅ Associé"); await loadMatchFor(sel); }
+  };
+
+  const unmatchFor = async (seriesId) => {
+    if (!window.confirm("Dissocier cette fiche Nautiljon ?")) return false;
+    try {
+      await api.komgaDeleteMatch(seriesId);
+      refreshMatchesMap();
+      show("Dissocié");
+      return true;
+    } catch (e) { show(`❌ ${e.message}`); return false; }
+  };
+
+  const unmatch = async () => {
+    if (!sel) return;
+    if (await unmatchFor(sel.id)) await loadMatchFor(sel);
+  };
+
+  const openMatchAll = () => {
+    const queue = seriesList.filter(s => !matchesMap[s.id]);
+    if (queue.length === 0) { show("Toutes les séries sont déjà associées."); return; }
+    setMatchAllQueue(queue);
+    setMatchAllIndex(0);
+    setShowMatchAll(true);
+  };
+
+  useEffect(() => {
+    if (!showMatchAll) return;
+    const item = matchAllQueue[matchAllIndex];
+    if (!item) return;
+    let cancelled = false;
+    setMatchQuery(komgaSeriesTitle(item) || item.name || "");
+    setMatchResults([]);
+    setMatchDirectUrl("");
+    (async () => {
+      setMatchSearching(true);
+      try {
+        const results = await searchNautiljonAllVariants(komgaSeriesTitle(item) || item.name || "", 12);
+        if (!cancelled) setMatchResults(results);
+      } catch { /* recherche auto ratée -- la barre reste utilisable à la main */ }
+      if (!cancelled) setMatchSearching(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showMatchAll, matchAllIndex, matchAllQueue]);
+
+  const matchAllAdvance = () => {
+    const next = matchAllIndex + 1;
+    if (next >= matchAllQueue.length) {
+      setShowMatchAll(false);
+      show("✅ Terminé");
+    } else {
+      setMatchAllIndex(next);
+    }
+  };
+  const matchAllPick = async (url) => {
+    const item = matchAllQueue[matchAllIndex];
+    if (!item || !url) return;
+    const ok = await saveMatchFor(item.id, url);
+    if (ok) { show("✅ Associé"); matchAllAdvance(); }
+  };
+  const matchAllSkip = () => matchAllAdvance();
+  const matchAllCancel = () => { setShowMatchAll(false); setMatchAllQueue([]); setMatchAllIndex(0); };
+
+  if (available === null) return <div className="empty"><p>Chargement…</p></div>;
+  if (available === false) return (
+    <div className="empty">
+      <div className="ei">🌐</div>
+      <p>{errMsg ? "Connexion au serveur Komga impossible." : "Aucun serveur Komga configuré."}</p>
+      {errMsg
+        ? <p style={{ fontSize: 11, color: "var(--t3)" }}>{errMsg}</p>
+        : <p style={{ fontSize: 11, color: "var(--t3)" }}>Un administrateur peut en configurer un dans Admin → Config.</p>}
+    </div>
+  );
+
+  const toggleTag = (cat, tag) => {
+    setTagFilters(prev => {
+      const cur = prev[cat] || [];
+      const next = cur.includes(tag) ? cur.filter(t => t !== tag) : [...cur, tag];
+      return { ...prev, [cat]: next };
+    });
+  };
+
+  if (sel) {
+    const seriesTitle = komgaSeriesTitle(sel) || sel.name;
+    return (
+      <>
+        <div className="sec-h">
+          <button className="btn btn-s" onClick={() => setSel(null)}>← Retour</button>
+          <span className="sec-t" style={{ marginLeft: 8 }}>{seriesTitle}</span>
+        </div>
+        {loadingNaut && <p style={{ fontSize: 11, color: "var(--t3)", padding: "0 12px 8px" }}>Recherche Nautiljon…</p>}
+
+        {nautMatch && (() => {
+          const d = nautMatch.details || {};
+          let cov = d.cover_url || d.image_url || "";
+          if (cov) cov = nautiljonMiniUrl(cov);
+          const infos = (d.raw_infos_json && typeof d.raw_infos_json === "object") ? d.raw_infos_json : {};
+          return (
+            <div style={{ display: "flex", gap: 14, padding: "0 12px 14px", alignItems: "flex-start" }}>
+              {cov && <img src={cov} alt="" style={{ width: 90, height: 126, objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  📚 {d.title || seriesTitle} <span style={{ fontWeight: 400, color: "var(--t3)", fontSize: 10 }}>(Nautiljon)</span>
+                  {isAdmin && <>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={() => setShowMatchSearch(v => !v)}>🔁 Changer</button>
+                    <button className="btn btn-s" style={{ fontSize: 9 }} onClick={unmatch}>✕ Dissocier</button>
+                    <button className="btn btn-s btn-p" style={{ fontSize: 9 }} onClick={pushSeriesToKomga} disabled={pushingSeries}>{pushingSeries ? "…" : "⬆️ Envoyer série"}</button>
+                    <button className="btn btn-s btn-p" style={{ fontSize: 9 }} onClick={pushVolumesToKomga} disabled={pushingVolumes}>{pushingVolumes ? "…" : "⬆️ Envoyer tomes"}</button>
+                  </>}
+                </div>
+                {(infos.Type || infos.Genres) && <div className="dp-tags" style={{ marginTop: 4 }}>
+                  {infos.Type && <span className="dp-tag genre-badge genre-badge-filled" style={{ background: "var(--ac)" }}>{infos.Type}</span>}
+                  {String(infos.Genres || "").split(/\s*[-,]\s*/).filter(Boolean).slice(0, 5).map((g, i) => <span key={i} className="dp-tag genre-badge genre-badge-outline" style={{ color: tagColor(g), borderColor: tagColor(g) + "88" }}>{g}</span>)}
+                </div>}
+                {d.synopsis && <p className="syn" style={{ fontSize: 11, color: "var(--t2)", marginTop: 6 }}>{d.synopsis}</p>}
+                {Object.keys(infos).length > 0 && (
+                  <div className="mg2" style={{ marginTop: 8 }}>
+                    {Object.entries(infos).map(([k, v]) => {
+                      const isTag = SEARCH_TAG_KEYS.includes(k);
+                      const tags = isTag ? String(v).split(/\s*[-,]\s*/).filter(Boolean) : [];
+                      return <div key={k} className="mi"><div className="l">{k}</div><div className="v">{isTag && tags.length ? <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{tags.map((t, i) => <span key={i} className="genre-badge genre-badge-outline" style={{ color: tagColor(t), borderColor: tagColor(t) + "55", fontSize: 10 }}>{t}</span>)}</div> : String(v)}</div></div>;
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {!nautMatch && !loadingNaut && suggested && !showMatchSearch && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <span style={{ fontSize: 11, color: "var(--t2)", flex: 1 }}>Suggestion Nautiljon : <b style={{ color: "var(--t1)" }}>{suggested.title}</b></span>
+            <button className="btn btn-s btn-p" style={{ fontSize: 10 }} onClick={() => saveMatch(suggested.url)}>✅ Associer</button>
+            <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => { setSuggested(null); setShowMatchSearch(true); }}>Autre…</button>
+          </div>
+        )}
+
+        {isAdmin && !nautMatch && !loadingNaut && showMatchSearch && (
+          <div style={{ padding: "8px 12px 14px", background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", margin: "0 12px 14px" }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 11, padding: "4px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+              <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+            </div>
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input style={{ flex: 1, fontSize: 10, padding: "4px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && saveMatch(matchDirectUrl.trim())} />
+              <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => saveMatch(matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗 Associer</button>
+            </div>
+            {matchResults.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
+              {matchResults.map((r, i) => {
+                let cov = r.cover_url || r.image_url || "";
+                if (cov) cov = nautiljonMiniUrl(cov);
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
+                    {cov && <img src={cov} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                    <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                  </div>
+                );
+              })}
+            </div>}
+          </div>
+        )}
+        {(() => {
+          // Tomes Nautiljon (cover + synopsis + toutes les infos scrapées) -- déjà
+          // chargés avec nautMatch (/api/nautiljon/manga). Remplace la grille de livres
+          // bruts (mêmes covers en double sinon) : chaque carte ouvre directement le
+          // livre Komga du même numéro de tome.
+          const editions = nautMatch?.editions?.editions || [];
+          const edition = pickEditionJs(editions, seriesTitle);
+          const nautVolumes = edition?.volumes || [];
+          if (nautVolumes.length > 0) {
+            const bookForNumber = (numStr) => {
+              const n = parseFloat(numStr);
+              return books.find(bk => bk.number === n) || null;
+            };
+            const openForNumber = (numStr) => {
+              const b = bookForNumber(numStr);
+              if (!b) { show("Aucun livre Komga ne correspond à ce tome."); return; }
+              onOpenBook(sel.id, seriesTitle, b.id, (b.media?.pagesCount) || 0, 0);
+            };
+            return (
+              <div style={{ padding: "0 12px" }}>
+                {nautVolumes.map((v, i) => {
+                  const b = bookForNumber(v.number);
+                  return (
+                    <NautVolumeCard
+                      key={v.id || i} v={v} onOpen={() => openForNumber(v.number)}
+                      onDownload={b ? () => downloadKomgaBook(b.id, v.title || `Tome ${v.number}`, (b.media?.pagesCount) || 0, v.cover_full || v.cover_url) : null}
+                      downloaded={b ? downloadedSet.has(b.id) : false}
+                      downloading={b ? downloadingKey === b.id : false}
+                    />
+                  );
+                })}
+              </div>
+            );
+          }
+          if (loadingBooks) return <div className="empty"><p>Chargement…</p></div>;
+          return (
+            <div className="vg vg-lg">
+              {books.map(b => (
+                <div
+                  key={b.id}
+                  className="vc"
+                  style={{ position: "relative" }}
+                  onClick={() => onOpenBook(sel.id, seriesTitle, b.id, (b.media?.pagesCount) || 0, 0)}
+                  title={komgaBookLabel(b)}
+                >
+                  <img
+                    className="vcov"
+                    src={api.komgaBookCoverUrl(b.id)}
+                    alt="" loading="lazy"
+                    onError={e => { e.target.style.display = "none"; e.target.nextSibling && (e.target.nextSibling.style.display = "flex"); }}
+                  />
+                  <div className="vcph" style={{ display: "none" }}>{b.number != null ? `T${b.number}` : ""}</div>
+                  <div className="vn">{komgaBookLabel(b)}</div>
+                  <button
+                    className="btn btn-s"
+                    style={{ position: "absolute", top: 4, right: 4, fontSize: 9 }}
+                    onClick={e => { e.stopPropagation(); downloadKomgaBook(b.id, komgaBookLabel(b), (b.media?.pagesCount) || 0, api.komgaBookCoverUrl(b.id)); }}
+                    disabled={downloadingKey === b.id}
+                    title={downloadedSet.has(b.id) ? "Déjà téléchargé (hors-ligne)" : "Télécharger pour lecture hors-ligne"}
+                  >
+                    {downloadingKey === b.id ? "…" : downloadedSet.has(b.id) ? "✅" : "⬇️"}
+                  </button>
+                </div>
+              ))}
+              {!loadingBooks && books.length === 0 && <p style={{ color: "var(--t3)", fontSize: 12 }}>Aucun livre.</p>}
+            </div>
+          );
+        })()}
+      </>
+    );
+  }
+
+  const komgaInProgress = (progress || []).filter(p =>
+    String(p.volume_id || '').startsWith('komga:book:') &&
+    p.current_page > 0 && p.current_page < (p.total_pages || 1) - 1
+  );
+
+  return (
+    <>
+      {komgaInProgress.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="sec-h"><span className="sec-t">📖 En cours de lecture</span><span className="cnt">{komgaInProgress.length}</span></div>
+          <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+            {komgaInProgress.map(p => {
+              const pct = p.total_pages > 0 ? Math.round(p.current_page / p.total_pages * 100) : 0;
+              const seriesId = String(p.manga_url || '').slice('komga:series:'.length);
+              return (
+                <div key={`${p.manga_url}__${p.volume_id}`} onClick={() => onResume && onResume(p)} style={{ minWidth: 100, maxWidth: 100, cursor: "pointer", flexShrink: 0 }}>
+                  <div style={{ position: "relative", width: 100, height: 142, borderRadius: "var(--r)", overflow: "hidden", background: "var(--c2)", border: "1px solid var(--brd)" }}>
+                    <img src={api.komgaCoverUrl(seriesId)} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.opacity = ".2"; }} />
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4, background: "var(--brd)" }}>
+                      <div style={{ width: pct + "%", height: "100%", background: "var(--ac)" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--t1)", marginTop: 4, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title || "Komga"}</div>
+                  <div style={{ fontSize: 9, color: "var(--t3)" }}>{pct}%</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {libraries.length > 1 && libraries.map(l => (
+          <button key={l.id} className={`btn btn-s${l.id === libId ? " btn-p" : ""}`} onClick={() => setLibId(l.id)}>{l.name}</button>
+        ))}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" style={{ marginLeft: "auto" }} onClick={runAutoMatch} disabled={autoMatching}>
+            {autoMatching ? "…" : "🪄 Matching auto"}
+          </button>
+        )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={openMatchAll}>🔍 Match</button>
+        )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={pushAllVolumesToKomga} disabled={pushingAllVolumes}>{pushingAllVolumes ? "…" : "⬆️ Envoyer tous les tomes"}</button>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          style={{ flex: 1, minWidth: 160, fontSize: 12, padding: "5px 8px" }}
+          value={seriesSearch}
+          onChange={e => setSeriesSearch(e.target.value)}
+          placeholder="Rechercher une série…"
+        />
+        <button className={`btn btn-s${!matchStatusFilter ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(null)}>Toutes</button>
+        <button className={`btn btn-s${matchStatusFilter === "matched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "matched" ? null : "matched")}>✓ Matchées</button>
+        <button className={`btn btn-s${matchStatusFilter === "unmatched" ? " btn-p" : ""}`} onClick={() => setMatchStatusFilter(matchStatusFilter === "unmatched" ? null : "unmatched")}>✗ Non matchées</button>
+        {(() => {
+          const activeTagCount = Object.values(tagFilters).reduce((s, v) => s + (v?.length || 0), 0);
+          return (
+            <button className={`ib${showTagPanel ? " on" : ""}`} onClick={() => setShowTagPanel(p => !p)} style={{ position: "relative" }} title="Filtrer par tags">
+              🏷️{activeTagCount > 0 && <span style={{ position: "absolute", top: -2, right: -2, background: "var(--ac)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 8, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeTagCount}</span>}
+            </button>
+          );
+        })()}
+      </div>
+      {loadingSeries ? <div className="empty"><p>Chargement…</p></div> :
+        seriesList.length === 0 ? <div className="empty"><div className="ei">📚</div><p>Aucune série dans cette bibliothèque.</p></div> :
+        (() => {
+          const allTags = extractAllTags(seriesList.map(s => ({ metadata_json: matchesMap[s.id]?.metadata_json || {} })));
+          const q = seriesSearch.trim().toLowerCase();
+          const base = seriesList.filter(s => {
+            const name = komgaSeriesTitle(s) || s.name || "";
+            if (q && !name.toLowerCase().includes(q)) return false;
+            const isMatched = !!matchesMap[s.id];
+            if (matchStatusFilter === "matched" && !isMatched) return false;
+            if (matchStatusFilter === "unmatched" && isMatched) return false;
+            if (!matchesTagFilters({ metadata_json: matchesMap[s.id]?.metadata_json || {} }, tagFilters)) return false;
+            return true;
+          });
+          const alphaIndex = {};
+          for (const s of base) {
+            const first = (komgaSeriesTitle(s) || s.name || "?")[0]?.toUpperCase?.() || "#";
+            const key = /[A-Z]/.test(first) ? first : "#";
+            alphaIndex[key] = (alphaIndex[key] || 0) + 1;
+          }
+          const filtered = alphaFilter
+            ? base.filter(s => { const f = (komgaSeriesTitle(s) || s.name || "?")[0].toUpperCase(); return alphaFilter === "#" ? !f.match(/[A-Z]/) : f === alphaFilter; })
+            : base;
+          return (
+            <>
+              {showTagPanel && (
+                <div className="tag-panel" style={{ marginBottom: 10 }}>
+                  {Object.keys(allTags).length === 0
+                    ? <p style={{ fontSize: 11, color: "var(--t3)" }}>Pas encore de tags -- associez des séries à Nautiljon (matching auto ou manuel) pour les voir apparaître ici.</p>
+                    : Object.entries(allTags).map(([cat, tags]) => (
+                      <div key={cat} className="tag-cat">
+                        <div className="tag-cat-title">{cat}</div>
+                        <div className="tag-chips">
+                          {tags.slice(0, 30).map(([tag, count]) => {
+                            const isOn = (tagFilters[cat] || []).includes(tag);
+                            const col = tagColor(tag);
+                            return (
+                              <span key={tag} className="tag-chip" onClick={() => toggleTag(cat, tag)}
+                                style={{ background: isOn ? col : "transparent", color: isOn ? "#fff" : col, borderColor: isOn ? col : col + "44" }}>
+                                {tag} <span style={{ opacity: .6, fontSize: 9 }}>({count})</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0, position: "sticky", top: 0, alignSelf: "flex-start" }}>
+                <button onClick={() => setAlphaFilter(null)} style={{ padding: "3px 6px", fontSize: 9, fontWeight: !alphaFilter ? 700 : 400, background: !alphaFilter ? "var(--ac)" : "var(--c2)", color: !alphaFilter ? "#fff" : "var(--t3)", border: "1px solid var(--brd)", borderRadius: 3, cursor: "pointer" }}>All</button>
+                {ALPHA_LETTERS.map(l => <button key={l} onClick={() => setAlphaFilter(l === alphaFilter ? null : l)} disabled={!alphaIndex[l]} style={{ padding: "2px 6px", fontSize: 9, fontWeight: l === alphaFilter ? 700 : 400, background: l === alphaFilter ? "var(--ac)" : "transparent", color: !alphaIndex[l] ? "var(--brd)" : l === alphaFilter ? "#fff" : "var(--t3)", border: "none", borderRadius: 2, cursor: alphaIndex[l] ? "pointer" : "default", fontFamily: "monospace", lineHeight: 1.4 }}>{l}</button>)}
+              </div>
+              {filtered.length === 0 ? (
+                <div className="empty" style={{ flex: 1 }}><p>Aucune série ne correspond.</p></div>
+              ) : (
+                <div className="mg" style={{ flex: 1 }}>
+                  {filtered.map(s => (
+                    <div key={s.id} className="mc" onClick={() => openSeries(s)}>
+                      {matchesMap[s.id] && <div className="mc-match" title="Associé à Nautiljon"><span className="badge bg">✓</span></div>}
+                      <img className="mc-cov" src={api.komgaCoverUrl(s.id)} alt="" loading="lazy" onError={e => { e.target.style.display = "none"; }} />
+                      <div className="mc-info"><div className="mc-tit">{komgaSeriesTitle(s) || s.name}</div></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            </>
+          );
+        })()
+      }
+      {reviewQueue.length > 0 && reviewIndex < reviewQueue.length && (() => {
+        const item = reviewQueue[reviewIndex];
+        const candidates = item.candidates || [];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) reviewCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 680, width: "94%", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Revue du matching auto — {reviewIndex + 1} / {reviewQueue.length}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                <div style={{ width: 130, aspectRatio: "2/3", position: "relative", flexShrink: 0 }}>
+                  <img key={reviewCoverRetry} src={`${api.komgaCoverUrl(item.series_id)}&_r=${reviewCoverRetry}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                  <div style={{ display: "none", position: "absolute", inset: 0, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 6, border: "1px solid var(--brd)", background: "var(--c2)", fontSize: 28 }}>
+                    📖
+                    <button className="btn btn-s" style={{ fontSize: 10 }} onClick={() => setReviewCoverRetry(n => n + 1)}>🔄 Actualiser</button>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Komga</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{item.series_name}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 10 }}>
+                {candidates.length > 1 ? `${candidates.length} suggestions Nautiljon -- choisis celle qui correspond :` : "Suggestion Nautiljon :"}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {candidates.map((c, i) => {
+                  let cov = c.cover || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: reviewBusy ? "default" : "pointer", border: "1px solid var(--brd)", opacity: reviewBusy ? .5 : 1 }} onClick={() => !reviewBusy && reviewAccept(c.url)}>
+                      <div style={{ width: "100%", aspectRatio: "2/3", position: "relative" }}>
+                        {cov && <img src={cov} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, display: "block" }} onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />}
+                        <div style={{ display: cov ? "none" : "flex", width: "100%", height: "100%", borderRadius: 5, background: "var(--c1)", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{c.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={reviewReject} disabled={reviewBusy}>❌ Aucun ne correspond</button>
+                <button className="btn btn-s" onClick={reviewCancel} disabled={reviewBusy}>🛑 Annuler</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {showMatchAll && matchAllQueue[matchAllIndex] && (() => {
+        const item = matchAllQueue[matchAllIndex];
+        return (
+          <div className="dp-ov" style={{ alignItems: "center", justifyContent: "center" }} onClick={e => { if (e.target === e.currentTarget) matchAllCancel(); }}>
+            <div style={{ background: "var(--c1)", border: "1px solid var(--brd)", borderRadius: "var(--r)", padding: 24, maxWidth: 720, width: "95%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 6 }}>Match — {matchAllIndex + 1} / {matchAllQueue.length} série(s) non associée(s)</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
+                <img src={api.komgaCoverUrl(item.id)} alt="" style={{ width: 110, aspectRatio: "2/3", objectFit: "cover", borderRadius: 6, border: "1px solid var(--brd)", flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--t3)" }}>Série Komga</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--t1)" }}>{komgaSeriesTitle(item) || item.name}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                <input style={{ flex: 1, fontSize: 12, padding: "5px 8px" }} value={matchQuery} onChange={e => setMatchQuery(e.target.value)} placeholder="Rechercher sur Nautiljon…" onKeyDown={e => e.key === "Enter" && doMatchSearch()} />
+                <button className="btn btn-s btn-p" onClick={doMatchSearch} disabled={matchSearching}>{matchSearching ? "…" : "🔍"}</button>
+              </div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+                <input style={{ flex: 1, fontSize: 11, padding: "5px 8px" }} value={matchDirectUrl} onChange={e => setMatchDirectUrl(e.target.value)} placeholder="Ou coller l'URL Nautiljon directe" onKeyDown={e => e.key === "Enter" && matchDirectUrl.trim() && matchAllPick(matchDirectUrl.trim())} />
+                <button className="btn btn-s" onClick={() => matchAllPick(matchDirectUrl.trim())} disabled={!matchDirectUrl.trim()}>🔗 Associer</button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--t3)", marginBottom: 8 }}>
+                {matchSearching ? "Recherche…" : matchResults.length > 0 ? `${matchResults.length} résultat(s) -- choisis celui qui correspond :` : "Aucun résultat."}
+              </div>
+              <div style={{ overflowY: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {matchResults.map((r, i) => {
+                  let cov = r.cover_url || r.image_url || "";
+                  if (cov) cov = nautiljonMiniUrl(cov);
+                  return (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 8, background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => matchAllPick(r.url)}>
+                      {cov
+                        ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 5 }} onError={e => { e.target.style.display = "none"; }} />
+                        : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 5, background: "var(--c1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
+                      <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{r.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-s" style={{ flex: 1 }} onClick={matchAllSkip}>⏭️ Passer</button>
+                <button className="btn btn-s" onClick={matchAllCancel}>🛑 Arrêter</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </>
+  );
+}
+
+// Liste des chapitres Kavita / livres Komga téléchargés pour lecture hors-ligne (voir
+// offlineStore.js) -- ouvre directement depuis IndexedDB (aucun accès réseau requis),
+// avec suppression individuelle pour libérer l'espace du navigateur.
+function OfflineDownloadsView({ show, onOpenKavita, onOpenKomga }) {
+  const [downloads, setDownloads] = useState(null);
+  const [covers, setCovers] = useState({});
+
+  const refresh = useCallback(() => {
+    offline.listDownloads().then(list => {
+      setDownloads(list);
+      const covs = {};
+      for (const d of list) if (d.cover) covs[d.key] = offline.offlineCoverUrl(d);
+      setCovers(covs);
+    }).catch(() => setDownloads([]));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const openEntry = (d) => {
+    if (d.source === 'kavita') onOpenKavita(d.seriesId, d.seriesName, d.itemId, d.totalPages);
+    else if (d.source === 'komga') onOpenKomga(d.seriesId, d.seriesName, d.itemId, d.totalPages);
+  };
+  const removeEntry = async (d) => {
+    await offline.deleteDownload(d.key);
+    show("Téléchargement supprimé");
+    refresh();
+  };
+
+  if (downloads === null) return <div className="empty"><p>Chargement…</p></div>;
+  if (downloads.length === 0) return (
+    <div className="empty">
+      <div className="ei">📥</div>
+      <p>Aucun téléchargement hors-ligne.</p>
+      <p style={{ fontSize: 11, color: "var(--t3)" }}>Téléchargez un tome depuis Kavita ou Komga (bouton ⬇️) pour le lire sans réseau.</p>
+    </div>
+  );
+  return (
+    <div className="vg vg-lg">
+      {downloads.map(d => (
+        <div key={d.key} className="vc" style={{ position: "relative" }} onClick={() => openEntry(d)} title={d.itemLabel}>
+          {covers[d.key]
+            ? <img className="vcov" src={covers[d.key]} alt="" onError={e => { e.target.style.display = "none"; }} />
+            : <div className="vcov" style={{ display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28 }}>📖</div>}
+          <div className="vn">{d.itemLabel || d.seriesName}</div>
+          <button className="btn btn-s btn-d" style={{ position: "absolute", top: 6, right: 6, fontSize: 9 }} onClick={e => { e.stopPropagation(); removeEntry(d); }}>🗑️</button>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -200,6 +200,37 @@ export const api = {
   kavitaDeleteMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
   kavitaMatches: () => request(`/kavita/matches`),
   kavitaAutoMatch: (libraryId) => request(`/kavita/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
+  kavitaPushSeries: (seriesId) => request(`/kavita/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  kavitaPushVolumes: (seriesId) => request(`/kavita/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  kavitaPushProgress: (body) => request(`/kavita/progress`, { method: "POST", body: JSON.stringify(body) }),
+
+  // Komga (serveur externe, lecture seule -- voir komga_client.py). Miroir de Kavita
+  // ci-dessus, avec des identifiants string (UUID) plutôt qu'entiers.
+  komgaHealth: () => request("/komga/health"),
+  komgaLibraries: () => request("/komga/libraries"),
+  komgaSeries: (libraryId) => request(`/komga/series?libraryId=${encodeURIComponent(libraryId)}`),
+  komgaSeriesDetail: (seriesId) => request(`/komga/series/${encodeURIComponent(seriesId)}`),
+  komgaBooks: (seriesId) => request(`/komga/series/${encodeURIComponent(seriesId)}/books`),
+  komgaCoverUrl: (seriesId) => {
+    const token = getToken();
+    return `/api/komga/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
+  },
+  komgaBookCoverUrl: (bookId) => {
+    const token = getToken();
+    return `/api/komga/book-cover/${encodeURIComponent(bookId)}?token=${encodeURIComponent(token)}`;
+  },
+  komgaPageUrl: (bookId, page) => {
+    const token = getToken();
+    return `/api/komga/read/${encodeURIComponent(bookId)}?page=${page}&token=${encodeURIComponent(token)}`;
+  },
+  komgaGetMatch: (seriesId) => request(`/komga/match/${encodeURIComponent(seriesId)}`),
+  komgaSaveMatch: (seriesId, nautiljonUrl) => request(`/komga/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
+  komgaDeleteMatch: (seriesId) => request(`/komga/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
+  komgaMatches: () => request(`/komga/matches`),
+  komgaAutoMatch: (libraryId) => request(`/komga/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
+  komgaPushSeries: (seriesId) => request(`/komga/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  komgaPushVolumes: (seriesId) => request(`/komga/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  komgaPushProgress: (body) => request(`/komga/progress`, { method: "POST", body: JSON.stringify(body) }),
 
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),
