@@ -162,6 +162,19 @@ Map<String, dynamic>? pickEdition(List<Map<String, dynamic>> editions, String se
   return editions.first;
 }
 
+// Convertit une date Nautiljon "JJ/MM/AAAA" (ex. "Date de parution VF",
+// voir les champs "extra" d'un tome, NautiljonService.mangaEditions) au
+// format ISO "AAAA-MM-JJ" attendu par les API Kavita/Komga -- null si le
+// texte ne correspond pas à ce format.
+String? parseFrenchDate(String s) {
+  final m = RegExp(r'^(\d{1,2})/(\d{1,2})/(\d{4})$').firstMatch(s.trim());
+  if (m == null) return null;
+  final d = m.group(1)!.padLeft(2, '0');
+  final mo = m.group(2)!.padLeft(2, '0');
+  final y = m.group(3)!;
+  return '$y-$mo-$d';
+}
+
 // Nettoie un synopsis scrapé sur Nautiljon : le texte source contient des
 // liens vers les personnages/noms cités (<a>Nom</a>), et le scraping les
 // laisse chacun sur leur propre ligne -- ça casse des phrases en plein

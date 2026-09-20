@@ -101,12 +101,45 @@ Future<(int, int)> pushNautVolumesToKomga(
     if (matches.isEmpty) { unmatched++; continue; }
     final title = (nv['title'] ?? '').toString().trim();
     final synopsis = (nv['synopsis'] ?? '').toString().trim();
-    if (title.isEmpty && synopsis.isEmpty) continue;
+    // "extra" (voir NautiljonService.mangaEditions) : tout ce qui est
+    // détaillé sur la carte du tome (éditeur, auteur, traducteur, EAN,
+    // date de parution, genres, thèmes, ...) -- pas seulement titre/résumé.
+    // Komga n'a pas de champ "genres" au niveau livre (seulement "tags"),
+    // genres et thèmes y sont donc réunis.
+    final extra = (nv['extra'] is Map) ? Map<String, dynamic>.from(nv['extra'] as Map) : const <String, dynamic>{};
+    String extraVal(List<String> keys) {
+      for (final k in keys) {
+        final v = extra[k]?.toString().trim();
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return '';
+    }
+    final isbn = extraVal(['Code EAN', 'ISBN', 'EAN']);
+    final releaseDate = parseFrenchDate(extraVal(['Date de parution VF', 'Date de parution VO']));
+    final genres = splitTagList(extraVal(['Genres', 'Genre']));
+    final themes = splitTagList(extraVal(['Thème', 'Thèmes', 'Theme', 'Themes']));
+    final tags = [...genres, ...themes];
+    final writers = splitTagList(extraVal(['Auteur', 'Auteurs']));
+    final translators = splitTagList(extraVal(['Traducteur', 'Traducteurs']));
+    final publishers = splitTagList(extraVal(['Éditeur VF', 'Éditeurs VF', 'Éditeur VO', 'Éditeurs VO']));
+    if (title.isEmpty && synopsis.isEmpty && isbn.isEmpty && releaseDate == null &&
+        tags.isEmpty && writers.isEmpty && translators.isEmpty && publishers.isEmpty) {
+      continue;
+    }
+    final authors = <Map<String, String>>[
+      ...writers.map((n) => {'name': n, 'role': 'writer'}),
+      ...translators.map((n) => {'name': n, 'role': 'translator'}),
+      ...publishers.map((n) => {'name': n, 'role': 'publisher'}),
+    ];
     for (final b in matches) {
       final bookId = b['id'] as String;
       final patch = <String, dynamic>{};
       if (title.isNotEmpty) { patch['title'] = title; patch['titleLock'] = true; }
       if (synopsis.isNotEmpty) { patch['summary'] = synopsis; patch['summaryLock'] = true; }
+      if (isbn.isNotEmpty) { patch['isbn'] = isbn; patch['isbnLock'] = true; }
+      if (releaseDate != null) { patch['releaseDate'] = releaseDate; patch['releaseDateLock'] = true; }
+      if (tags.isNotEmpty) { patch['tags'] = tags; patch['tagsLock'] = true; }
+      if (authors.isNotEmpty) { patch['authors'] = authors; patch['authorsLock'] = true; }
       try {
         await state.komga.updateBookMetadata(bookId, patch);
         sent++;
@@ -1241,7 +1274,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
         backgroundColor: AppTheme.bg,
         title: Text('Envoyer les tomes vers Komga ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
         content: Text(
-          'Le titre et le résumé de chaque tome Nautiljon vont être écrits sur le livre Komga du même numéro, puis verrouillés.',
+          'Titre, résumé, ISBN, date de parution, genres/thèmes, auteur, traducteur et éditeur de chaque tome Nautiljon vont être écrits sur le livre Komga du même numéro, puis verrouillés.',
           style: TextStyle(color: AppTheme.t2, fontSize: 12),
         ),
         actions: [
