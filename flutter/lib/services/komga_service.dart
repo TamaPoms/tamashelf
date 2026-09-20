@@ -135,6 +135,15 @@ class KomgaService {
     await _request('PATCH', '/api/v1/books/$bookId/metadata', jsonBody: patch);
   }
 
+  // Progression de lecture (page courante) -- écrite à chaque changement de
+  // page pendant la lecture dans TamaShelf (voir onlineProgressPusher,
+  // reader_screen.dart) pour que Komga (et ses propres apps) la voie aussi.
+  // "completed" omis : Komga le déduit lui-même de la page par rapport au
+  // nombre total de pages du livre.
+  Future<void> pushProgress(String bookId, int page) async {
+    await _request('PATCH', '/api/v1/books/$bookId/read-progress', jsonBody: {'page': page});
+  }
+
   Future<List<Map<String, dynamic>>> booksInSeries(String seriesId, {int pageSize = 500}) async {
     final body = {
       'condition': {

@@ -31,6 +31,14 @@ class ReaderScreen extends StatefulWidget {
   // La proposition "tome suivant" s'appuie sur state.db.getVolumes (bibliothèque
   // locale) -- sans objet hors CBZ local.
   final bool enableNextVolume;
+  // Pousse la page courante vers le serveur d'origine (Kavita/Komga, voir
+  // kavita_screen.dart/komga_screen.dart) à chaque changement de page, EN
+  // PLUS de la progression locale/TamaShelf (state.progress) déjà gérée
+  // par _saveProgress -- pour que la progression de lecture soit visible
+  // aussi dans Kavita/Komga eux-mêmes (leurs apps officielles, etc.).
+  // Fire-and-forget : les erreurs (hors ligne, tome/livre non identifiable)
+  // sont à la charge du closure, jamais bloquant pour la lecture.
+  final Future<void> Function(int page)? onlineProgressPusher;
 
   const ReaderScreen({
     super.key,
@@ -44,6 +52,7 @@ class ReaderScreen extends StatefulWidget {
     this.progressMangaUrl,
     this.progressVolumeId,
     this.enableNextVolume = true,
+    this.onlineProgressPusher,
   });
 
   @override
@@ -255,6 +264,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       totalPages: _totalPages,
       title: widget.title,
     );
+    widget.onlineProgressPusher?.call(_currentPage);
   }
 
   bool get _splitActive => !_doublePage && _splitWide;

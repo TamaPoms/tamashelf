@@ -154,6 +154,9 @@ Future<void> openKomgaBook(
         if (local != null) return local;
         return komga.pageBytes(bookId, page);
       },
+      onlineProgressPusher: (page) async {
+        try { await komga.pushProgress(bookId, page); } catch (_) {}
+      },
       progressMangaUrl: 'komga:series:$seriesId',
       progressVolumeId: 'komga:book:$bookId',
       enableNextVolume: false,

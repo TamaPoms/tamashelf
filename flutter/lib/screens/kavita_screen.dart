@@ -158,6 +158,12 @@ Future<void> _openKavitaChapter(
   required int chapterId,
   required int totalPages,
   int startPage = 0,
+  // Nécessaires pour pousser la progression vers Kavita (ProgressDto) --
+  // connus seulement quand chapter-info a été appelé (voir
+  // openKavitaChapterFresh) ; absents en lecture hors-ligne (chapitre
+  // téléchargé), la progression n'est alors pas remontée à Kavita.
+  int? volumeId,
+  int? libraryId,
 }) async {
   final state = context.read<AppState>();
   final kavita = state.kavita;
@@ -176,6 +182,13 @@ Future<void> _openKavitaChapter(
         if (local != null) return local;
         return kavita.pageBytes(chapterId, page);
       },
+      onlineProgressPusher: (volumeId != null && libraryId != null)
+          ? (page) async {
+              try {
+                await kavita.pushProgress(seriesId: seriesId, volumeId: volumeId, chapterId: chapterId, libraryId: libraryId, pageNum: page);
+              } catch (_) {}
+            }
+          : null,
       progressMangaUrl: 'kavita:series:$seriesId',
       progressVolumeId: 'kavita:chapter:$chapterId',
       enableNextVolume: false,
@@ -188,7 +201,10 @@ Future<void> _openKavitaChapter(
 // chapitre renvoie des pages vides/noires (voir kavita_service.dart). Sauf
 // si le chapitre est déjà téléchargé : on évite alors tout appel réseau
 // (nombre de pages repris du manifeste local) pour une vraie lecture
-// hors-ligne.
+// hors-ligne. chapter-info renvoie aussi volumeId/libraryId, nécessaires
+// pour remonter la progression de lecture vers Kavita (voir
+// _openKavitaChapter/onlineProgressPusher) -- absents côté manifeste de
+// téléchargement, la progression n'est donc pas remontée en hors-ligne.
 Future<void> openKavitaChapterFresh(
   BuildContext context, {
   required int seriesId,
@@ -209,9 +225,12 @@ Future<void> openKavitaChapterFresh(
   try {
     final info = await state.kavita.chapterInfo(chapterId);
     final pages = (info['pages'] as num?)?.toInt() ?? fallbackPages;
+    final volumeId = (info['volumeId'] as num?)?.toInt();
+    final libraryId = (info['libraryId'] as num?)?.toInt();
     if (!context.mounted) return;
     await _openKavitaChapter(context,
-        seriesId: seriesId, seriesName: seriesName, chapterId: chapterId, totalPages: pages, startPage: startPage);
+        seriesId: seriesId, seriesName: seriesName, chapterId: chapterId, totalPages: pages, startPage: startPage,
+        volumeId: volumeId, libraryId: libraryId);
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur Kavita : $e'), backgroundColor: AppTheme.ros));

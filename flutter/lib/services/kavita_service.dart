@@ -225,6 +225,26 @@ class KavitaService {
     await _request('POST', '/api/Chapter/update', jsonBody: chapter);
   }
 
+  // Progression de lecture (page courante) -- écrite à chaque changement de
+  // page pendant la lecture dans TamaShelf (voir onlineProgressPusher,
+  // reader_screen.dart) pour que Kavita (et ses propres apps) la voie
+  // aussi. Les 4 identifiants sont requis par l'API (ProgressDto).
+  Future<void> pushProgress({
+    required int seriesId,
+    required int volumeId,
+    required int chapterId,
+    required int libraryId,
+    required int pageNum,
+  }) async {
+    await _request('POST', '/api/Reader/progress', jsonBody: {
+      'seriesId': seriesId,
+      'volumeId': volumeId,
+      'chapterId': chapterId,
+      'libraryId': libraryId,
+      'pageNum': pageNum,
+    });
+  }
+
   Future<List<Map<String, dynamic>>> volumes(int seriesId) async {
     final resp = await _request('GET', '/api/Series/volumes', params: {'seriesId': '$seriesId'});
     return (jsonDecode(resp.body) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
