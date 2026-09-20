@@ -892,6 +892,10 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   final Set<String> _selected = {};
   bool _downloadBusy = false;
   bool _pushing = false;
+  List<Map<String, dynamic>>? _nautVolumes;
+  String? _nautEditionName;
+  bool _loadingNautVolumes = false;
+  String? _nautVolumesError;
 
   @override
   void initState() {
@@ -948,7 +952,67 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
 
   Future<void> _unmatch() async {
     await context.read<AppState>().nautiljon.deleteMatch('komga', widget.seriesId);
-    if (mounted) setState(() => _details = null);
+    if (mounted) setState(() { _details = null; _nautVolumes = null; });
+  }
+
+  // Récupère les tomes Nautiljon de l'édition correspondant à la série
+  // (voir pickEdition). Chargement à la demande (bouton), pas automatique.
+  Future<void> _loadNautVolumes() async {
+    final naut = context.read<AppState>().nautiljon;
+    final match = naut.matchFor('komga', widget.seriesId);
+    if (match == null) return;
+    setState(() { _loadingNautVolumes = true; _nautVolumesError = null; });
+    try {
+      final editions = await naut.mangaEditions(match['nautiljon_url'] as String);
+      final edition = pickEdition(editions, widget.seriesName);
+      if (!mounted) return;
+      setState(() {
+        _nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+        _nautEditionName = (edition?['name'] ?? '').toString();
+        _loadingNautVolumes = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _loadingNautVolumes = false; _nautVolumesError = '$e'; });
+    }
+  }
+
+  Widget _nautVolumeCard(Map<String, dynamic> v) {
+    final cover = (v['cover_url'] ?? '').toString();
+    final number = (v['number'] ?? '').toString();
+    final title = (v['title'] ?? '').toString();
+    final synopsis = (v['synopsis'] ?? '').toString();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.brd, width: 0.5)),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+          width: 60, height: 86,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: cover.isEmpty
+                ? Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))
+                : Image.network(cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
+              style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
+              maxLines: 2, overflow: TextOverflow.ellipsis,
+            ),
+            if (synopsis.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(synopsis, style: TextStyle(color: AppTheme.t3, fontSize: 11), maxLines: 5, overflow: TextOverflow.ellipsis),
+            ],
+          ]),
+        ),
+      ]),
+    );
   }
 
   Future<void> _pushToServer() async {
@@ -1187,6 +1251,30 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                         : const Icon(Icons.cloud_upload_outlined, size: 16),
                     label: const Text('Envoyer les infos vers Komga'),
                   ),
+                ],
+                if (match != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _loadingNautVolumes ? null : _loadNautVolumes,
+                    icon: _loadingNautVolumes
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.menu_book_outlined, size: 16),
+                    label: Text(_nautVolumes == null ? 'Matcher les tomes Nautiljon' : 'Recharger les tomes Nautiljon'),
+                  ),
+                  if (_nautVolumesError != null)
+                    Padding(padding: const EdgeInsets.only(top: 6), child: Text(_nautVolumesError!, style: TextStyle(color: AppTheme.ros, fontSize: 11))),
+                  if (_nautVolumes != null) ...[
+                    const SizedBox(height: 10),
+                    if (_nautEditionName != null && _nautEditionName!.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text('Édition : ${_nautEditionName!}', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
+                      ),
+                    if (_nautVolumes!.isEmpty)
+                      Text('Aucun tome trouvé sur Nautiljon.', style: TextStyle(color: AppTheme.t3, fontSize: 12))
+                    else
+                      Column(children: _nautVolumes!.map(_nautVolumeCard).toList()),
+                  ],
                 ],
                 if (_showSearch) ...[
                   const SizedBox(height: 14),

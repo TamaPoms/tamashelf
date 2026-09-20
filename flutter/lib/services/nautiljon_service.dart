@@ -132,6 +132,36 @@ String stripEditionSuffix(String name) {
   return best > 0 ? n.substring(0, best).trim() : n;
 }
 
+// Choisit, parmi les éditions Nautiljon d'une série (voir
+// NautiljonService.mangaEditions), celle à utiliser pour afficher les tomes :
+// si le titre de la série source (Kavita/Komga) porte un suffixe d'édition
+// (même liste que stripEditionSuffix -- "Deluxe", "Édition Originale", ...),
+// on cherche l'édition Nautiljon dont le nom correspond ; sinon on prend
+// l'édition "standard" (nom vide ou contenant "standard"), ou à défaut la
+// première renvoyée par Nautiljon.
+Map<String, dynamic>? pickEdition(List<Map<String, dynamic>> editions, String seriesTitle) {
+  if (editions.isEmpty) return null;
+  if (editions.length == 1) return editions.first;
+  final low = seriesTitle.toLowerCase();
+  final starts = _editionSuffixes.map((s) => low.indexOf(s)).where((i) => i >= 0);
+  if (starts.isNotEmpty) {
+    final suffixKey = normalizeMatchKey(seriesTitle.substring(starts.reduce((a, b) => a < b ? a : b)));
+    for (final ed in editions) {
+      final edKey = normalizeMatchKey((ed['name'] ?? '').toString());
+      if (edKey.isNotEmpty && suffixKey.contains(edKey)) return ed;
+    }
+    for (final ed in editions) {
+      final edWords = normalizeMatchKey((ed['name'] ?? '').toString()).split(' ');
+      if (edWords.any((w) => w.length > 2 && suffixKey.contains(w))) return ed;
+    }
+  }
+  for (final ed in editions) {
+    final n = normalizeMatchKey((ed['name'] ?? '').toString());
+    if (n.isEmpty || n.contains('standard')) return ed;
+  }
+  return editions.first;
+}
+
 // Nettoie un synopsis scrapé sur Nautiljon : le texte source contient des
 // liens vers les personnages/noms cités (<a>Nom</a>), et le scraping les
 // laisse chacun sur leur propre ligne -- ça casse des phrases en plein
@@ -586,6 +616,42 @@ class NautiljonService {
       'genres': pickAll(['Genre', 'Genres']),
       'themes': pickAll(['Thème', 'Thèmes', 'Theme', 'Themes']),
     };
+  }
+
+  // Éditions + tomes d'une série Nautiljon (portage de manga_editions /
+  // _editions_depuis_reponse, nautiljon_db.py) -- même requête que
+  // mangaDetails() (/api/serie/details), qui ignorait jusqu'ici le champ
+  // "editions" de la réponse. Une série peut avoir plusieurs éditions
+  // (standard, deluxe, ...), chacune avec sa propre liste de tomes ; voir
+  // pickEdition() pour choisir laquelle afficher.
+  Future<List<Map<String, dynamic>>> mangaEditions(String url) async {
+    if (url.isEmpty) return [];
+    final data = await _get('/api/serie/details', {'url': url});
+    if (data == null) return [];
+    final editionsRaw = (data['editions'] as List?) ?? [];
+    return editionsRaw.map((e) {
+      final ed = Map<String, dynamic>.from(e as Map);
+      final volumesRaw = (ed['volumes'] as List?) ?? [];
+      final volumes = volumesRaw.map((v) {
+        final vol = Map<String, dynamic>.from(v as Map);
+        final coverFull = imageUrl((vol['image_jpg'] ?? '').toString());
+        final coverMini = imageUrl((vol['image_mini_jpg'] ?? '').toString());
+        return {
+          'id': vol['id'],
+          'number': (vol['numero'] ?? '').toString(),
+          'title': (vol['titre'] ?? '').toString(),
+          'synopsis': cleanSynopsis((vol['synopsis'] ?? '').toString()),
+          'cover_url': coverFull.isNotEmpty ? coverFull : coverMini,
+          'url': (vol['url'] ?? '').toString(),
+        };
+      }).toList();
+      return {
+        'id': ed['id'],
+        'name': (ed['nom'] ?? '').toString(),
+        'status': (ed['statut'] ?? '').toString(),
+        'volumes': volumes,
+      };
+    }).toList();
   }
 
   // ── Matching auto (portage de kavita_auto_match, main.py) ──
