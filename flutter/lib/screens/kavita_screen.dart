@@ -1131,13 +1131,25 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     }
   }
 
+  // La fiche Nautiljon complète (synopsis, auteur, dessinateur, éditeur,
+  // genres, thèmes, ...) est mise en cache dans l'association (voir
+  // NautiljonService.cachedDetails/cacheDetails) -- évite de la
+  // retélécharger à chaque ouverture de la fiche série. Se rafraîchit via
+  // le bouton "Rafraîchir les tags" (refreshMissingTags, qui met aussi ce
+  // cache à jour au passage).
   Future<void> _loadMatchDetails() async {
     final naut = context.read<AppState>().nautiljon;
     final match = naut.matchFor('kavita', '${widget.seriesId}');
     if (match == null) return;
+    final cached = naut.cachedDetails('kavita', '${widget.seriesId}');
+    if (cached != null) {
+      setState(() => _details = cached);
+      return;
+    }
     setState(() => _loadingDetails = true);
     final details = await naut.mangaDetails(match['nautiljon_url'] as String);
     if (mounted) setState(() { _details = details; _loadingDetails = false; });
+    if (details != null) await naut.cacheDetails('kavita', '${widget.seriesId}', details);
   }
 
   Future<void> _search() async {

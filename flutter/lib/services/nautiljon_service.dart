@@ -451,6 +451,25 @@ class NautiljonService {
     await _saveMatches();
   }
 
+  // Cache de la fiche Nautiljon complète (mangaDetails -- synopsis, auteur,
+  // dessinateur, éditeur, type, statut, pays, année, ...) d'une série
+  // associée, même principe que cacheVolumes -- évite un appel réseau à
+  // chaque ouverture de la fiche série. Rafraîchi en même temps que les
+  // tags (voir refreshMissingTags), qui appelle déjà mangaDetails().
+  Map<String, dynamic>? cachedDetails(String source, String seriesId) {
+    final m = matchFor(source, seriesId);
+    final cache = m?['details_cache'];
+    return (cache is Map) ? Map<String, dynamic>.from(cache) : null;
+  }
+
+  Future<void> cacheDetails(String source, String seriesId, Map<String, dynamic> details) async {
+    final key = matchKey(source, seriesId);
+    final m = _matches[key];
+    if (m == null) return;
+    _matches[key] = {...m, 'details_cache': details};
+    await _saveMatches();
+  }
+
   // Associations sauvegardées avant l'ajout des tags (voir saveMatch) --
   // n'ont pas de 'metadata', ou une metadata vide. Repasse dessus pour
   // aller chercher leurs tags sans avoir à tout ré-associer à la main.
@@ -459,6 +478,7 @@ class NautiljonService {
   Future<int> refreshMissingTags({bool force = false, void Function(int done, int total)? onProgress}) async {
     final entries = _matches.entries.toList();
     var updated = 0;
+    var touched = false;
     for (var i = 0; i < entries.length; i++) {
       final sid = entries[i].key;
       final m = entries[i].value;
@@ -473,13 +493,21 @@ class NautiljonService {
         final details = await mangaDetails(url);
         final newMeta = _tagMetadataFrom(details);
         if (newMeta.isNotEmpty) {
-          _matches[sid] = {...m, 'metadata': newMeta};
+          _matches[sid] = {...(_matches[sid] ?? m), 'metadata': newMeta};
           updated++;
+          touched = true;
+        }
+        // Rafraîchit aussi la fiche complète mise en cache (voir
+        // cacheDetails) au passage -- même appel mangaDetails(), pas de
+        // coût réseau supplémentaire.
+        if (details != null) {
+          _matches[sid] = {...(_matches[sid] ?? m), 'details_cache': details};
+          touched = true;
         }
       }
       onProgress?.call(i + 1, entries.length);
     }
-    if (updated > 0) await _saveMatches();
+    if (touched) await _saveMatches();
     return updated;
   }
 
