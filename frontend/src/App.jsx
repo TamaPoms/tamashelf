@@ -2683,6 +2683,29 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
     show(`✅ ${sent} tome(s) envoyé(s) sur ${ids.length} série(s)${errors ? `, ${errors} erreur(s)` : ""}`);
   };
 
+  // Cache mémoire (durée de la session, pas persisté) de la fiche Nautiljon complète
+  // {seriesId: résultat de /api/nautiljon/manga} -- évite de rappeler l'API à chaque
+  // ouverture d'une série déjà consultée. loadMatchFor le consulte en premier ;
+  // cacheAllVolumesKavita le pré-remplit en masse pour toutes les séries associées
+  // (utile pour ouvrir leur fiche instantanément juste après).
+  const [nautCache, setNautCache] = useState({});
+  const [cachingVolumes, setCachingVolumes] = useState(false);
+  const cacheAllVolumesKavita = async () => {
+    const targets = seriesList.filter(s => matchesMap[s.id] && !nautCache[s.id]);
+    if (targets.length === 0) { show("Toutes les séries associées sont déjà en cache."); return; }
+    setCachingVolumes(true);
+    let cached = 0, errors = 0;
+    for (const s of targets) {
+      try {
+        const data = await api.nautiljonManga(matchesMap[s.id].nautiljon_url);
+        setNautCache(prev => ({ ...prev, [s.id]: data }));
+        cached++;
+      } catch { errors++; }
+    }
+    setCachingVolumes(false);
+    show(`✅ ${cached} série(s) mise(s) en cache${errors ? `, ${errors} erreur(s)` : ""}`);
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -2792,7 +2815,13 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
     try {
       const m = await api.kavitaGetMatch(series.id);
       if (m.matched && m.nautiljon_url) {
-        setNautMatch(await api.nautiljonManga(m.nautiljon_url));
+        if (nautCache[series.id]) {
+          setNautMatch(nautCache[series.id]);
+        } else {
+          const data = await api.nautiljonManga(m.nautiljon_url);
+          setNautCache(prev => ({ ...prev, [series.id]: data }));
+          setNautMatch(data);
+        }
       } else if (isAdmin) {
         try {
           const results = await searchNautiljonAllVariants(series.name || "", 4);
@@ -3141,6 +3170,9 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
         {isAdmin && libId != null && (
           <button className="btn btn-s" onClick={pushAllVolumesToKavita} disabled={pushingAllVolumes}>{pushingAllVolumes ? "…" : "⬆️ Envoyer tous les tomes"}</button>
         )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={cacheAllVolumesKavita} disabled={cachingVolumes}>{cachingVolumes ? "…" : "📥 Récupérer les infos des tomes"}</button>
+        )}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         <input
@@ -3447,6 +3479,27 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
     show(`✅ ${sent} tome(s) envoyé(s) sur ${ids.length} série(s)${errors ? `, ${errors} erreur(s)` : ""}`);
   };
 
+  // Voir l'équivalent dans KavitaBrowser (nautCache) -- même principe : cache mémoire
+  // de session pour /api/nautiljon/manga, consulté par loadMatchFor et pré-rempli en
+  // masse par cacheAllVolumesKomga.
+  const [nautCache, setNautCache] = useState({});
+  const [cachingVolumes, setCachingVolumes] = useState(false);
+  const cacheAllVolumesKomga = async () => {
+    const targets = seriesList.filter(s => matchesMap[s.id] && !nautCache[s.id]);
+    if (targets.length === 0) { show("Toutes les séries associées sont déjà en cache."); return; }
+    setCachingVolumes(true);
+    let cached = 0, errors = 0;
+    for (const s of targets) {
+      try {
+        const data = await api.nautiljonManga(matchesMap[s.id].nautiljon_url);
+        setNautCache(prev => ({ ...prev, [s.id]: data }));
+        cached++;
+      } catch { errors++; }
+    }
+    setCachingVolumes(false);
+    show(`✅ ${cached} série(s) mise(s) en cache${errors ? `, ${errors} erreur(s)` : ""}`);
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -3545,7 +3598,13 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
     try {
       const m = await api.komgaGetMatch(series.id);
       if (m.matched && m.nautiljon_url) {
-        setNautMatch(await api.nautiljonManga(m.nautiljon_url));
+        if (nautCache[series.id]) {
+          setNautMatch(nautCache[series.id]);
+        } else {
+          const data = await api.nautiljonManga(m.nautiljon_url);
+          setNautCache(prev => ({ ...prev, [series.id]: data }));
+          setNautMatch(data);
+        }
       } else if (isAdmin) {
         try {
           const results = await searchNautiljonAllVariants(komgaSeriesTitle(series) || series.name || "", 4);
@@ -3856,6 +3915,9 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
         )}
         {isAdmin && libId != null && (
           <button className="btn btn-s" onClick={pushAllVolumesToKomga} disabled={pushingAllVolumes}>{pushingAllVolumes ? "…" : "⬆️ Envoyer tous les tomes"}</button>
+        )}
+        {isAdmin && libId != null && (
+          <button className="btn btn-s" onClick={cacheAllVolumesKomga} disabled={cachingVolumes}>{cachingVolumes ? "…" : "📥 Récupérer les infos des tomes"}</button>
         )}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>

@@ -223,6 +223,8 @@ class _KomgaScreenState extends State<KomgaScreen> {
   String _pushAllStatus = '';
   bool _pushingAllVolumes = false;
   String _pushAllVolumesStatus = '';
+  bool _cachingVolumes = false;
+  String _cacheVolumesStatus = '';
 
   KomgaService get _komga => context.read<AppState>().komga;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -462,6 +464,53 @@ class _KomgaScreenState extends State<KomgaScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('$totalSent tome(s) envoyé(s)${seriesFailed > 0 ? ', $seriesFailed série(s) en erreur' : ''}.'),
       backgroundColor: seriesFailed > 0 ? AppTheme.ros : AppTheme.grn,
+    ));
+  }
+
+  // Met en cache (voir NautiljonService.cacheVolumes) les tomes Nautiljon de toutes
+  // les séries associées qui n'en ont pas encore -- pour ouvrir leur fiche
+  // instantanément sans attendre mangaEditions() à chaque fois. N'écrase JAMAIS un
+  // cache déjà présent (contrairement à _pushAllVolumesToServer qui, lui, renvoie
+  // systématiquement vers Komga) : si une série est à jour, on ne la retouche pas.
+  Future<void> _cacheAllVolumes() async {
+    if (_cachingVolumes) return;
+    final matched = _seriesList.where((s) => _naut.matchFor('komga', s['id'] as String) != null).toList();
+    if (matched.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Aucune série associée.')));
+      return;
+    }
+    setState(() { _cachingVolumes = true; _cacheVolumesStatus = '0/${matched.length}'; });
+    var cached = 0;
+    var skipped = 0;
+    var failed = 0;
+    for (var i = 0; i < matched.length; i++) {
+      final sid = matched[i]['id'] as String;
+      final seriesName = komgaSeriesTitle(matched[i]);
+      if (_naut.cachedVolumes('komga', sid) != null) {
+        skipped++;
+      } else {
+        final match = _naut.matchFor('komga', sid)!;
+        try {
+          final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
+          final edition = pickEdition(editions, seriesName);
+          if (edition != null) {
+            final vols = ((edition['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+            await _naut.cacheVolumes('komga', sid, (edition['name'] ?? '').toString(), vols);
+            cached++;
+          } else {
+            failed++;
+          }
+        } catch (_) {
+          failed++;
+        }
+      }
+      if (mounted) setState(() => _cacheVolumesStatus = '${i + 1}/${matched.length}');
+    }
+    if (!mounted) return;
+    setState(() => _cachingVolumes = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$cached série(s) mise(s) en cache${skipped > 0 ? ', $skipped déjà à jour' : ''}${failed > 0 ? ', $failed en erreur' : ''}.'),
+      backgroundColor: failed > 0 ? AppTheme.ros : AppTheme.grn,
     ));
   }
 
@@ -753,6 +802,17 @@ class _KomgaScreenState extends State<KomgaScreen> {
                         ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.menu_book_outlined, size: 16),
                     label: Text(_pushingAllVolumes ? 'Envoi… $_pushAllVolumesStatus' : 'Envoyer tous les tomes vers Komga', style: const TextStyle(fontSize: 12)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _cachingVolumes ? null : _cacheAllVolumes,
+                    icon: _cachingVolumes
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.download_outlined, size: 16),
+                    label: Text(_cachingVolumes ? 'Récupération… $_cacheVolumesStatus' : 'Récupérer les infos des tomes', style: const TextStyle(fontSize: 12)),
                   ),
                 ),
                 const SizedBox(height: 12),
