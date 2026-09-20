@@ -80,6 +80,44 @@ Future<String?> pushNautiljonToKomga(BuildContext context, {required String seri
   }
 }
 
+// Associe chaque tome Nautiljon (par numéro) au livre Komga du même numéro
+// (Komga n'a pas de notion volume/chapitre séparée -- un livre = un tome),
+// et pousse titre/résumé dessus. Renvoie (envoyés, sans correspondance).
+Future<(int, int)> pushNautVolumesToKomga(
+  BuildContext context, {
+  required List<Map<String, dynamic>> books,
+  required List<Map<String, dynamic>> nautVolumes,
+}) async {
+  final state = context.read<AppState>();
+  var sent = 0;
+  var unmatched = 0;
+  for (final nv in nautVolumes) {
+    final volNum = num.tryParse((nv['number'] ?? '').toString().trim());
+    if (volNum == null) { unmatched++; continue; }
+    final matches = books.where((b) {
+      final bNum = b['number'] as num?;
+      return bNum != null && bNum == volNum;
+    }).toList();
+    if (matches.isEmpty) { unmatched++; continue; }
+    final title = (nv['title'] ?? '').toString().trim();
+    final synopsis = (nv['synopsis'] ?? '').toString().trim();
+    if (title.isEmpty && synopsis.isEmpty) continue;
+    for (final b in matches) {
+      final bookId = b['id'] as String;
+      final patch = <String, dynamic>{};
+      if (title.isNotEmpty) { patch['title'] = title; patch['titleLock'] = true; }
+      if (synopsis.isNotEmpty) { patch['summary'] = synopsis; patch['summaryLock'] = true; }
+      try {
+        await state.komga.updateBookMetadata(bookId, patch);
+        sent++;
+      } catch (_) {
+        // On continue avec les tomes suivants même si l'un échoue.
+      }
+    }
+  }
+  return (sent, unmatched);
+}
+
 Volume _komgaVolume(String seriesId, String bookId, int totalPages) => Volume(
       id: bookId.hashCode,
       cbzFolder: 'komga:series:$seriesId',
@@ -147,6 +185,8 @@ class _KomgaScreenState extends State<KomgaScreen> {
   String _refreshTagsStatus = '';
   bool _pushingAll = false;
   String _pushAllStatus = '';
+  bool _pushingAllVolumes = false;
+  String _pushAllVolumesStatus = '';
 
   KomgaService get _komga => context.read<AppState>().komga;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -329,6 +369,63 @@ class _KomgaScreenState extends State<KomgaScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('$ok envoyée(s)${failed > 0 ? ', $failed en erreur' : ''}.'),
       backgroundColor: failed > 0 ? AppTheme.ros : AppTheme.grn,
+    ));
+  }
+
+  // Pour chaque série associée : charge ses livres Komga + ses tomes
+  // Nautiljon (édition choisie via pickEdition), puis pousse titre/résumé
+  // tome par tome (voir pushNautVolumesToKomga). Potentiellement long sur
+  // une grosse bibliothèque, d'où la confirmation et la progression.
+  Future<void> _pushAllVolumesToServer() async {
+    if (_pushingAllVolumes) return;
+    final matched = _seriesList.where((s) => _naut.matchFor('komga', s['id'] as String) != null).toList();
+    if (matched.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Aucune série associée à envoyer.')));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Tout envoyer vers Komga (tomes) ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Charge les tomes Nautiljon des ${matched.length} série(s) associée(s) et envoie titre/résumé de chaque tome sur le livre Komga correspondant. Peut prendre plusieurs minutes.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final state = context.read<AppState>();
+    setState(() { _pushingAllVolumes = true; _pushAllVolumesStatus = '0/${matched.length}'; });
+    var totalSent = 0;
+    var seriesFailed = 0;
+    for (var i = 0; i < matched.length; i++) {
+      final sid = matched[i]['id'] as String;
+      final seriesName = komgaSeriesTitle(matched[i]);
+      final match = _naut.matchFor('komga', sid)!;
+      try {
+        final books = await state.komga.booksInSeries(sid);
+        final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
+        final edition = pickEdition(editions, seriesName);
+        final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+        if (!mounted) return;
+        final (sent, _) = await pushNautVolumesToKomga(context, books: books, nautVolumes: nautVolumes);
+        totalSent += sent;
+      } catch (_) {
+        seriesFailed++;
+      }
+      if (mounted) setState(() => _pushAllVolumesStatus = '${i + 1}/${matched.length}');
+    }
+    if (!mounted) return;
+    setState(() => _pushingAllVolumes = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$totalSent tome(s) envoyé(s)${seriesFailed > 0 ? ', $seriesFailed série(s) en erreur' : ''}.'),
+      backgroundColor: seriesFailed > 0 ? AppTheme.ros : AppTheme.grn,
     ));
   }
 
@@ -609,6 +706,17 @@ class _KomgaScreenState extends State<KomgaScreen> {
                         ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.cloud_upload_outlined, size: 16),
                     label: Text(_pushingAll ? 'Envoi… $_pushAllStatus' : 'Envoyer toutes les infos vers Komga', style: const TextStyle(fontSize: 12)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _pushingAllVolumes ? null : _pushAllVolumesToServer,
+                    icon: _pushingAllVolumes
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.menu_book_outlined, size: 16),
+                    label: Text(_pushingAllVolumes ? 'Envoi… $_pushAllVolumesStatus' : 'Envoyer tous les tomes vers Komga', style: const TextStyle(fontSize: 12)),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -896,6 +1004,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   String? _nautEditionName;
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
+  bool _pushingVolumes = false;
 
   @override
   void initState() {
@@ -1013,6 +1122,33 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
         ),
       ]),
     );
+  }
+
+  Future<void> _pushVolumesToServer() async {
+    if (_nautVolumes == null || _nautVolumes!.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Envoyer les tomes vers Komga ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Le titre et le résumé de chaque tome Nautiljon vont être écrits sur le livre Komga du même numéro, puis verrouillés.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _pushingVolumes = true);
+    final (sent, unmatched) = await pushNautVolumesToKomga(context, books: _books, nautVolumes: _nautVolumes!);
+    if (!mounted) return;
+    setState(() => _pushingVolumes = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$sent tome(s) envoyé(s)${unmatched > 0 ? ', $unmatched sans correspondance' : ''}.'),
+    ));
   }
 
   Future<void> _pushToServer() async {
@@ -1272,8 +1408,17 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                       ),
                     if (_nautVolumes!.isEmpty)
                       Text('Aucun tome trouvé sur Nautiljon.', style: TextStyle(color: AppTheme.t3, fontSize: 12))
-                    else
+                    else ...[
+                      OutlinedButton.icon(
+                        onPressed: _pushingVolumes ? null : _pushVolumesToServer,
+                        icon: _pushingVolumes
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.cloud_upload_outlined, size: 16),
+                        label: const Text('Envoyer les tomes vers Komga'),
+                      ),
+                      const SizedBox(height: 10),
                       Column(children: _nautVolumes!.map(_nautVolumeCard).toList()),
+                    ],
                   ],
                 ],
                 if (_showSearch) ...[

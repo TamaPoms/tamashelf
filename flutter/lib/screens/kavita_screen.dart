@@ -96,6 +96,52 @@ Future<String?> pushNautiljonToKavita(BuildContext context, {required int series
   }
 }
 
+// Associe chaque tome Nautiljon (par numéro) au(x) chapitre(s) Kavita du
+// même numéro de volume, et pousse titre/résumé dessus (les autres champs
+// -- genres/auteur/éditeur -- sont déjà couverts par pushNautiljonToKavita
+// au niveau série ; Nautiljon ne donne pas d'auteur différent par tome).
+// `chapters` : même format que _chapters (KavitaSeriesDetailScreen), une
+// entrée {'volume':.., 'chapter':..} par chapitre. Renvoie (envoyés, sans
+// correspondance).
+Future<(int, int)> pushNautVolumesToKavita(
+  BuildContext context, {
+  required List<Map<String, dynamic>> chapters,
+  required List<Map<String, dynamic>> nautVolumes,
+}) async {
+  final state = context.read<AppState>();
+  var sent = 0;
+  var unmatched = 0;
+  for (final nv in nautVolumes) {
+    final volNum = num.tryParse((nv['number'] ?? '').toString().trim());
+    if (volNum == null) { unmatched++; continue; }
+    final matches = chapters.where((it) {
+      final v = it['volume'] as Map<String, dynamic>;
+      final vNum = v['number'] as num?;
+      return vNum != null && vNum == volNum;
+    }).toList();
+    if (matches.isEmpty) { unmatched++; continue; }
+    final title = (nv['title'] ?? '').toString().trim();
+    final synopsis = (nv['synopsis'] ?? '').toString().trim();
+    if (title.isEmpty && synopsis.isEmpty) continue;
+    for (final it in matches) {
+      final c = it['chapter'] as Map<String, dynamic>;
+      final chapterId = c['id'] as int;
+      try {
+        final current = await state.kavita.chapterMetadata(chapterId);
+        final updated = Map<String, dynamic>.from(current);
+        updated['id'] = chapterId;
+        if (title.isNotEmpty) { updated['titleName'] = title; updated['titleNameLocked'] = true; }
+        if (synopsis.isNotEmpty) { updated['summary'] = synopsis; updated['summaryLocked'] = true; }
+        await state.kavita.updateChapter(updated);
+        sent++;
+      } catch (_) {
+        // On continue avec les tomes suivants même si l'un échoue.
+      }
+    }
+  }
+  return (sent, unmatched);
+}
+
 Volume _kavitaVolume(int seriesId, int chapterId, int totalPages) => Volume(
       id: chapterId,
       cbzFolder: 'kavita:series:$seriesId',
@@ -197,6 +243,8 @@ class _KavitaScreenState extends State<KavitaScreen> {
   String _refreshTagsStatus = '';
   bool _pushingAll = false;
   String _pushAllStatus = '';
+  bool _pushingAllVolumes = false;
+  String _pushAllVolumesStatus = '';
 
   KavitaService get _kavita => context.read<AppState>().kavita;
   NautiljonService get _naut => context.read<AppState>().nautiljon;
@@ -384,6 +432,71 @@ class _KavitaScreenState extends State<KavitaScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('$ok envoyée(s)${failed > 0 ? ', $failed en erreur' : ''}.'),
       backgroundColor: failed > 0 ? AppTheme.ros : AppTheme.grn,
+    ));
+  }
+
+  // Pour chaque série associée : charge ses chapitres Kavita + ses tomes
+  // Nautiljon (édition choisie via pickEdition), puis pousse titre/résumé
+  // tome par tome (voir pushNautVolumesToKavita). Trois appels réseau par
+  // série (chapitres, détails Nautiljon, tomes Nautiljon) -- potentiellement
+  // long sur une grosse bibliothèque, d'où la confirmation et la
+  // progression.
+  Future<void> _pushAllVolumesToServer() async {
+    if (_pushingAllVolumes) return;
+    final matched = _seriesList.where((s) => _naut.matchFor('kavita', '${s['id']}') != null).toList();
+    if (matched.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Aucune série associée à envoyer.')));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Tout envoyer vers Kavita (tomes) ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Charge les tomes Nautiljon des ${matched.length} série(s) associée(s) et envoie titre/résumé de chaque tome sur le chapitre Kavita correspondant. Peut prendre plusieurs minutes.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final state = context.read<AppState>();
+    setState(() { _pushingAllVolumes = true; _pushAllVolumesStatus = '0/${matched.length}'; });
+    var totalSent = 0;
+    var seriesFailed = 0;
+    for (var i = 0; i < matched.length; i++) {
+      final sid = matched[i]['id'] as int;
+      final seriesName = (matched[i]['name'] as String? ?? '');
+      final match = _naut.matchFor('kavita', '$sid')!;
+      try {
+        final vols = await state.kavita.volumes(sid);
+        final chapters = <Map<String, dynamic>>[];
+        for (final v in vols) {
+          for (final c in (v['chapters'] as List? ?? [])) {
+            chapters.add({'volume': v, 'chapter': Map<String, dynamic>.from(c as Map)});
+          }
+        }
+        final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
+        final edition = pickEdition(editions, seriesName);
+        final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+        if (!mounted) return;
+        final (sent, _) = await pushNautVolumesToKavita(context, chapters: chapters, nautVolumes: nautVolumes);
+        totalSent += sent;
+      } catch (_) {
+        seriesFailed++;
+      }
+      if (mounted) setState(() => _pushAllVolumesStatus = '${i + 1}/${matched.length}');
+    }
+    if (!mounted) return;
+    setState(() => _pushingAllVolumes = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$totalSent tome(s) envoyé(s)${seriesFailed > 0 ? ', $seriesFailed série(s) en erreur' : ''}.'),
+      backgroundColor: seriesFailed > 0 ? AppTheme.ros : AppTheme.grn,
     ));
   }
 
@@ -669,6 +782,17 @@ class _KavitaScreenState extends State<KavitaScreen> {
                     label: Text(_pushingAll ? 'Envoi… $_pushAllStatus' : 'Envoyer toutes les infos vers Kavita', style: const TextStyle(fontSize: 12)),
                   ),
                 ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _pushingAllVolumes ? null : _pushAllVolumesToServer,
+                    icon: _pushingAllVolumes
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.menu_book_outlined, size: 16),
+                    label: Text(_pushingAllVolumes ? 'Envoi… $_pushAllVolumesStatus' : 'Envoyer tous les tomes vers Kavita', style: const TextStyle(fontSize: 12)),
+                  ),
+                ),
                 const SizedBox(height: 12),
                 if (_loadingSeries) ...[
                   LinearProgressIndicator(color: AppTheme.ac, backgroundColor: AppTheme.brd),
@@ -939,6 +1063,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   String? _nautEditionName;
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
+  bool _pushingVolumes = false;
 
   @override
   void initState() {
@@ -1065,6 +1190,33 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         ),
       ]),
     );
+  }
+
+  Future<void> _pushVolumesToServer() async {
+    if (_nautVolumes == null || _nautVolumes!.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Envoyer les tomes vers Kavita ?', style: TextStyle(color: AppTheme.t1, fontSize: 15)),
+        content: Text(
+          'Le titre et le résumé de chaque tome Nautiljon vont être écrits sur le chapitre Kavita du même numéro de volume, puis verrouillés.',
+          style: TextStyle(color: AppTheme.t2, fontSize: 12),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _pushingVolumes = true);
+    final (sent, unmatched) = await pushNautVolumesToKavita(context, chapters: _chapters, nautVolumes: _nautVolumes!);
+    if (!mounted) return;
+    setState(() => _pushingVolumes = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$sent tome(s) envoyé(s)${unmatched > 0 ? ', $unmatched sans correspondance' : ''}.'),
+    ));
   }
 
   Future<void> _pushToServer() async {
@@ -1345,8 +1497,17 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                 ),
               if (_nautVolumes!.isEmpty)
                 Text('Aucun tome trouvé sur Nautiljon.', style: TextStyle(color: AppTheme.t3, fontSize: 12))
-              else
+              else ...[
+                OutlinedButton.icon(
+                  onPressed: _pushingVolumes ? null : _pushVolumesToServer,
+                  icon: _pushingVolumes
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.cloud_upload_outlined, size: 16),
+                  label: const Text('Envoyer les tomes vers Kavita'),
+                ),
+                const SizedBox(height: 10),
                 Column(children: _nautVolumes!.map(_nautVolumeCard).toList()),
+              ],
             ],
           ],
           if (_showSearch) ...[

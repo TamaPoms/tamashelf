@@ -212,6 +212,19 @@ class KavitaService {
     await _request('POST', '/api/Series/metadata', jsonBody: {'seriesMetadata': metadata});
   }
 
+  // Métadonnées d'un chapitre (même principe que seriesMetadata : l'API ne
+  // fait pas de patch partiel, il faut récupérer l'existant, ne modifier
+  // que certains champs, puis tout renvoyer -- voir pushNautVolumesToKavita
+  // dans kavita_screen.dart, qui pousse titre/résumé de tome par tome).
+  Future<Map<String, dynamic>> chapterMetadata(int chapterId) async {
+    final resp = await _request('GET', '/api/Chapter', params: {'chapterId': '$chapterId'});
+    return Map<String, dynamic>.from(jsonDecode(resp.body) as Map);
+  }
+
+  Future<void> updateChapter(Map<String, dynamic> chapter) async {
+    await _request('POST', '/api/Chapter/update', jsonBody: chapter);
+  }
+
   Future<List<Map<String, dynamic>>> volumes(int seriesId) async {
     final resp = await _request('GET', '/api/Series/volumes', params: {'seriesId': '$seriesId'});
     return (jsonDecode(resp.body) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();

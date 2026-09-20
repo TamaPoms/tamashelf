@@ -128,6 +128,13 @@ class KomgaService {
     await _request('PATCH', '/api/v1/series/$seriesId/metadata', jsonBody: patch);
   }
 
+  // Patch partiel des métadonnées d'un livre (titre, résumé, ...) -- voir
+  // pushNautVolumesToKomga dans komga_screen.dart, qui pousse titre/résumé
+  // de tome par tome depuis Nautiljon.
+  Future<void> updateBookMetadata(String bookId, Map<String, dynamic> patch) async {
+    await _request('PATCH', '/api/v1/books/$bookId/metadata', jsonBody: patch);
+  }
+
   Future<List<Map<String, dynamic>>> booksInSeries(String seriesId, {int pageSize = 500}) async {
     final body = {
       'condition': {
