@@ -431,6 +431,26 @@ class NautiljonService {
     await _saveMatches();
   }
 
+  // Cache des tomes Nautiljon (édition choisie + liste des tomes, voir
+  // mangaEditions/pickEdition) d'une série déjà associée -- stocké DANS
+  // l'entrée de match (même fichier/mécanisme de sauvegarde que le reste)
+  // pour ne pas avoir à retélécharger la liste à chaque ouverture de la
+  // fiche série. Disparaît automatiquement si la série est dissociée
+  // (deleteMatch supprime toute l'entrée, cache compris).
+  Map<String, dynamic>? cachedVolumes(String source, String seriesId) {
+    final m = matchFor(source, seriesId);
+    final cache = m?['volumes_cache'];
+    return (cache is Map) ? Map<String, dynamic>.from(cache) : null;
+  }
+
+  Future<void> cacheVolumes(String source, String seriesId, String editionName, List<Map<String, dynamic>> volumes) async {
+    final key = matchKey(source, seriesId);
+    final m = _matches[key];
+    if (m == null) return;
+    _matches[key] = {...m, 'volumes_cache': {'edition_name': editionName, 'volumes': volumes}};
+    await _saveMatches();
+  }
+
   // Associations sauvegardées avant l'ajout des tags (voir saveMatch) --
   // n'ont pas de 'metadata', ou une metadata vide. Repasse dessus pour
   // aller chercher leurs tags sans avoir à tout ré-associer à la main.

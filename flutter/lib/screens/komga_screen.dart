@@ -1015,6 +1015,22 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     _load();
     _loadMatchDetails();
     _refreshDownloaded();
+    _loadCachedVolumes();
+  }
+
+  // Reprend les tomes Nautiljon déjà chargés une fois par le passé (voir
+  // NautiljonService.cachedVolumes/cacheVolumes) -- évite de retélécharger
+  // la liste à chaque ouverture de la fiche série ; le bouton "Recharger"
+  // reste disponible pour forcer une mise à jour.
+  void _loadCachedVolumes() {
+    final naut = context.read<AppState>().nautiljon;
+    final cached = naut.cachedVolumes('komga', widget.seriesId);
+    if (cached == null) return;
+    final volumes = (cached['volumes'] as List?) ?? [];
+    setState(() {
+      _nautVolumes = volumes.map((v) => Map<String, dynamic>.from(v as Map)).toList();
+      _nautEditionName = (cached['edition_name'] ?? '').toString();
+    });
   }
 
   @override
@@ -1078,15 +1094,18 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
       final editions = await naut.mangaEditions(match['nautiljon_url'] as String);
       final edition = pickEdition(editions, widget.seriesName);
       if (!mounted) return;
+      final volumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+      final editionName = (edition?['name'] ?? '').toString();
       setState(() {
-        _nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
-        _nautEditionName = (edition?['name'] ?? '').toString();
+        _nautVolumes = volumes;
+        _nautEditionName = editionName;
         _loadingNautVolumes = false;
         // La grille "Livres" (seule à supporter la sélection multiple) se
         // masque dès que des tomes sont chargés -- pas la peine de garder
         // une sélection en cours dont l'UI a disparu.
         if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
       });
+      await naut.cacheVolumes('komga', widget.seriesId, editionName, volumes);
     } catch (e) {
       if (!mounted) return;
       setState(() { _loadingNautVolumes = false; _nautVolumesError = '$e'; });
