@@ -625,13 +625,16 @@ class NautiljonService {
   // (standard, deluxe, ...), chacune avec sa propre liste de tomes ; voir
   // pickEdition() pour choisir laquelle afficher.
   // Clés déjà exposées sous un nom précis (number/title/synopsis/cover_url/
-  // url) ou purement techniques (image_jpg/image_mini_jpg servent à
-  // calculer cover_url ; id est repris tel quel) -- tout le reste de la
-  // ligne brute Nautiljon est gardé dans "extra" (voir plus bas) pour ne
-  // rien perdre, sans savoir à l'avance quelles clés existent réellement
-  // (date de parution, ISBN, prix, catégorie, ... selon les séries).
+  // url), doublons de chemin d'image (image/image_mini -- variantes brutes
+  // de image_jpg/image_mini_jpg, déjà utilisées pour cover_url) ou pur
+  // identifiant technique sans intérêt pour l'affichage (id, image_id,
+  // edition_id) -- tout le reste de la ligne brute Nautiljon est gardé
+  // dans "extra" (voir plus bas) pour ne rien perdre, sans savoir à
+  // l'avance quelles clés existent réellement (date de parution, ISBN,
+  // prix, catégorie, ... selon les séries).
   static const _knownVolumeKeys = {
-    'id', 'numero', 'titre', 'synopsis', 'image_jpg', 'image_mini_jpg', 'url',
+    'id', 'numero', 'titre', 'synopsis', 'url',
+    'image_jpg', 'image_mini_jpg', 'image', 'image_mini', 'image_id', 'edition_id',
   };
 
   Future<List<Map<String, dynamic>>> mangaEditions(String url) async {
@@ -647,12 +650,21 @@ class NautiljonService {
         final coverFull = imageUrl((vol['image_jpg'] ?? '').toString());
         final coverMini = imageUrl((vol['image_mini_jpg'] ?? '').toString());
         final extra = <String, String>{};
-        vol.forEach((k, val) {
-          if (_knownVolumeKeys.contains(k)) return;
+        // "infos_brutes" (et toute autre valeur imbriquée) est une
+        // sous-table clé/valeur (éditeur, prix, pages, EAN, date de
+        // parution, ...) -- on l'aplatit dans "extra" au lieu de
+        // l'afficher comme un seul bloc illisible.
+        void addExtra(String key, dynamic val) {
+          if (_knownVolumeKeys.contains(key)) return;
+          if (val is Map) {
+            val.forEach((k2, v2) => addExtra(k2.toString(), v2));
+            return;
+          }
           final s = val?.toString().trim() ?? '';
           if (s.isEmpty || s.toLowerCase() == 'null') return;
-          extra[k] = s;
-        });
+          extra[key] = s;
+        }
+        vol.forEach(addExtra);
         return {
           'id': vol['id'],
           'number': (vol['numero'] ?? '').toString(),
