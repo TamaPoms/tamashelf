@@ -653,12 +653,24 @@ class NautiljonService {
         // "infos_brutes" (et toute autre valeur imbriquée) est une
         // sous-table clé/valeur (éditeur, prix, pages, EAN, date de
         // parution, ...) -- on l'aplatit dans "extra" au lieu de
-        // l'afficher comme un seul bloc illisible.
+        // l'afficher comme un seul bloc illisible. Comme pour le
+        // "infos_brutes" au niveau série (voir mangaDetails), celui du
+        // tome arrive en JSON encodé dans une STRING, pas déjà décodé en
+        // Map -- d'où le jsonDecode avant de pouvoir l'aplatir.
         void addExtra(String key, dynamic val) {
           if (_knownVolumeKeys.contains(key)) return;
           if (val is Map) {
             val.forEach((k2, v2) => addExtra(k2.toString(), v2));
             return;
+          }
+          if (val is String && val.trim().startsWith('{')) {
+            try {
+              final decoded = jsonDecode(val);
+              if (decoded is Map) {
+                decoded.forEach((k2, v2) => addExtra(k2.toString(), v2));
+                return;
+              }
+            } catch (_) {}
           }
           final s = val?.toString().trim() ?? '';
           if (s.isEmpty || s.toLowerCase() == 'null') return;
