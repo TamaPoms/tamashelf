@@ -1082,6 +1082,10 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
         _nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
         _nautEditionName = (edition?['name'] ?? '').toString();
         _loadingNautVolumes = false;
+        // La grille "Livres" (seule à supporter la sélection multiple) se
+        // masque dès que des tomes sont chargés -- pas la peine de garder
+        // une sélection en cours dont l'UI a disparu.
+        if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
       });
     } catch (e) {
       if (!mounted) return;
@@ -1089,41 +1093,92 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     }
   }
 
+  // Livre Komga qui porte le même numéro qu'un tome Nautiljon -- même
+  // logique que pushNautVolumesToKomga (par numéro). Utilisé pour que la
+  // carte de tome (cover Nautiljon + infos) serve ELLE-MÊME de tuile de
+  // lecture, au lieu d'avoir une deuxième vignette (celle de la grille
+  // "Livres") pour le même tome.
+  Map<String, dynamic>? _bookForVolumeNumber(String numberStr) {
+    final volNum = num.tryParse(numberStr.trim());
+    if (volNum == null) return null;
+    for (final b in _books) {
+      final bNum = b['number'] as num?;
+      if (bNum != null && bNum == volNum) return b;
+    }
+    return null;
+  }
+
   Widget _nautVolumeCard(Map<String, dynamic> v) {
     final cover = (v['cover_url'] ?? '').toString();
     final number = (v['number'] ?? '').toString();
     final title = (v['title'] ?? '').toString();
     final synopsis = (v['synopsis'] ?? '').toString();
+    final extra = (v['extra'] is Map) ? Map<String, dynamic>.from(v['extra'] as Map) : const <String, dynamic>{};
+    final book = _bookForVolumeNumber(number);
+    final bookId = book?['id'] as String?;
+    final downloaded = bookId != null && _downloadedIds.contains(bookId);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(color: AppTheme.c1, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.brd, width: 0.5)),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        SizedBox(
-          width: 60, height: 86,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: cover.isEmpty
-                ? Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))
-                : Image.network(cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(
-              number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
-              style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
-              maxLines: 2, overflow: TextOverflow.ellipsis,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: bookId == null
+            ? null
+            : () => openKomgaBook(context, seriesId: widget.seriesId, seriesName: widget.seriesName, bookId: bookId, totalPages: komgaPagesCount(book!)),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SizedBox(
+              width: 60, height: 86,
+              child: Stack(children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: cover.isEmpty
+                        ? Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))
+                        : Image.network(cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))),
+                  ),
+                ),
+                if (bookId != null)
+                  Positioned(
+                    top: 2, right: 2,
+                    child: downloaded
+                        ? Icon(Icons.download_done, color: AppTheme.grn, size: 16, shadows: const [Shadow(color: Colors.black54, blurRadius: 4)])
+                        : IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                            icon: const Icon(Icons.download, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 4)]),
+                            onPressed: () => _downloadOne(bookId),
+                          ),
+                  ),
+              ]),
             ),
-            if (synopsis.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(synopsis, style: TextStyle(color: AppTheme.t3, fontSize: 11), maxLines: 5, overflow: TextOverflow.ellipsis),
-            ],
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(
+                  number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
+                  style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                ),
+                if (bookId == null) ...[
+                  const SizedBox(height: 2),
+                  Text('Aucun livre Komga correspondant', style: TextStyle(color: AppTheme.t3, fontSize: 10, fontStyle: FontStyle.italic)),
+                ],
+                if (synopsis.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(synopsis, style: TextStyle(color: AppTheme.t3, fontSize: 11), maxLines: 5, overflow: TextOverflow.ellipsis),
+                ],
+                if (extra.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  ...extra.entries.map((e) => Text('${e.key} : ${e.value}', style: TextStyle(color: AppTheme.t3, fontSize: 10))),
+                ],
+              ]),
+            ),
           ]),
         ),
-      ]),
+      ),
     );
   }
 
@@ -1298,7 +1353,10 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
         iconTheme: IconThemeData(color: AppTheme.t1),
         title: Text(widget.seriesName, overflow: TextOverflow.ellipsis, style: TextStyle(color: AppTheme.t1, fontSize: 15)),
         actions: [
-          if (_books.isNotEmpty)
+          // Sélection multiple : n'a d'effet que sur la grille "Livres",
+          // masquée dès que les tomes Nautiljon sont chargés (voir plus
+          // bas) -- inutile de la proposer dans ce cas.
+          if (_books.isNotEmpty && (_nautVolumes == null || _nautVolumes!.isEmpty))
             IconButton(
               tooltip: _selectMode ? 'Annuler la sélection' : 'Télécharger plusieurs livres',
               icon: Icon(_selectMode ? Icons.close : Icons.download_for_offline_outlined, color: AppTheme.t2),
@@ -1469,19 +1527,29 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                   ),
                 ],
                 const SizedBox(height: 18),
-                Text('Livres', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
-                const SizedBox(height: 8),
-                if (_loading)
-                  const Padding(padding: EdgeInsets.only(bottom: 20), child: Center(child: CircularProgressIndicator()))
-                else if (_books.isEmpty)
-                  Padding(padding: const EdgeInsets.only(bottom: 20), child: Text('Aucun livre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))),
+                // La grille "Livres" (cover Komga + tap pour lire) fait
+                // doublon avec les cartes de tomes Nautiljon juste
+                // au-dessus dès qu'elles sont chargées (chacune a aussi sa
+                // cover et ouvre le même livre au tap, voir
+                // _nautVolumeCard) -- on ne l'affiche donc que tant
+                // qu'aucun tome Nautiljon n'est disponible.
+                if (_nautVolumes == null || _nautVolumes!.isEmpty) ...[
+                  Text('Livres', style: TextStyle(color: AppTheme.t1, fontWeight: FontWeight.w700, fontSize: 14)),
+                  const SizedBox(height: 8),
+                  if (_loading)
+                    const Padding(padding: EdgeInsets.only(bottom: 20), child: Center(child: CircularProgressIndicator()))
+                  else if (_books.isEmpty)
+                    Padding(padding: const EdgeInsets.only(bottom: 20), child: Text('Aucun livre.', style: TextStyle(color: AppTheme.t3, fontSize: 12))),
+                ],
               ]),
             ),
           ),
           // Sliver "paresseuse" -- voir la même remarque dans
           // kavita_screen.dart (chapitres) : certaines séries ont plusieurs
-          // centaines de livres.
-          if (!_loading && _books.isNotEmpty)
+          // centaines de livres. Masquée dès que les tomes Nautiljon sont
+          // chargés (voir plus haut) -- même liste, pas la peine de la
+          // dupliquer.
+          if (!_loading && _books.isNotEmpty && (_nautVolumes == null || _nautVolumes!.isEmpty))
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               sliver: SliverGrid(

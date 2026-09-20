@@ -624,6 +624,16 @@ class NautiljonService {
   // "editions" de la réponse. Une série peut avoir plusieurs éditions
   // (standard, deluxe, ...), chacune avec sa propre liste de tomes ; voir
   // pickEdition() pour choisir laquelle afficher.
+  // Clés déjà exposées sous un nom précis (number/title/synopsis/cover_url/
+  // url) ou purement techniques (image_jpg/image_mini_jpg servent à
+  // calculer cover_url ; id est repris tel quel) -- tout le reste de la
+  // ligne brute Nautiljon est gardé dans "extra" (voir plus bas) pour ne
+  // rien perdre, sans savoir à l'avance quelles clés existent réellement
+  // (date de parution, ISBN, prix, catégorie, ... selon les séries).
+  static const _knownVolumeKeys = {
+    'id', 'numero', 'titre', 'synopsis', 'image_jpg', 'image_mini_jpg', 'url',
+  };
+
   Future<List<Map<String, dynamic>>> mangaEditions(String url) async {
     if (url.isEmpty) return [];
     final data = await _get('/api/serie/details', {'url': url});
@@ -636,6 +646,13 @@ class NautiljonService {
         final vol = Map<String, dynamic>.from(v as Map);
         final coverFull = imageUrl((vol['image_jpg'] ?? '').toString());
         final coverMini = imageUrl((vol['image_mini_jpg'] ?? '').toString());
+        final extra = <String, String>{};
+        vol.forEach((k, val) {
+          if (_knownVolumeKeys.contains(k)) return;
+          final s = val?.toString().trim() ?? '';
+          if (s.isEmpty || s.toLowerCase() == 'null') return;
+          extra[k] = s;
+        });
         return {
           'id': vol['id'],
           'number': (vol['numero'] ?? '').toString(),
@@ -643,6 +660,7 @@ class NautiljonService {
           'synopsis': cleanSynopsis((vol['synopsis'] ?? '').toString()),
           'cover_url': coverFull.isNotEmpty ? coverFull : coverMini,
           'url': (vol['url'] ?? '').toString(),
+          'extra': extra,
         };
       }).toList();
       return {
