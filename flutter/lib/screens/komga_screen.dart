@@ -1127,53 +1127,73 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
             : () => openKomgaBook(context, seriesId: widget.seriesId, seriesName: widget.seriesName, bookId: bookId, totalPages: komgaPagesCount(book!)),
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            SizedBox(
-              width: 60, height: 86,
-              child: Stack(children: [
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: cover.isEmpty
-                        ? Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))
-                        : Image.network(cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))),
-                  ),
-                ),
-                if (bookId != null)
-                  Positioned(
-                    top: 2, right: 2,
-                    child: downloaded
-                        ? Icon(Icons.download_done, color: AppTheme.grn, size: 16, shadows: const [Shadow(color: Colors.black54, blurRadius: 4)])
-                        : IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-                            icon: const Icon(Icons.download, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 4)]),
-                            onPressed: () => _downloadOne(bookId),
-                          ),
-                  ),
-              ]),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
+              style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
+              maxLines: 2, overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(
-                  number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
-                  style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
-                  maxLines: 2, overflow: TextOverflow.ellipsis,
+            if (bookId == null) ...[
+              const SizedBox(height: 2),
+              Text('Aucun livre Komga correspondant', style: TextStyle(color: AppTheme.t3, fontSize: 10, fontStyle: FontStyle.italic)),
+            ],
+            const SizedBox(height: 6),
+            // Trois colonnes : cover à gauche, synopsis au milieu, reste
+            // des infos (extra, voir NautiljonService.mangaEditions) à
+            // droite -- IntrinsicHeight pour que les 3 colonnes s'étendent
+            // sur la hauteur du contenu le plus grand (synopsis/infos sans
+            // troncature désormais, "tout récupérer").
+            IntrinsicHeight(
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                SizedBox(
+                  width: 60, height: 86,
+                  child: Stack(children: [
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: cover.isEmpty
+                            ? Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))
+                            : Image.network(cover, headers: kNautiljonImageHeaders, fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(color: AppTheme.inp, child: Icon(Icons.book, color: AppTheme.t3))),
+                      ),
+                    ),
+                    if (bookId != null)
+                      Positioned(
+                        top: 2, right: 2,
+                        child: downloaded
+                            ? Icon(Icons.download_done, color: AppTheme.grn, size: 16, shadows: const [Shadow(color: Colors.black54, blurRadius: 4)])
+                            : IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                                icon: const Icon(Icons.download, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 4)]),
+                                onPressed: () => _downloadOne(bookId),
+                              ),
+                      ),
+                  ]),
                 ),
-                if (bookId == null) ...[
-                  const SizedBox(height: 2),
-                  Text('Aucun livre Komga correspondant', style: TextStyle(color: AppTheme.t3, fontSize: 10, fontStyle: FontStyle.italic)),
-                ],
-                if (synopsis.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(synopsis, style: TextStyle(color: AppTheme.t3, fontSize: 11), maxLines: 5, overflow: TextOverflow.ellipsis),
-                ],
-                if (extra.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  ...extra.entries.map((e) => Text('${e.key} : ${e.value}', style: TextStyle(color: AppTheme.t3, fontSize: 10))),
-                ],
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    synopsis.isNotEmpty ? synopsis : 'Pas de synopsis.',
+                    style: TextStyle(color: AppTheme.t3, fontSize: 11, fontStyle: synopsis.isEmpty ? FontStyle.italic : FontStyle.normal),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: extra.isEmpty
+                      ? const SizedBox.shrink()
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: extra.entries
+                              .map((e) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 3),
+                                    child: Text('${e.key} : ${e.value}', style: TextStyle(color: AppTheme.t3, fontSize: 9)),
+                                  ))
+                              .toList(),
+                        ),
+                ),
               ]),
             ),
           ]),
