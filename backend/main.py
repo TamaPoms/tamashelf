@@ -322,6 +322,8 @@ def init_db():
         nautiljon_url TEXT NOT NULL,
         matched_by TEXT,
         metadata_json TEXT NOT NULL DEFAULT '{}',
+        edition_override TEXT NOT NULL DEFAULT '',
+        volume_links_json TEXT NOT NULL DEFAULT '{}',
         created_at REAL NOT NULL DEFAULT (unixepoch())
     );
 
@@ -330,6 +332,8 @@ def init_db():
         nautiljon_url TEXT NOT NULL,
         matched_by TEXT,
         metadata_json TEXT NOT NULL DEFAULT '{}',
+        edition_override TEXT NOT NULL DEFAULT '',
+        volume_links_json TEXT NOT NULL DEFAULT '{}',
         created_at REAL NOT NULL DEFAULT (unixepoch())
     );
 
@@ -621,6 +625,23 @@ def migrate_db():
             db.commit()
     except:
         pass  # Table might not exist yet
+
+    # Migration: ajouter edition_override/volume_links_json à kavita_matches et
+    # komga_matches -- édition Nautiljon choisie manuellement (au lieu de pick_edition
+    # automatique) et liaisons tome -> chapitre/livre choisies à la main (pour les
+    # éditions où la numérotation Nautiljon ne colle pas à celle de Kavita/Komga, ex.
+    # "Cycle N - Tome M" chez Dragon Ball Z Anime Comics).
+    for table in ("kavita_matches", "komga_matches"):
+        try:
+            cols = [row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()]
+            if "edition_override" not in cols:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN edition_override TEXT NOT NULL DEFAULT ''")
+                db.commit()
+            if "volume_links_json" not in cols:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN volume_links_json TEXT NOT NULL DEFAULT '{{}}'")
+                db.commit()
+        except:
+            pass  # Table might not exist yet
 
     db.close()
 
@@ -1782,14 +1803,67 @@ async def kavita_get_match(series_id: int, user=Depends(get_current_user)):
     """Match Nautiljon persisté pour une série Kavita (voir kavita_matches --
     séparé de `matches`/`manga_library` qui sont spécifiques aux CBZ locaux)."""
     with get_db_ctx() as db:
-        row = db.execute("SELECT nautiljon_url, metadata_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+        row = db.execute("SELECT nautiljon_url, metadata_json, edition_override, volume_links_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
     if not row:
         return {"matched": False, "nautiljon_url": None}
     try:
         meta = json.loads(row["metadata_json"] or "{}")
     except Exception:
         meta = {}
-    return {"matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta}
+    try:
+        volume_links = json.loads(row["volume_links_json"] or "{}")
+    except Exception:
+        volume_links = {}
+    return {
+        "matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta,
+        "edition_override": row["edition_override"] or "", "volume_links": volume_links,
+    }
+
+@app.post("/api/kavita/match/{series_id}/edition")
+async def kavita_set_edition(series_id: int, edition_name: str = "", admin=Depends(require_admin)):
+    """Édition Nautiljon choisie à la main pour cette série (au lieu du choix automatique
+    de pick_edition -- voir kavita_push_volumes et l'équivalent web/mobile). edition_name
+    vide -> retour au choix automatique."""
+    with get_db_ctx() as db:
+        if not db.execute("SELECT 1 FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone():
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        db.execute("UPDATE kavita_matches SET edition_override = ? WHERE kavita_series_id = ?", (edition_name, series_id))
+        db.commit()
+    return {"ok": True}
+
+@app.post("/api/kavita/match/{series_id}/volume-link")
+async def kavita_set_volume_link(series_id: int, volume_number: str, chapter_id: int, admin=Depends(require_admin)):
+    """Lie manuellement le tome Nautiljon `volume_number` (edition.volumes[].number, tel
+    quel) au chapitre Kavita `chapter_id` -- utile quand la numérotation Nautiljon ne
+    correspond pas à celle de la bibliothèque Kavita (ex. éditions "Cycle N - Tome M" qui
+    numérotent les tomes en continu alors que Kavita les regroupe par cycle)."""
+    with get_db_ctx() as db:
+        row = db.execute("SELECT volume_links_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        try:
+            links = json.loads(row["volume_links_json"] or "{}")
+        except Exception:
+            links = {}
+        links[str(volume_number)] = chapter_id
+        db.execute("UPDATE kavita_matches SET volume_links_json = ? WHERE kavita_series_id = ?", (json.dumps(links), series_id))
+        db.commit()
+    return {"ok": True}
+
+@app.delete("/api/kavita/match/{series_id}/volume-link")
+async def kavita_delete_volume_link(series_id: int, volume_number: str, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        row = db.execute("SELECT volume_links_json FROM kavita_matches WHERE kavita_series_id = ?", (series_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        try:
+            links = json.loads(row["volume_links_json"] or "{}")
+        except Exception:
+            links = {}
+        links.pop(str(volume_number), None)
+        db.execute("UPDATE kavita_matches SET volume_links_json = ? WHERE kavita_series_id = ?", (json.dumps(links), series_id))
+        db.commit()
+    return {"ok": True}
 
 @app.post("/api/kavita/match/{series_id}")
 async def kavita_save_match(series_id: int, nautiljon_url: str, admin=Depends(require_admin)):
@@ -1953,6 +2027,28 @@ def _matched_nautiljon_url(db, table: str, id_col: str, series_id) -> Optional[s
     row = db.execute(f"SELECT nautiljon_url FROM {table} WHERE {id_col} = ?", (series_id,)).fetchone()
     return row["nautiljon_url"] if row else None
 
+def _matched_series_config(db, table: str, id_col: str, series_id) -> Optional[dict]:
+    """nautiljon_url + édition choisie à la main (edition_override) + liaisons
+    tome -> chapitre/livre choisies à la main (volume_links, {numero_tome: id}) pour une
+    série associée -- voir kavita_set_edition/kavita_set_volume_link (et komga)."""
+    row = db.execute(
+        f"SELECT nautiljon_url, edition_override, volume_links_json FROM {table} WHERE {id_col} = ?",
+        (series_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        volume_links = json.loads(row["volume_links_json"] or "{}")
+    except Exception:
+        volume_links = {}
+    return {"nautiljon_url": row["nautiljon_url"], "edition_override": row["edition_override"] or "", "volume_links": volume_links}
+
+def _pick_edition_with_override(all_editions: list, series_title: str, edition_override: str) -> Optional[dict]:
+    if edition_override:
+        forced = next((e for e in all_editions if (e.get("name") or e.get("nom") or "").strip() == edition_override), None)
+        if forced:
+            return forced
+    return nautiljon_db.pick_edition(all_editions, series_title)
+
 
 @app.post("/api/kavita/push-series/{series_id}")
 async def kavita_push_series(series_id: int, admin=Depends(require_admin)):
@@ -2007,17 +2103,18 @@ async def kavita_push_volumes(series_id: int, admin=Depends(require_admin)):
     auteur/traducteur/éditeur. Portage de pushNautVolumesToKavita (kavita_screen.dart)."""
     with get_db_ctx() as db:
         client = _get_kavita_client(db)
-        url = _matched_nautiljon_url(db, "kavita_matches", "kavita_series_id", series_id)
-    if not url:
+        cfg = _matched_series_config(db, "kavita_matches", "kavita_series_id", series_id)
+    if not cfg or not cfg["nautiljon_url"]:
         raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
     try:
         series = await client.series_detail(series_id)
         volumes = await client.volumes(series_id)
     except KavitaError as e:
         raise HTTPException(502, str(e))
-    editions = nautiljon_db.manga_editions(url)
-    edition = nautiljon_db.pick_edition((editions or {}).get("editions") or [], series.get("name") or "")
+    editions = nautiljon_db.manga_editions(cfg["nautiljon_url"])
+    edition = _pick_edition_with_override((editions or {}).get("editions") or [], series.get("name") or "", cfg["edition_override"])
     naut_volumes = (edition or {}).get("volumes") or []
+    volume_links = cfg["volume_links"]
 
     chapters = []
     for v in volumes:
@@ -2027,15 +2124,23 @@ async def kavita_push_volumes(series_id: int, admin=Depends(require_admin)):
     sent = 0
     unmatched = 0
     for nv in naut_volumes:
-        try:
-            vol_num = float(str(nv.get("number") or "").strip())
-        except ValueError:
-            unmatched += 1
-            continue
-        matches = [it for it in chapters if it["volume"].get("number") == vol_num]
-        if not matches:
-            unmatched += 1
-            continue
+        raw_num = str(nv.get("number") or "").strip()
+        # Liaison manuelle (voir kavita_set_volume_link) prioritaire -- indispensable
+        # quand la numérotation Nautiljon ne correspond pas à celle de Kavita (ex.
+        # éditions "Cycle N - Tome M" numérotées en continu côté Nautiljon).
+        linked_id = volume_links.get(raw_num)
+        if linked_id is not None:
+            matches = [{"volume": None, "chapter": {"id": int(linked_id)}}]
+        else:
+            try:
+                vol_num = float(raw_num)
+            except ValueError:
+                unmatched += 1
+                continue
+            matches = [it for it in chapters if it["volume"].get("number") == vol_num]
+            if not matches:
+                unmatched += 1
+                continue
         title = (nv.get("title") or "").strip()
         synopsis = (nv.get("synopsis") or "").strip()
         extra = nv.get("extra") or {}
@@ -2197,14 +2302,62 @@ def _komga_match_metadata(nautiljon_url: str) -> dict:
 @app.get("/api/komga/match/{series_id}")
 async def komga_get_match(series_id: str, user=Depends(get_current_user)):
     with get_db_ctx() as db:
-        row = db.execute("SELECT nautiljon_url, metadata_json FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone()
+        row = db.execute("SELECT nautiljon_url, metadata_json, edition_override, volume_links_json FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone()
     if not row:
         return {"matched": False, "nautiljon_url": None}
     try:
         meta = json.loads(row["metadata_json"] or "{}")
     except Exception:
         meta = {}
-    return {"matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta}
+    try:
+        volume_links = json.loads(row["volume_links_json"] or "{}")
+    except Exception:
+        volume_links = {}
+    return {
+        "matched": True, "nautiljon_url": row["nautiljon_url"], "metadata_json": meta,
+        "edition_override": row["edition_override"] or "", "volume_links": volume_links,
+    }
+
+@app.post("/api/komga/match/{series_id}/edition")
+async def komga_set_edition(series_id: str, edition_name: str = "", admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        if not db.execute("SELECT 1 FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone():
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        db.execute("UPDATE komga_matches SET edition_override = ? WHERE komga_series_id = ?", (edition_name, series_id))
+        db.commit()
+    return {"ok": True}
+
+@app.post("/api/komga/match/{series_id}/volume-link")
+async def komga_set_volume_link(series_id: str, volume_number: str, book_id: str, admin=Depends(require_admin)):
+    """Voir kavita_set_volume_link -- équivalent Komga (book_id est une chaîne, pas un
+    entier)."""
+    with get_db_ctx() as db:
+        row = db.execute("SELECT volume_links_json FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        try:
+            links = json.loads(row["volume_links_json"] or "{}")
+        except Exception:
+            links = {}
+        links[str(volume_number)] = book_id
+        db.execute("UPDATE komga_matches SET volume_links_json = ? WHERE komga_series_id = ?", (json.dumps(links), series_id))
+        db.commit()
+    return {"ok": True}
+
+@app.delete("/api/komga/match/{series_id}/volume-link")
+async def komga_delete_volume_link(series_id: str, volume_number: str, admin=Depends(require_admin)):
+    with get_db_ctx() as db:
+        row = db.execute("SELECT volume_links_json FROM komga_matches WHERE komga_series_id = ?", (series_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
+        try:
+            links = json.loads(row["volume_links_json"] or "{}")
+        except Exception:
+            links = {}
+        links.pop(str(volume_number), None)
+        db.execute("UPDATE komga_matches SET volume_links_json = ? WHERE komga_series_id = ?", (json.dumps(links), series_id))
+        db.commit()
+    return {"ok": True}
 
 @app.post("/api/komga/match/{series_id}")
 async def komga_save_match(series_id: str, nautiljon_url: str, admin=Depends(require_admin)):
@@ -2347,30 +2500,40 @@ async def komga_push_volumes(series_id: str, admin=Depends(require_admin)):
     matché par numéro (b['number'])."""
     with get_db_ctx() as db:
         client = _get_komga_client(db)
-        url = _matched_nautiljon_url(db, "komga_matches", "komga_series_id", series_id)
-    if not url:
+        cfg = _matched_series_config(db, "komga_matches", "komga_series_id", series_id)
+    if not cfg or not cfg["nautiljon_url"]:
         raise HTTPException(404, "Série non associée à une fiche Nautiljon.")
     try:
         series = await client.series_detail(series_id)
         books = await client.books_in_series(series_id)
     except KomgaError as e:
         raise HTTPException(502, str(e))
-    editions = nautiljon_db.manga_editions(url)
-    edition = nautiljon_db.pick_edition((editions or {}).get("editions") or [], komga_series_title(series))
+    editions = nautiljon_db.manga_editions(cfg["nautiljon_url"])
+    edition = _pick_edition_with_override((editions or {}).get("editions") or [], komga_series_title(series), cfg["edition_override"])
     naut_volumes = (edition or {}).get("volumes") or []
+    volume_links = cfg["volume_links"]
+    books_by_id = {b["id"]: b for b in books}
 
     sent = 0
     unmatched = 0
     for nv in naut_volumes:
-        try:
-            vol_num = float(str(nv.get("number") or "").strip())
-        except ValueError:
-            unmatched += 1
-            continue
-        matches = [b for b in books if b.get("number") == vol_num]
-        if not matches:
-            unmatched += 1
-            continue
+        raw_num = str(nv.get("number") or "").strip()
+        # Liaison manuelle (voir komga_set_volume_link) prioritaire -- voir
+        # kavita_push_volumes pour le même principe côté Kavita.
+        linked_id = volume_links.get(raw_num)
+        if linked_id is not None:
+            linked_book = books_by_id.get(str(linked_id))
+            matches = [linked_book] if linked_book else [{"id": str(linked_id)}]
+        else:
+            try:
+                vol_num = float(raw_num)
+            except ValueError:
+                unmatched += 1
+                continue
+            matches = [b for b in books if b.get("number") == vol_num]
+            if not matches:
+                unmatched += 1
+                continue
         title = (nv.get("title") or "").strip()
         synopsis = (nv.get("synopsis") or "").strip()
         extra = nv.get("extra") or {}

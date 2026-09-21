@@ -203,6 +203,12 @@ export const api = {
   kavitaPushSeries: (seriesId) => request(`/kavita/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
   kavitaPushVolumes: (seriesId) => request(`/kavita/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
   kavitaPushProgress: (body) => request(`/kavita/progress`, { method: "POST", body: JSON.stringify(body) }),
+  // Édition choisie à la main (au lieu du choix automatique pick_edition) + liaisons
+  // tome -> chapitre choisies à la main (numérotation Nautiljon ne collant pas toujours
+  // à celle de Kavita, ex. éditions "Cycle N - Tome M").
+  kavitaSetEdition: (seriesId, editionName) => request(`/kavita/match/${encodeURIComponent(seriesId)}/edition?edition_name=${encodeURIComponent(editionName)}`, { method: "POST" }),
+  kavitaSetVolumeLink: (seriesId, volumeNumber, chapterId) => request(`/kavita/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}&chapter_id=${encodeURIComponent(chapterId)}`, { method: "POST" }),
+  kavitaDeleteVolumeLink: (seriesId, volumeNumber) => request(`/kavita/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}`, { method: "DELETE" }),
 
   // Komga (serveur externe, lecture seule -- voir komga_client.py). Miroir de Kavita
   // ci-dessus, avec des identifiants string (UUID) plutôt qu'entiers.
@@ -231,6 +237,9 @@ export const api = {
   komgaPushSeries: (seriesId) => request(`/komga/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
   komgaPushVolumes: (seriesId) => request(`/komga/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
   komgaPushProgress: (body) => request(`/komga/progress`, { method: "POST", body: JSON.stringify(body) }),
+  komgaSetEdition: (seriesId, editionName) => request(`/komga/match/${encodeURIComponent(seriesId)}/edition?edition_name=${encodeURIComponent(editionName)}`, { method: "POST" }),
+  komgaSetVolumeLink: (seriesId, volumeNumber, bookId) => request(`/komga/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}&book_id=${encodeURIComponent(bookId)}`, { method: "POST" }),
+  komgaDeleteVolumeLink: (seriesId, volumeNumber) => request(`/komga/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}`, { method: "DELETE" }),
 
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),

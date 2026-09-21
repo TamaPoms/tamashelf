@@ -85,20 +85,33 @@ Future<String?> pushNautiljonToKomga(BuildContext context, {required String seri
 // et pousse titre/résumé dessus. Renvoie (envoyés, sans correspondance).
 Future<(int, int)> pushNautVolumesToKomga(
   BuildContext context, {
+  required String seriesId,
   required List<Map<String, dynamic>> books,
   required List<Map<String, dynamic>> nautVolumes,
 }) async {
   final state = context.read<AppState>();
+  final volumeLinks = state.nautiljon.volumeLinks('komga', seriesId);
   var sent = 0;
   var unmatched = 0;
   for (final nv in nautVolumes) {
-    final volNum = num.tryParse((nv['number'] ?? '').toString().trim());
-    if (volNum == null) { unmatched++; continue; }
-    final matches = books.where((b) {
-      final bNum = b['number'] as num?;
-      return bNum != null && bNum == volNum;
-    }).toList();
-    if (matches.isEmpty) { unmatched++; continue; }
+    final rawNum = (nv['number'] ?? '').toString().trim();
+    // Liaison manuelle (voir NautiljonService.setVolumeLink) prioritaire -- voir
+    // _bookForVolumeNumber (komga_screen.dart) pour le même principe côté lecture.
+    final linked = volumeLinks[rawNum];
+    List<Map<String, dynamic>> matches;
+    if (linked != null) {
+      final linkedId = linked.toString();
+      final linkedMatches = books.where((b) => b['id'] == linkedId).toList();
+      matches = linkedMatches.isNotEmpty ? linkedMatches : [{'id': linkedId}];
+    } else {
+      final volNum = num.tryParse(rawNum);
+      if (volNum == null) { unmatched++; continue; }
+      matches = books.where((b) {
+        final bNum = b['number'] as num?;
+        return bNum != null && bNum == volNum;
+      }).toList();
+      if (matches.isEmpty) { unmatched++; continue; }
+    }
     final title = (nv['title'] ?? '').toString().trim();
     final synopsis = (nv['synopsis'] ?? '').toString().trim();
     // "extra" (voir NautiljonService.mangaEditions) : tout ce qui est
@@ -449,10 +462,17 @@ class _KomgaScreenState extends State<KomgaScreen> {
       try {
         final books = await state.komga.booksInSeries(sid);
         final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
-        final edition = pickEdition(editions, seriesName);
+        final override = _naut.editionOverride('komga', sid);
+        Map<String, dynamic>? edition;
+        if (override.isNotEmpty) {
+          for (final e in editions) {
+            if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+          }
+        }
+        edition ??= pickEdition(editions, seriesName);
         final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
         if (!mounted) return;
-        final (sent, _) = await pushNautVolumesToKomga(context, books: books, nautVolumes: nautVolumes);
+        final (sent, _) = await pushNautVolumesToKomga(context, seriesId: sid, books: books, nautVolumes: nautVolumes);
         totalSent += sent;
       } catch (_) {
         seriesFailed++;
@@ -492,7 +512,14 @@ class _KomgaScreenState extends State<KomgaScreen> {
         final match = _naut.matchFor('komga', sid)!;
         try {
           final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
-          final edition = pickEdition(editions, seriesName);
+          final override = _naut.editionOverride('komga', sid);
+          Map<String, dynamic>? edition;
+          if (override.isNotEmpty) {
+            for (final e in editions) {
+              if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+            }
+          }
+          edition ??= pickEdition(editions, seriesName);
           if (edition != null) {
             final vols = ((edition['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
             await _naut.cacheVolumes('komga', sid, (edition['name'] ?? '').toString(), vols);
@@ -1098,6 +1125,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   bool _pushing = false;
   List<Map<String, dynamic>>? _nautVolumes;
   String? _nautEditionName;
+  List<Map<String, dynamic>> _nautEditions = []; // pour le dropdown de choix manuel
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
   bool _pushingVolumes = false;
@@ -1197,32 +1225,65 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     setState(() { _loadingNautVolumes = true; _nautVolumesError = null; });
     try {
       final editions = await naut.mangaEditions(match['nautiljon_url'] as String);
-      final edition = pickEdition(editions, widget.seriesName);
       if (!mounted) return;
-      final volumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
-      final editionName = (edition?['name'] ?? '').toString();
-      setState(() {
-        _nautVolumes = volumes;
-        _nautEditionName = editionName;
-        _loadingNautVolumes = false;
-        // La grille "Livres" (seule à supporter la sélection multiple) se
-        // masque dès que des tomes sont chargés -- pas la peine de garder
-        // une sélection en cours dont l'UI a disparu.
-        if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
-      });
-      await naut.cacheVolumes('komga', widget.seriesId, editionName, volumes);
+      _applyEdition(editions, naut.editionOverride('komga', widget.seriesId));
+      setState(() => _loadingNautVolumes = false);
     } catch (e) {
       if (!mounted) return;
       setState(() { _loadingNautVolumes = false; _nautVolumesError = '$e'; });
     }
   }
 
-  // Livre Komga qui porte le même numéro qu'un tome Nautiljon -- même
-  // logique que pushNautVolumesToKomga (par numéro). Utilisé pour que la
-  // carte de tome (cover Nautiljon + infos) serve ELLE-MÊME de tuile de
-  // lecture, au lieu d'avoir une deuxième vignette (celle de la grille
-  // "Livres") pour le même tome.
+  // Voir l'équivalent dans kavita_screen.dart (_KavitaSeriesDetailScreenState) --
+  // même principe : override choisi à la main s'il correspond à une édition présente,
+  // sinon pickEdition automatique, sans refaire d'appel réseau.
+  void _applyEdition(List<Map<String, dynamic>> editions, String override) {
+    Map<String, dynamic>? edition;
+    if (override.isNotEmpty) {
+      for (final e in editions) {
+        if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+      }
+    }
+    edition ??= pickEdition(editions, widget.seriesName);
+    final volumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+    final editionName = (edition?['name'] ?? '').toString();
+    setState(() {
+      _nautEditions = editions;
+      _nautVolumes = volumes;
+      _nautEditionName = editionName;
+      // La grille "Livres" (seule à supporter la sélection multiple) se
+      // masque dès que des tomes sont chargés -- pas la peine de garder
+      // une sélection en cours dont l'UI a disparu.
+      if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
+    });
+    context.read<AppState>().nautiljon.cacheVolumes('komga', widget.seriesId, editionName, volumes);
+  }
+
+  Future<void> _changeEdition(String editionName) async {
+    final naut = context.read<AppState>().nautiljon;
+    await naut.setEditionOverride('komga', widget.seriesId, editionName);
+    if (!mounted) return;
+    _applyEdition(_nautEditions, editionName);
+  }
+
+  // Livre Komga associé à un tome Nautiljon -- d'abord la liaison manuelle éventuelle
+  // (voir NautiljonService.volumeLinks), sinon même logique de correspondance PAR
+  // NUMÉRO que pushNautVolumesToKomga. Utilisé pour que la carte de tome (cover
+  // Nautiljon + infos) serve ELLE-MÊME de tuile de lecture, au lieu d'avoir une
+  // deuxième vignette (celle de la grille "Livres") pour le même tome.
   Map<String, dynamic>? _bookForVolumeNumber(String numberStr) {
+    final naut = context.read<AppState>().nautiljon;
+    final links = naut.volumeLinks('komga', widget.seriesId);
+    final linked = links[numberStr.trim()];
+    if (linked != null) {
+      final linkedId = linked.toString();
+      for (final b in _books) {
+        if ((b['id'] as String?) == linkedId) return b;
+      }
+      // Lien enregistré mais livre pas (encore) chargé dans _books -- un pseudo-item
+      // minimal suffit, seul l'id est utilisé pour ouvrir/pousser.
+      return {'id': linkedId};
+    }
     final volNum = num.tryParse(numberStr.trim());
     if (volNum == null) return null;
     for (final b in _books) {
@@ -1230,6 +1291,37 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
       if (bNum != null && bNum == volNum) return b;
     }
     return null;
+  }
+
+  // Fenêtre de choix manuel du livre correspondant à un tome Nautiljon -- pour les cas
+  // où le matching par numéro échoue ou est ambigu.
+  Future<void> _pickBookFor(String numberStr) async {
+    final chosen = await showDialog<Object?>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Associer le tome $numberStr à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'auto'),
+            child: Text('— Auto (par numéro de tome) —', style: TextStyle(color: AppTheme.t3, fontStyle: FontStyle.italic)),
+          ),
+          ..._books.map((b) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(ctx, b['id'] as String),
+                child: Text('${komgaBookLabel(b)}${b['number'] != null ? ' (n°${b['number']})' : ''}', style: TextStyle(color: AppTheme.t1, fontSize: 13)),
+              )),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final naut = context.read<AppState>().nautiljon;
+    final number = numberStr.trim();
+    if (chosen == 'auto') {
+      await naut.deleteVolumeLink('komga', widget.seriesId, number);
+    } else {
+      await naut.setVolumeLink('komga', widget.seriesId, number, chosen as String);
+    }
+    if (mounted) setState(() {});
   }
 
   Widget _nautVolumeCard(Map<String, dynamic> v) {
@@ -1252,11 +1344,24 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(
-              number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
-              style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
-              maxLines: 2, overflow: TextOverflow.ellipsis,
-            ),
+            Row(children: [
+              Expanded(
+                child: Text(
+                  number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
+                  style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Associer manuellement ce tome à un livre précis -- utile quand le
+              // matching par numéro échoue/est ambigu (voir _bookForVolumeNumber).
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                icon: Icon(Icons.link, size: 15, color: AppTheme.t3),
+                tooltip: 'Associer à un livre précis',
+                onPressed: () => _pickBookFor(number),
+              ),
+            ]),
             if (bookId == null) ...[
               const SizedBox(height: 2),
               Text('Aucun livre Komga correspondant', style: TextStyle(color: AppTheme.t3, fontSize: 10, fontStyle: FontStyle.italic)),
@@ -1345,7 +1450,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _pushingVolumes = true);
-    final (sent, unmatched) = await pushNautVolumesToKomga(context, books: _books, nautVolumes: _nautVolumes!);
+    final (sent, unmatched) = await pushNautVolumesToKomga(context, seriesId: widget.seriesId, books: _books, nautVolumes: _nautVolumes!);
     if (!mounted) return;
     setState(() => _pushingVolumes = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1606,7 +1711,26 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                     Padding(padding: const EdgeInsets.only(top: 6), child: Text(_nautVolumesError!, style: TextStyle(color: AppTheme.ros, fontSize: 11))),
                   if (_nautVolumes != null) ...[
                     const SizedBox(height: 10),
-                    if (_nautEditionName != null && _nautEditionName!.isNotEmpty)
+                    if (_nautEditions.length > 1)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(children: [
+                          Text('Édition : ', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
+                          DropdownButton<String>(
+                            value: _nautEditionName ?? '',
+                            isDense: true,
+                            style: TextStyle(color: AppTheme.t1, fontSize: 11),
+                            dropdownColor: AppTheme.bg,
+                            items: _nautEditions
+                                .map((e) => (e['name'] ?? e['nom'] ?? '').toString())
+                                .toSet()
+                                .map((name) => DropdownMenuItem(value: name, child: Text(name.isEmpty ? 'Standard' : name)))
+                                .toList(),
+                            onChanged: (name) { if (name != null) _changeEdition(name); },
+                          ),
+                        ]),
+                      )
+                    else if (_nautEditionName != null && _nautEditionName!.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 6),
                         child: Text('Édition : ${_nautEditionName!}', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),

@@ -105,21 +105,35 @@ Future<String?> pushNautiljonToKavita(BuildContext context, {required int series
 // correspondance).
 Future<(int, int)> pushNautVolumesToKavita(
   BuildContext context, {
+  required int seriesId,
   required List<Map<String, dynamic>> chapters,
   required List<Map<String, dynamic>> nautVolumes,
 }) async {
   final state = context.read<AppState>();
+  final volumeLinks = state.nautiljon.volumeLinks('kavita', '$seriesId');
   var sent = 0;
   var unmatched = 0;
   for (final nv in nautVolumes) {
-    final volNum = num.tryParse((nv['number'] ?? '').toString().trim());
-    if (volNum == null) { unmatched++; continue; }
-    final matches = chapters.where((it) {
-      final v = it['volume'] as Map<String, dynamic>;
-      final vNum = v['number'] as num?;
-      return vNum != null && vNum == volNum;
-    }).toList();
-    if (matches.isEmpty) { unmatched++; continue; }
+    final rawNum = (nv['number'] ?? '').toString().trim();
+    // Liaison manuelle (voir NautiljonService.setVolumeLink) prioritaire -- voir
+    // _chapterForVolumeNumber (kavita_screen.dart) pour le même principe côté lecture.
+    final linked = volumeLinks[rawNum];
+    List<Map<String, dynamic>> matches;
+    if (linked != null) {
+      final linkedId = (linked is num) ? linked.toInt() : int.tryParse(linked.toString());
+      if (linkedId == null) { unmatched++; continue; }
+      final linkedMatches = chapters.where((it) => (it['chapter'] as Map<String, dynamic>)['id'] == linkedId).toList();
+      matches = linkedMatches.isNotEmpty ? linkedMatches : [{'volume': const <String, dynamic>{}, 'chapter': {'id': linkedId}}];
+    } else {
+      final volNum = num.tryParse(rawNum);
+      if (volNum == null) { unmatched++; continue; }
+      matches = chapters.where((it) {
+        final v = it['volume'] as Map<String, dynamic>;
+        final vNum = v['number'] as num?;
+        return vNum != null && vNum == volNum;
+      }).toList();
+      if (matches.isEmpty) { unmatched++; continue; }
+    }
     final title = (nv['title'] ?? '').toString().trim();
     final synopsis = (nv['synopsis'] ?? '').toString().trim();
     // "extra" (voir NautiljonService.mangaEditions) : tout ce qui est
@@ -531,10 +545,17 @@ class _KavitaScreenState extends State<KavitaScreen> {
           }
         }
         final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
-        final edition = pickEdition(editions, seriesName);
+        final override = _naut.editionOverride('kavita', '$sid');
+        Map<String, dynamic>? edition;
+        if (override.isNotEmpty) {
+          for (final e in editions) {
+            if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+          }
+        }
+        edition ??= pickEdition(editions, seriesName);
         final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
         if (!mounted) return;
-        final (sent, _) = await pushNautVolumesToKavita(context, chapters: chapters, nautVolumes: nautVolumes);
+        final (sent, _) = await pushNautVolumesToKavita(context, seriesId: sid, chapters: chapters, nautVolumes: nautVolumes);
         totalSent += sent;
       } catch (_) {
         seriesFailed++;
@@ -574,7 +595,14 @@ class _KavitaScreenState extends State<KavitaScreen> {
         final match = _naut.matchFor('kavita', '$sid')!;
         try {
           final editions = await _naut.mangaEditions(match['nautiljon_url'] as String);
-          final edition = pickEdition(editions, seriesName);
+          final override = _naut.editionOverride('kavita', '$sid');
+          Map<String, dynamic>? edition;
+          if (override.isNotEmpty) {
+            for (final e in editions) {
+              if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+            }
+          }
+          edition ??= pickEdition(editions, seriesName);
           if (edition != null) {
             final vols = ((edition['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
             await _naut.cacheVolumes('kavita', '$sid', (edition['name'] ?? '').toString(), vols);
@@ -1168,6 +1196,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   bool _pushing = false;
   List<Map<String, dynamic>>? _nautVolumes;
   String? _nautEditionName;
+  List<Map<String, dynamic>> _nautEditions = []; // pour le dropdown de choix manuel
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
   bool _pushingVolumes = false;
@@ -1276,32 +1305,70 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     setState(() { _loadingNautVolumes = true; _nautVolumesError = null; });
     try {
       final editions = await naut.mangaEditions(match['nautiljon_url'] as String);
-      final edition = pickEdition(editions, widget.seriesName);
       if (!mounted) return;
-      final volumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
-      final editionName = (edition?['name'] ?? '').toString();
-      setState(() {
-        _nautVolumes = volumes;
-        _nautEditionName = editionName;
-        _loadingNautVolumes = false;
-        // La grille "Chapitres" (seule à supporter la sélection multiple)
-        // se masque dès que des tomes sont chargés -- pas la peine de
-        // garder une sélection en cours dont l'UI a disparu.
-        if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
-      });
-      await naut.cacheVolumes('kavita', '${widget.seriesId}', editionName, volumes);
+      _applyEdition(editions, naut.editionOverride('kavita', '${widget.seriesId}'));
+      setState(() => _loadingNautVolumes = false);
     } catch (e) {
       if (!mounted) return;
       setState(() { _loadingNautVolumes = false; _nautVolumesError = '$e'; });
     }
   }
 
-  // Chapitre Kavita dont le volume porte le même numéro qu'un tome
-  // Nautiljon -- même logique de correspondance que pushNautVolumesToKavita
-  // (par numéro). Utilisé pour que la carte de tome (cover Nautiljon +
-  // infos) serve ELLE-MÊME de tuile de lecture, au lieu d'avoir une
-  // deuxième vignette (celle de la grille "Chapitres") pour le même tome.
+  // Choisit l'édition (override choisi à la main s'il correspond à une édition
+  // présente, sinon pickEdition automatique) et met à jour tomes affichés + cache --
+  // factorisé pour être réutilisé par _loadNautVolumes ET par le changement manuel
+  // d'édition (dropdown), qui ne refait AUCUN appel réseau (editions déjà en mémoire).
+  void _applyEdition(List<Map<String, dynamic>> editions, String override) {
+    Map<String, dynamic>? edition;
+    if (override.isNotEmpty) {
+      for (final e in editions) {
+        if ((e['name'] ?? e['nom'] ?? '').toString().trim() == override) { edition = e; break; }
+      }
+    }
+    edition ??= pickEdition(editions, widget.seriesName);
+    final volumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
+    final editionName = (edition?['name'] ?? '').toString();
+    setState(() {
+      _nautEditions = editions;
+      _nautVolumes = volumes;
+      _nautEditionName = editionName;
+      // La grille "Chapitres" (seule à supporter la sélection multiple)
+      // se masque dès que des tomes sont chargés -- pas la peine de
+      // garder une sélection en cours dont l'UI a disparu.
+      if (_nautVolumes!.isNotEmpty) { _selectMode = false; _selected.clear(); }
+    });
+    context.read<AppState>().nautiljon.cacheVolumes('kavita', '${widget.seriesId}', editionName, volumes);
+  }
+
+  Future<void> _changeEdition(String editionName) async {
+    final naut = context.read<AppState>().nautiljon;
+    await naut.setEditionOverride('kavita', '${widget.seriesId}', editionName);
+    if (!mounted) return;
+    _applyEdition(_nautEditions, editionName);
+  }
+
+  // Chapitre Kavita associé à un tome Nautiljon -- d'abord la liaison manuelle
+  // éventuelle (voir NautiljonService.volumeLinks, indispensable pour les éditions dont
+  // la numérotation Nautiljon ne correspond pas à celle de Kavita, ex. "Cycle N - Tome
+  // M"), sinon même logique de correspondance PAR NUMÉRO que pushNautVolumesToKavita.
+  // Utilisé pour que la carte de tome (cover Nautiljon + infos) serve ELLE-MÊME de
+  // tuile de lecture, au lieu d'avoir une deuxième vignette pour le même tome.
   Map<String, dynamic>? _chapterForVolumeNumber(String numberStr) {
+    final naut = context.read<AppState>().nautiljon;
+    final links = naut.volumeLinks('kavita', '${widget.seriesId}');
+    final linked = links[numberStr.trim()];
+    if (linked != null) {
+      final linkedId = (linked is num) ? linked.toInt() : int.tryParse(linked.toString());
+      if (linkedId != null) {
+        for (final it in _chapters) {
+          final c = it['chapter'] as Map<String, dynamic>;
+          if ((c['id'] as int?) == linkedId) return it;
+        }
+        // Lien enregistré mais chapitre pas (encore) chargé dans _chapters -- un
+        // pseudo-item minimal suffit, seul chapterId est utilisé pour ouvrir/pousser.
+        return {'volume': const <String, dynamic>{}, 'chapter': {'id': linkedId}};
+      }
+    }
     final volNum = num.tryParse(numberStr.trim());
     if (volNum == null) return null;
     for (final it in _chapters) {
@@ -1310,6 +1377,42 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
       if (vNum != null && vNum == volNum) return it;
     }
     return null;
+  }
+
+  // Fenêtre de choix manuel du chapitre correspondant à un tome Nautiljon -- pour les
+  // cas où le matching par numéro échoue ou est ambigu (ex. "cycles" Dragon Ball).
+  Future<void> _pickChapterFor(String numberStr) async {
+    final chosen = await showDialog<Object?>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: AppTheme.bg,
+        title: Text('Associer le tome $numberStr à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'auto'),
+            child: Text('— Auto (par numéro de tome) —', style: TextStyle(color: AppTheme.t3, fontStyle: FontStyle.italic)),
+          ),
+          ..._chapters.map((it) {
+            final v = it['volume'] as Map<String, dynamic>;
+            final c = it['chapter'] as Map<String, dynamic>;
+            final cId = c['id'] as int;
+            return SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, cId),
+              child: Text(_chapterLabel(v, c), style: TextStyle(color: AppTheme.t1, fontSize: 13)),
+            );
+          }),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final naut = context.read<AppState>().nautiljon;
+    final number = numberStr.trim();
+    if (chosen == 'auto') {
+      await naut.deleteVolumeLink('kavita', '${widget.seriesId}', number);
+    } else {
+      await naut.setVolumeLink('kavita', '${widget.seriesId}', number, chosen as int);
+    }
+    if (mounted) setState(() {});
   }
 
   Widget _nautVolumeCard(Map<String, dynamic> v) {
@@ -1334,11 +1437,24 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(
-              number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
-              style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
-              maxLines: 2, overflow: TextOverflow.ellipsis,
-            ),
+            Row(children: [
+              Expanded(
+                child: Text(
+                  number.isNotEmpty ? 'Tome $number${title.isNotEmpty ? ' — $title' : ''}' : (title.isNotEmpty ? title : '?'),
+                  style: TextStyle(color: AppTheme.t1, fontSize: 12, fontWeight: FontWeight.w700),
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Associer manuellement ce tome à un chapitre précis -- utile quand le
+              // matching par numéro échoue/est ambigu (voir _chapterForVolumeNumber).
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                icon: Icon(Icons.link, size: 15, color: AppTheme.t3),
+                tooltip: 'Associer à un chapitre précis',
+                onPressed: () => _pickChapterFor(number),
+              ),
+            ]),
             if (chapterId == null) ...[
               const SizedBox(height: 2),
               Text('Aucun chapitre Kavita correspondant', style: TextStyle(color: AppTheme.t3, fontSize: 10, fontStyle: FontStyle.italic)),
@@ -1427,7 +1543,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _pushingVolumes = true);
-    final (sent, unmatched) = await pushNautVolumesToKavita(context, chapters: _chapters, nautVolumes: _nautVolumes!);
+    final (sent, unmatched) = await pushNautVolumesToKavita(context, seriesId: widget.seriesId, chapters: _chapters, nautVolumes: _nautVolumes!);
     if (!mounted) return;
     setState(() => _pushingVolumes = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1709,7 +1825,26 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
               Padding(padding: const EdgeInsets.only(top: 6), child: Text(_nautVolumesError!, style: TextStyle(color: AppTheme.ros, fontSize: 11))),
             if (_nautVolumes != null) ...[
               const SizedBox(height: 10),
-              if (_nautEditionName != null && _nautEditionName!.isNotEmpty)
+              if (_nautEditions.length > 1)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(children: [
+                    Text('Édition : ', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),
+                    DropdownButton<String>(
+                      value: _nautEditionName ?? '',
+                      isDense: true,
+                      style: TextStyle(color: AppTheme.t1, fontSize: 11),
+                      dropdownColor: AppTheme.bg,
+                      items: _nautEditions
+                          .map((e) => (e['name'] ?? e['nom'] ?? '').toString())
+                          .toSet() // au cas où deux éditions porteraient le même nom
+                          .map((name) => DropdownMenuItem(value: name, child: Text(name.isEmpty ? 'Standard' : name)))
+                          .toList(),
+                      onChanged: (name) { if (name != null) _changeEdition(name); },
+                    ),
+                  ]),
+                )
+              else if (_nautEditionName != null && _nautEditionName!.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text('Édition : ${_nautEditionName!}', style: TextStyle(color: AppTheme.t3, fontSize: 11, fontWeight: FontWeight.w600)),

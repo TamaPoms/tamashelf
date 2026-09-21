@@ -483,6 +483,53 @@ class NautiljonService {
     await _saveMatches();
   }
 
+  // Édition Nautiljon choisie à la main pour une série (au lieu du choix automatique de
+  // pickEdition) -- même principe de stockage que cacheVolumes, DANS l'entrée de match.
+  // Chaîne vide (ou absente) -> retour au choix automatique.
+  String editionOverride(String source, String seriesId) {
+    final m = matchFor(source, seriesId);
+    return (m?['edition_override'] ?? '').toString();
+  }
+
+  Future<void> setEditionOverride(String source, String seriesId, String editionName) async {
+    final key = matchKey(source, seriesId);
+    final m = _matches[key];
+    if (m == null) return;
+    _matches[key] = {...m, 'edition_override': editionName};
+    await _saveMatches();
+  }
+
+  // Liaisons tome Nautiljon -> chapitre Kavita (int) / livre Komga (String) choisies à
+  // la main, {numero_tome: id} -- indispensable quand la numérotation Nautiljon ne
+  // correspond pas à celle de Kavita/Komga (ex. éditions "Cycle N - Tome M" numérotées
+  // en continu côté Nautiljon). Voir aussi le pendant backend/web (kavita_matches.
+  // volume_links_json / komga_matches.volume_links_json, main.py).
+  Map<String, dynamic> volumeLinks(String source, String seriesId) {
+    final m = matchFor(source, seriesId);
+    final links = m?['volume_links'];
+    return (links is Map) ? Map<String, dynamic>.from(links) : {};
+  }
+
+  Future<void> setVolumeLink(String source, String seriesId, String volumeNumber, dynamic targetId) async {
+    final key = matchKey(source, seriesId);
+    final m = _matches[key];
+    if (m == null) return;
+    final links = volumeLinks(source, seriesId);
+    links[volumeNumber] = targetId;
+    _matches[key] = {...m, 'volume_links': links};
+    await _saveMatches();
+  }
+
+  Future<void> deleteVolumeLink(String source, String seriesId, String volumeNumber) async {
+    final key = matchKey(source, seriesId);
+    final m = _matches[key];
+    if (m == null) return;
+    final links = volumeLinks(source, seriesId);
+    links.remove(volumeNumber);
+    _matches[key] = {...m, 'volume_links': links};
+    await _saveMatches();
+  }
+
   // Associations sauvegardées avant l'ajout des tags (voir saveMatch) --
   // n'ont pas de 'metadata', ou une metadata vide. Repasse dessus pour
   // aller chercher leurs tags sans avoir à tout ré-associer à la main.
