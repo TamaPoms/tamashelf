@@ -3089,6 +3089,23 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             ? (editions.find(e => (e.name || e.nom || "").trim() === editionOverride) || pickEditionJs(editions, sel.name))
             : pickEditionJs(editions, sel.name);
           const nautVolumes = edition?.volumes || [];
+          // Toujours visible dès qu'il y a plusieurs éditions -- avant, ce sélecteur
+          // n'apparaissait que si l'édition COURANTE avait des tomes, donc invisible
+          // (et donc impossible à changer) si l'auto-pick tombait sur une édition
+          // vide (0 tome, ex. une édition "à paraître").
+          const editionSelector = editions.length > 1 ? (
+            <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
+              <select
+                value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
+                onChange={e => { const name = e.target.value; api.kavitaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
+                style={{ fontSize: 11, padding: "3px 6px" }}
+              >
+                <option value="">Auto ({(pickEditionJs(editions, sel.name)?.name || pickEditionJs(editions, sel.name)?.nom || "?")})</option>
+                {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`} ({(e.volumes || []).length} tome{(e.volumes || []).length > 1 ? "s" : ""})</option>)}
+              </select>
+            </div>
+          ) : null;
           if (nautVolumes.length > 0) {
             // Sous-groupe "Cycle N"/"Box N"/... (édition Nautiljon scindée en plusieurs
             // séries Kavita) -- filtre + renumérote localement si détecté, sinon liste
@@ -3150,19 +3167,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             );
             return (
               <div style={{ padding: "0 12px" }}>
-                {editions.length > 1 && (
-                  <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
-                    <select
-                      value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
-                      onChange={e => { const name = e.target.value; api.kavitaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
-                      style={{ fontSize: 11, padding: "3px 6px" }}
-                    >
-                      <option value="">Auto ({(pickEditionJs(editions, sel.name)?.name || pickEditionJs(editions, sel.name)?.nom || "?")})</option>
-                      {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`}</option>)}
-                    </select>
-                  </div>
-                )}
+                {editionSelector}
                 {matched.map(renderCard)}
                 {unmatched.length > 0 && (
                   <div style={{ marginTop: 8 }}>
@@ -3176,6 +3181,18 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             );
           }
           if (loadingVolumes) return <div className="empty"><p>Chargement…</p></div>;
+          if (editions.length > 0) {
+            // Une fiche Nautiljon est associée et a des éditions, mais celle
+            // actuellement choisie (auto ou override) n'a aucun tome -- garder le
+            // sélecteur visible pour en choisir une autre, plutôt que de retomber
+            // silencieusement sur la grille de chapitres Kavita bruts.
+            return (
+              <div style={{ padding: "0 12px" }}>
+                {editionSelector}
+                <p style={{ color: "var(--t3)", fontSize: 12 }}>Cette édition ne contient aucun tome référencé sur Nautiljon.</p>
+              </div>
+            );
+          }
           return (
             <div className="vg vg-lg">
               {volumes.flatMap(v => (v.chapters || []).map(c => {
@@ -3923,6 +3940,21 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
             ? (editions.find(e => (e.name || e.nom || "").trim() === editionOverride) || pickEditionJs(editions, seriesTitle))
             : pickEditionJs(editions, seriesTitle);
           const nautVolumes = edition?.volumes || [];
+          // Toujours visible dès qu'il y a plusieurs éditions -- voir KavitaBrowser
+          // pour le détail du bug que ça corrige (auto-pick sur une édition vide).
+          const editionSelector = editions.length > 1 ? (
+            <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
+              <select
+                value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
+                onChange={e => { const name = e.target.value; api.komgaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
+                style={{ fontSize: 11, padding: "3px 6px" }}
+              >
+                <option value="">Auto ({(pickEditionJs(editions, seriesTitle)?.name || pickEditionJs(editions, seriesTitle)?.nom || "?")})</option>
+                {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`} ({(e.volumes || []).length} tome{(e.volumes || []).length > 1 ? "s" : ""})</option>)}
+              </select>
+            </div>
+          ) : null;
           if (nautVolumes.length > 0) {
             // Sous-groupe "Cycle N"/"Box N"/... voir resolveDisplayVolumesJs (même
             // principe que KavitaBrowser).
@@ -3968,19 +4000,7 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
             );
             return (
               <div style={{ padding: "0 12px" }}>
-                {editions.length > 1 && (
-                  <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
-                    <select
-                      value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
-                      onChange={e => { const name = e.target.value; api.komgaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
-                      style={{ fontSize: 11, padding: "3px 6px" }}
-                    >
-                      <option value="">Auto ({(pickEditionJs(editions, seriesTitle)?.name || pickEditionJs(editions, seriesTitle)?.nom || "?")})</option>
-                      {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`}</option>)}
-                    </select>
-                  </div>
-                )}
+                {editionSelector}
                 {matched.map(renderCard)}
                 {unmatched.length > 0 && (
                   <div style={{ marginTop: 8 }}>
@@ -3994,6 +4014,14 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
             );
           }
           if (loadingBooks) return <div className="empty"><p>Chargement…</p></div>;
+          if (editions.length > 0) {
+            return (
+              <div style={{ padding: "0 12px" }}>
+                {editionSelector}
+                <p style={{ color: "var(--t3)", fontSize: 12 }}>Cette édition ne contient aucun tome référencé sur Nautiljon.</p>
+              </div>
+            );
+          }
           return (
             <div className="vg vg-lg">
               {books.map(b => (
