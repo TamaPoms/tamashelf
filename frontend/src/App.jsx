@@ -2542,6 +2542,28 @@ function pickEditionJs(editions, seriesTitle) {
   return editions[0];
 }
 
+// Liste discrète des éditions d'un résultat de recherche Nautiljon -- purement
+// informatif (le clic sur le résultat associe toujours la série entière, jamais une
+// édition en particulier) : utile pour repérer avant même d'associer qu'une série a
+// plusieurs éditions (ex. Dragon Ball Z Anime Comics + Anime Comics : Les films), sans
+// avoir à ouvrir la fiche série après coup. Un composant à part (plutôt qu'un fetch en
+// masse dans le parent) : chaque ligne de résultat charge la sienne indépendamment,
+// aucune ne bloque les autres.
+function SearchResultEditions({ url }) {
+  const [editions, setEditions] = useState(null); // null = en cours/inconnu
+  useEffect(() => {
+    let cancelled = false;
+    setEditions(null);
+    api.nautiljonManga(url).then(data => {
+      if (!cancelled) setEditions(data?.editions?.editions || []);
+    }).catch(() => { if (!cancelled) setEditions([]); });
+    return () => { cancelled = true; };
+  }, [url]);
+  if (!editions || editions.length <= 1) return null; // rien à signaler
+  const names = editions.map(e => (e.name || e.nom || "").trim() || "Standard").join(" · ");
+  return <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 2 }}>Éditions : {names}</div>;
+}
+
 // Certaines éditions Nautiljon (ex. "Dragon Ball Z - Anime Comics", 39 tomes) sont
 // scindées côté Kavita/Komga en PLUSIEURS séries -- une par "cycle"/"box"/"partie" --
 // chacune numérotant ses propres chapitres/livres à partir de 1, alors que Nautiljon
@@ -3071,7 +3093,10 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
                 return (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
                     {cov && <img src={cov} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-                    <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                      <SearchResultEditions url={r.url} />
+                    </div>
                   </div>
                 );
               })}
@@ -3467,6 +3492,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
                         ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 5 }} onError={e => { e.target.style.display = "none"; }} />
                         : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 5, background: "var(--c1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
                       <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{r.title}</span>
+                      <SearchResultEditions url={r.url} />
                     </div>
                   );
                 })}
@@ -3923,7 +3949,10 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
                 return (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", background: "var(--c2)", borderRadius: 6, cursor: "pointer", border: "1px solid var(--brd)" }} onClick={() => saveMatch(r.url)}>
                     {cov && <img src={cov} alt="" style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
-                    <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontSize: 12, color: "var(--t1)" }}>{r.title}</span>
+                      <SearchResultEditions url={r.url} />
+                    </div>
                   </div>
                 );
               })}
@@ -4278,6 +4307,7 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
                         ? <img src={cov} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", borderRadius: 5 }} onError={e => { e.target.style.display = "none"; }} />
                         : <div style={{ width: "100%", aspectRatio: "2/3", borderRadius: 5, background: "var(--c1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📖</div>}
                       <span style={{ fontSize: 12, color: "var(--t1)", fontWeight: 600, textAlign: "center" }}>{r.title}</span>
+                      <SearchResultEditions url={r.url} />
                     </div>
                   );
                 })}

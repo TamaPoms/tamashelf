@@ -1813,6 +1813,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                                           errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
                                 ),
                                 title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: _NautEditionsHint(url: (r['url'] ?? '').toString()),
                                 onTap: () => _pick(r),
                               );
                             },
@@ -2163,6 +2164,7 @@ class _KomgaMatchAllScreenState extends State<KomgaMatchAllScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          _NautEditionsHint(url: (r['url'] ?? '').toString()),
                         ]),
                       );
                     },
@@ -2173,6 +2175,45 @@ class _KomgaMatchAllScreenState extends State<KomgaMatchAllScreen> {
         ]),
       ),
     );
+  }
+}
+
+// Voir l'équivalent dans kavita_screen.dart (même principe, dupliqué ici pour ne pas
+// coupler les deux fichiers d'écran l'un à l'autre).
+class _NautEditionsHint extends StatefulWidget {
+  final String url;
+  const _NautEditionsHint({required this.url});
+  @override
+  State<_NautEditionsHint> createState() => _NautEditionsHintState();
+}
+
+class _NautEditionsHintState extends State<_NautEditionsHint> {
+  List<Map<String, dynamic>>? _editions;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.url.isNotEmpty) _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final editions = await context.read<AppState>().nautiljon.mangaEditions(widget.url);
+      if (mounted) setState(() => _editions = editions);
+    } catch (_) {
+      if (mounted) setState(() => _editions = []);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editions = _editions;
+    if (editions == null || editions.length <= 1) return const SizedBox.shrink();
+    final names = editions
+        .map((e) => (e['name'] ?? e['nom'] ?? '').toString().trim())
+        .map((n) => n.isEmpty ? 'Standard' : n)
+        .join(' · ');
+    return Text('Éditions : $names', style: TextStyle(color: AppTheme.t3, fontSize: 9), maxLines: 2, overflow: TextOverflow.ellipsis);
   }
 }
 

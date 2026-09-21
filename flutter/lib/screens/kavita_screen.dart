@@ -1927,6 +1927,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                                     errorBuilder: (_, __, ___) => Icon(Icons.book, color: AppTheme.t3)),
                           ),
                           title: Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: _NautEditionsHint(url: (r['url'] ?? '').toString()),
                           onTap: () => _pick(r),
                         );
                       },
@@ -2284,6 +2285,7 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(r['title']?.toString() ?? '?', style: TextStyle(color: AppTheme.t1, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
+                          _NautEditionsHint(url: (r['url'] ?? '').toString()),
                         ]),
                       );
                     },
@@ -2294,6 +2296,46 @@ class _KavitaMatchAllScreenState extends State<KavitaMatchAllScreen> {
         ]),
       ),
     );
+  }
+}
+
+// Liste discrète des éditions d'un résultat de recherche Nautiljon -- purement
+// informatif (le tap associe toujours la série entière, jamais une édition en
+// particulier) : voir SearchResultEditions (App.jsx, web) pour le même principe.
+class _NautEditionsHint extends StatefulWidget {
+  final String url;
+  const _NautEditionsHint({required this.url});
+  @override
+  State<_NautEditionsHint> createState() => _NautEditionsHintState();
+}
+
+class _NautEditionsHintState extends State<_NautEditionsHint> {
+  List<Map<String, dynamic>>? _editions;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.url.isNotEmpty) _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final editions = await context.read<AppState>().nautiljon.mangaEditions(widget.url);
+      if (mounted) setState(() => _editions = editions);
+    } catch (_) {
+      if (mounted) setState(() => _editions = []);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editions = _editions;
+    if (editions == null || editions.length <= 1) return const SizedBox.shrink();
+    final names = editions
+        .map((e) => (e['name'] ?? e['nom'] ?? '').toString().trim())
+        .map((n) => n.isEmpty ? 'Standard' : n)
+        .join(' · ');
+    return Text('Éditions : $names', style: TextStyle(color: AppTheme.t3, fontSize: 9), maxLines: 2, overflow: TextOverflow.ellipsis);
   }
 }
 
