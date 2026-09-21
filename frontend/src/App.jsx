@@ -3118,9 +3118,14 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
           // n'apparaissait que si l'édition COURANTE avait des tomes, donc invisible
           // (et donc impossible à changer) si l'auto-pick tombait sur une édition
           // vide (0 tome, ex. une édition "à paraître").
+          // Toujours un indicateur du nombre d'éditions vues par le backend dès qu'il y
+          // a un match (même à 0 ou 1) -- sinon aucun moyen de savoir depuis l'interface
+          // si le problème est "une seule édition vraiment remontée" (bug de
+          // récupération des données, app.py/nautiljon_db.py) plutôt que "le sélecteur
+          // ne s'affiche pas".
           const editionSelector = editions.length > 1 ? (
             <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
+              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition ({editions.length}) :</span>
               <select
                 value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
                 onChange={e => { const name = e.target.value; api.kavitaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
@@ -3130,7 +3135,13 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
                 {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`} ({(e.volumes || []).length} tome{(e.volumes || []).length > 1 ? "s" : ""})</option>)}
               </select>
             </div>
-          ) : null;
+          ) : (nautMatch ? (
+            <div style={{ marginBottom: 10, fontSize: 10, color: "var(--t3)" }}>
+              {editions.length === 1
+                ? `1 seule édition trouvée sur Nautiljon pour cette fiche : ${editions[0].name || editions[0].nom || "sans nom"} (${(editions[0].volumes || []).length} tome(s)).`
+                : "0 édition trouvée sur Nautiljon pour cette fiche (problème de récupération des données)."}
+            </div>
+          ) : null);
           if (nautVolumes.length > 0) {
             // Sous-groupe "Cycle N"/"Box N"/... (édition Nautiljon scindée en plusieurs
             // séries Kavita) -- filtre + renumérote localement si détecté, sinon liste
@@ -3206,10 +3217,10 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             );
           }
           if (loadingVolumes) return <div className="empty"><p>Chargement…</p></div>;
-          if (editions.length > 0) {
-            // Une fiche Nautiljon est associée et a des éditions, mais celle
-            // actuellement choisie (auto ou override) n'a aucun tome -- garder le
-            // sélecteur visible pour en choisir une autre, plutôt que de retomber
+          if (editionSelector) {
+            // Une fiche Nautiljon est associée, mais l'édition actuellement choisie
+            // (auto ou override) n'a aucun tome -- garder le sélecteur/indicateur
+            // visible pour diagnostiquer/en choisir une autre, plutôt que de retomber
             // silencieusement sur la grille de chapitres Kavita bruts.
             return (
               <div style={{ padding: "0 12px" }}>
@@ -3971,9 +3982,11 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
           const nautVolumes = edition?.volumes || [];
           // Toujours visible dès qu'il y a plusieurs éditions -- voir KavitaBrowser
           // pour le détail du bug que ça corrige (auto-pick sur une édition vide).
+          // Voir l'équivalent dans KavitaBrowser -- toujours un indicateur du nombre
+          // d'éditions vues par le backend dès qu'il y a un match, même à 0 ou 1.
           const editionSelector = editions.length > 1 ? (
             <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition :</span>
+              <span style={{ fontSize: 11, color: "var(--t3)" }}>Édition ({editions.length}) :</span>
               <select
                 value={editionOverride && editions.some(e => (e.name || e.nom || "").trim() === editionOverride) ? editionOverride : ""}
                 onChange={e => { const name = e.target.value; api.komgaSetEdition(sel.id, name).then(() => setEditionOverride(name)).catch(err => show(`❌ ${err.message}`)); }}
@@ -3983,7 +3996,13 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
                 {editions.map((e, i) => <option key={i} value={(e.name || e.nom || "").trim()}>{e.name || e.nom || `Édition ${i + 1}`} ({(e.volumes || []).length} tome{(e.volumes || []).length > 1 ? "s" : ""})</option>)}
               </select>
             </div>
-          ) : null;
+          ) : (nautMatch ? (
+            <div style={{ marginBottom: 10, fontSize: 10, color: "var(--t3)" }}>
+              {editions.length === 1
+                ? `1 seule édition trouvée sur Nautiljon pour cette fiche : ${editions[0].name || editions[0].nom || "sans nom"} (${(editions[0].volumes || []).length} tome(s)).`
+                : "0 édition trouvée sur Nautiljon pour cette fiche (problème de récupération des données)."}
+            </div>
+          ) : null);
           if (nautVolumes.length > 0) {
             // Sous-groupe "Cycle N"/"Box N"/... voir resolveDisplayVolumesJs (même
             // principe que KavitaBrowser).
@@ -4043,7 +4062,7 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
             );
           }
           if (loadingBooks) return <div className="empty"><p>Chargement…</p></div>;
-          if (editions.length > 0) {
+          if (editionSelector) {
             return (
               <div style={{ padding: "0 12px" }}>
                 {editionSelector}
