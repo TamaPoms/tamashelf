@@ -86,29 +86,31 @@ Future<String?> pushNautiljonToKomga(BuildContext context, {required String seri
 Future<(int, int)> pushNautVolumesToKomga(
   BuildContext context, {
   required String seriesId,
+  required String seriesName,
   required List<Map<String, dynamic>> books,
   required List<Map<String, dynamic>> nautVolumes,
 }) async {
   final state = context.read<AppState>();
   final volumeLinks = state.nautiljon.volumeLinks('komga', seriesId);
+  // Sous-groupe "Cycle N"/"Box N"/... voir resolveDisplayVolumes (nautiljon_service.dart).
+  final resolved = resolveDisplayVolumes(nautVolumes, seriesName);
   var sent = 0;
   var unmatched = 0;
-  for (final nv in nautVolumes) {
-    final rawNum = (nv['number'] ?? '').toString().trim();
-    // Liaison manuelle (voir NautiljonService.setVolumeLink) prioritaire -- voir
-    // _bookForVolumeNumber (komga_screen.dart) pour le même principe côté lecture.
-    final linked = volumeLinks[rawNum];
+  for (final (nv, effNum) in resolved) {
+    // Liaison manuelle (voir NautiljonService.setVolumeLink, clé = id Nautiljon du
+    // tome) prioritaire -- voir _bookForVolume (komga_screen.dart) pour le même
+    // principe côté lecture.
+    final linked = volumeLinks['${nv['id']}'];
     List<Map<String, dynamic>> matches;
     if (linked != null) {
       final linkedId = linked.toString();
       final linkedMatches = books.where((b) => b['id'] == linkedId).toList();
       matches = linkedMatches.isNotEmpty ? linkedMatches : [{'id': linkedId}];
     } else {
-      final volNum = num.tryParse(rawNum);
-      if (volNum == null) { unmatched++; continue; }
+      if (effNum == null) { unmatched++; continue; }
       matches = books.where((b) {
         final bNum = b['number'] as num?;
-        return bNum != null && bNum == volNum;
+        return bNum != null && bNum == effNum;
       }).toList();
       if (matches.isEmpty) { unmatched++; continue; }
     }
@@ -472,7 +474,7 @@ class _KomgaScreenState extends State<KomgaScreen> {
         edition ??= pickEdition(editions, seriesName);
         final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
         if (!mounted) return;
-        final (sent, _) = await pushNautVolumesToKomga(context, seriesId: sid, books: books, nautVolumes: nautVolumes);
+        final (sent, _) = await pushNautVolumesToKomga(context, seriesId: sid, seriesName: seriesName, books: books, nautVolumes: nautVolumes);
         totalSent += sent;
       } catch (_) {
         seriesFailed++;
@@ -1126,6 +1128,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   List<Map<String, dynamic>>? _nautVolumes;
   String? _nautEditionName;
   List<Map<String, dynamic>> _nautEditions = []; // pour le dropdown de choix manuel
+  bool _showUnmatchedVolumes = false;
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
   bool _pushingVolumes = false;
@@ -1267,14 +1270,16 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
   }
 
   // Livre Komga associé à un tome Nautiljon -- d'abord la liaison manuelle éventuelle
-  // (voir NautiljonService.volumeLinks), sinon même logique de correspondance PAR
-  // NUMÉRO que pushNautVolumesToKomga. Utilisé pour que la carte de tome (cover
-  // Nautiljon + infos) serve ELLE-MÊME de tuile de lecture, au lieu d'avoir une
-  // deuxième vignette (celle de la grille "Livres") pour le même tome.
-  Map<String, dynamic>? _bookForVolumeNumber(String numberStr) {
+  // (voir NautiljonService.volumeLinks, clé = id Nautiljon du tome, stable), sinon
+  // correspondance par NUMÉRO EFFECTIF (brut, ou renuméroté localement par un
+  // sous-groupe "Cycle N" détecté -- voir resolveDisplayVolumes) même logique que
+  // pushNautVolumesToKomga. Utilisé pour que la carte de tome (cover Nautiljon +
+  // infos) serve ELLE-MÊME de tuile de lecture, au lieu d'avoir une deuxième vignette
+  // (celle de la grille "Livres") pour le même tome.
+  Map<String, dynamic>? _bookForVolume(Map<String, dynamic> v, num? effNum) {
     final naut = context.read<AppState>().nautiljon;
     final links = naut.volumeLinks('komga', widget.seriesId);
-    final linked = links[numberStr.trim()];
+    final linked = links['${v['id']}'];
     if (linked != null) {
       final linkedId = linked.toString();
       for (final b in _books) {
@@ -1284,23 +1289,23 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
       // minimal suffit, seul l'id est utilisé pour ouvrir/pousser.
       return {'id': linkedId};
     }
-    final volNum = num.tryParse(numberStr.trim());
-    if (volNum == null) return null;
+    if (effNum == null) return null;
     for (final b in _books) {
       final bNum = b['number'] as num?;
-      if (bNum != null && bNum == volNum) return b;
+      if (bNum != null && bNum == effNum) return b;
     }
     return null;
   }
 
   // Fenêtre de choix manuel du livre correspondant à un tome Nautiljon -- pour les cas
   // où le matching par numéro échoue ou est ambigu.
-  Future<void> _pickBookFor(String numberStr) async {
+  Future<void> _pickBookFor(Map<String, dynamic> v) async {
+    final number = (v['number'] ?? '').toString();
     final chosen = await showDialog<Object?>(
       context: context,
       builder: (ctx) => SimpleDialog(
         backgroundColor: AppTheme.bg,
-        title: Text('Associer le tome $numberStr à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
+        title: Text('Associer le tome $number à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
         children: [
           SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, 'auto'),
@@ -1315,22 +1320,22 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     );
     if (chosen == null || !mounted) return;
     final naut = context.read<AppState>().nautiljon;
-    final number = numberStr.trim();
+    final volumeId = '${v['id']}';
     if (chosen == 'auto') {
-      await naut.deleteVolumeLink('komga', widget.seriesId, number);
+      await naut.deleteVolumeLink('komga', widget.seriesId, volumeId);
     } else {
-      await naut.setVolumeLink('komga', widget.seriesId, number, chosen as String);
+      await naut.setVolumeLink('komga', widget.seriesId, volumeId, chosen as String);
     }
     if (mounted) setState(() {});
   }
 
-  Widget _nautVolumeCard(Map<String, dynamic> v) {
+  Widget _nautVolumeCard(Map<String, dynamic> v, num? effNum) {
     final cover = (v['cover_url'] ?? '').toString();
     final number = (v['number'] ?? '').toString();
     final title = (v['title'] ?? '').toString();
     final synopsis = (v['synopsis'] ?? '').toString();
     final extra = (v['extra'] is Map) ? Map<String, dynamic>.from(v['extra'] as Map) : const <String, dynamic>{};
-    final book = _bookForVolumeNumber(number);
+    final book = _bookForVolume(v, effNum);
     final bookId = book?['id'] as String?;
     final downloaded = bookId != null && _downloadedIds.contains(bookId);
     return Container(
@@ -1353,13 +1358,13 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                 ),
               ),
               // Associer manuellement ce tome à un livre précis -- utile quand le
-              // matching par numéro échoue/est ambigu (voir _bookForVolumeNumber).
+              // matching par numéro échoue/est ambigu (voir _bookForVolume).
               IconButton(
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                 icon: Icon(Icons.link, size: 15, color: AppTheme.t3),
                 tooltip: 'Associer à un livre précis',
-                onPressed: () => _pickBookFor(number),
+                onPressed: () => _pickBookFor(v),
               ),
             ]),
             if (bookId == null) ...[
@@ -1450,7 +1455,7 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _pushingVolumes = true);
-    final (sent, unmatched) = await pushNautVolumesToKomga(context, seriesId: widget.seriesId, books: _books, nautVolumes: _nautVolumes!);
+    final (sent, unmatched) = await pushNautVolumesToKomga(context, seriesId: widget.seriesId, seriesName: widget.seriesName, books: _books, nautVolumes: _nautVolumes!);
     if (!mounted) return;
     setState(() => _pushingVolumes = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1746,7 +1751,29 @@ class _KomgaSeriesDetailScreenState extends State<KomgaSeriesDetailScreen> {
                         label: const Text('Envoyer les tomes vers Komga'),
                       ),
                       const SizedBox(height: 10),
-                      Column(children: _nautVolumes!.map(_nautVolumeCard).toList()),
+                      Builder(builder: (_) {
+                        final resolved = resolveDisplayVolumes(_nautVolumes!, widget.seriesName);
+                        final matched = <Widget>[];
+                        final unmatched = <Widget>[];
+                        for (final (v, effNum) in resolved) {
+                          final card = _nautVolumeCard(v, effNum);
+                          (_bookForVolume(v, effNum) != null ? matched : unmatched).add(card);
+                        }
+                        return Column(children: [
+                          ...matched,
+                          if (unmatched.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            OutlinedButton(
+                              onPressed: () => setState(() => _showUnmatchedVolumes = !_showUnmatchedVolumes),
+                              child: Text(
+                                '${_showUnmatchedVolumes ? '▲ Masquer' : '▼ Afficher'} les ${unmatched.length} tome(s) sans correspondance',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                            if (_showUnmatchedVolumes) ...[const SizedBox(height: 8), ...unmatched],
+                          ],
+                        ]);
+                      }),
                     ],
                   ],
                 ],

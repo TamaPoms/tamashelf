@@ -106,18 +106,21 @@ Future<String?> pushNautiljonToKavita(BuildContext context, {required int series
 Future<(int, int)> pushNautVolumesToKavita(
   BuildContext context, {
   required int seriesId,
+  required String seriesName,
   required List<Map<String, dynamic>> chapters,
   required List<Map<String, dynamic>> nautVolumes,
 }) async {
   final state = context.read<AppState>();
   final volumeLinks = state.nautiljon.volumeLinks('kavita', '$seriesId');
+  // Sous-groupe "Cycle N"/"Box N"/... voir resolveDisplayVolumes (nautiljon_service.dart).
+  final resolved = resolveDisplayVolumes(nautVolumes, seriesName);
   var sent = 0;
   var unmatched = 0;
-  for (final nv in nautVolumes) {
-    final rawNum = (nv['number'] ?? '').toString().trim();
-    // Liaison manuelle (voir NautiljonService.setVolumeLink) prioritaire -- voir
-    // _chapterForVolumeNumber (kavita_screen.dart) pour le même principe côté lecture.
-    final linked = volumeLinks[rawNum];
+  for (final (nv, effNum) in resolved) {
+    // Liaison manuelle (voir NautiljonService.setVolumeLink, clé = id Nautiljon du
+    // tome) prioritaire -- voir _chapterForVolume (kavita_screen.dart) pour le même
+    // principe côté lecture.
+    final linked = volumeLinks['${nv['id']}'];
     List<Map<String, dynamic>> matches;
     if (linked != null) {
       final linkedId = (linked is num) ? linked.toInt() : int.tryParse(linked.toString());
@@ -125,12 +128,11 @@ Future<(int, int)> pushNautVolumesToKavita(
       final linkedMatches = chapters.where((it) => (it['chapter'] as Map<String, dynamic>)['id'] == linkedId).toList();
       matches = linkedMatches.isNotEmpty ? linkedMatches : [{'volume': const <String, dynamic>{}, 'chapter': {'id': linkedId}}];
     } else {
-      final volNum = num.tryParse(rawNum);
-      if (volNum == null) { unmatched++; continue; }
+      if (effNum == null) { unmatched++; continue; }
       matches = chapters.where((it) {
         final v = it['volume'] as Map<String, dynamic>;
         final vNum = v['number'] as num?;
-        return vNum != null && vNum == volNum;
+        return vNum != null && vNum == effNum;
       }).toList();
       if (matches.isEmpty) { unmatched++; continue; }
     }
@@ -555,7 +557,7 @@ class _KavitaScreenState extends State<KavitaScreen> {
         edition ??= pickEdition(editions, seriesName);
         final nautVolumes = ((edition?['volumes'] as List?) ?? []).map((v) => Map<String, dynamic>.from(v as Map)).toList();
         if (!mounted) return;
-        final (sent, _) = await pushNautVolumesToKavita(context, seriesId: sid, chapters: chapters, nautVolumes: nautVolumes);
+        final (sent, _) = await pushNautVolumesToKavita(context, seriesId: sid, seriesName: seriesName, chapters: chapters, nautVolumes: nautVolumes);
         totalSent += sent;
       } catch (_) {
         seriesFailed++;
@@ -1197,6 +1199,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   List<Map<String, dynamic>>? _nautVolumes;
   String? _nautEditionName;
   List<Map<String, dynamic>> _nautEditions = []; // pour le dropdown de choix manuel
+  bool _showUnmatchedVolumes = false;
   bool _loadingNautVolumes = false;
   String? _nautVolumesError;
   bool _pushingVolumes = false;
@@ -1348,15 +1351,17 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
   }
 
   // Chapitre Kavita associé à un tome Nautiljon -- d'abord la liaison manuelle
-  // éventuelle (voir NautiljonService.volumeLinks, indispensable pour les éditions dont
-  // la numérotation Nautiljon ne correspond pas à celle de Kavita, ex. "Cycle N - Tome
-  // M"), sinon même logique de correspondance PAR NUMÉRO que pushNautVolumesToKavita.
-  // Utilisé pour que la carte de tome (cover Nautiljon + infos) serve ELLE-MÊME de
-  // tuile de lecture, au lieu d'avoir une deuxième vignette pour le même tome.
-  Map<String, dynamic>? _chapterForVolumeNumber(String numberStr) {
+  // éventuelle (voir NautiljonService.volumeLinks, clé = id Nautiljon du tome, stable
+  // -- indispensable pour les éditions dont la numérotation Nautiljon ne correspond pas
+  // à celle de Kavita, ex. "Cycle N - Tome M"), sinon correspondance par NUMÉRO
+  // EFFECTIF (brut, ou renuméroté localement par un sous-groupe "Cycle N" détecté --
+  // voir resolveDisplayVolumes) même logique que pushNautVolumesToKavita. Utilisé pour
+  // que la carte de tome (cover Nautiljon + infos) serve ELLE-MÊME de tuile de lecture,
+  // au lieu d'avoir une deuxième vignette pour le même tome.
+  Map<String, dynamic>? _chapterForVolume(Map<String, dynamic> v, num? effNum) {
     final naut = context.read<AppState>().nautiljon;
     final links = naut.volumeLinks('kavita', '${widget.seriesId}');
-    final linked = links[numberStr.trim()];
+    final linked = links['${v['id']}'];
     if (linked != null) {
       final linkedId = (linked is num) ? linked.toInt() : int.tryParse(linked.toString());
       if (linkedId != null) {
@@ -1369,36 +1374,36 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
         return {'volume': const <String, dynamic>{}, 'chapter': {'id': linkedId}};
       }
     }
-    final volNum = num.tryParse(numberStr.trim());
-    if (volNum == null) return null;
+    if (effNum == null) return null;
     for (final it in _chapters) {
-      final v = it['volume'] as Map<String, dynamic>;
-      final vNum = v['number'] as num?;
-      if (vNum != null && vNum == volNum) return it;
+      final v2 = it['volume'] as Map<String, dynamic>;
+      final vNum = v2['number'] as num?;
+      if (vNum != null && vNum == effNum) return it;
     }
     return null;
   }
 
   // Fenêtre de choix manuel du chapitre correspondant à un tome Nautiljon -- pour les
   // cas où le matching par numéro échoue ou est ambigu (ex. "cycles" Dragon Ball).
-  Future<void> _pickChapterFor(String numberStr) async {
+  Future<void> _pickChapterFor(Map<String, dynamic> v) async {
+    final number = (v['number'] ?? '').toString();
     final chosen = await showDialog<Object?>(
       context: context,
       builder: (ctx) => SimpleDialog(
         backgroundColor: AppTheme.bg,
-        title: Text('Associer le tome $numberStr à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
+        title: Text('Associer le tome $number à…', style: TextStyle(color: AppTheme.t1, fontSize: 14)),
         children: [
           SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, 'auto'),
             child: Text('— Auto (par numéro de tome) —', style: TextStyle(color: AppTheme.t3, fontStyle: FontStyle.italic)),
           ),
           ..._chapters.map((it) {
-            final v = it['volume'] as Map<String, dynamic>;
+            final vol = it['volume'] as Map<String, dynamic>;
             final c = it['chapter'] as Map<String, dynamic>;
             final cId = c['id'] as int;
             return SimpleDialogOption(
               onPressed: () => Navigator.pop(ctx, cId),
-              child: Text(_chapterLabel(v, c), style: TextStyle(color: AppTheme.t1, fontSize: 13)),
+              child: Text(_chapterLabel(vol, c), style: TextStyle(color: AppTheme.t1, fontSize: 13)),
             );
           }),
         ],
@@ -1406,22 +1411,22 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     );
     if (chosen == null || !mounted) return;
     final naut = context.read<AppState>().nautiljon;
-    final number = numberStr.trim();
+    final volumeId = '${v['id']}';
     if (chosen == 'auto') {
-      await naut.deleteVolumeLink('kavita', '${widget.seriesId}', number);
+      await naut.deleteVolumeLink('kavita', '${widget.seriesId}', volumeId);
     } else {
-      await naut.setVolumeLink('kavita', '${widget.seriesId}', number, chosen as int);
+      await naut.setVolumeLink('kavita', '${widget.seriesId}', volumeId, chosen as int);
     }
     if (mounted) setState(() {});
   }
 
-  Widget _nautVolumeCard(Map<String, dynamic> v) {
+  Widget _nautVolumeCard(Map<String, dynamic> v, num? effNum) {
     final cover = (v['cover_url'] ?? '').toString();
     final number = (v['number'] ?? '').toString();
     final title = (v['title'] ?? '').toString();
     final synopsis = (v['synopsis'] ?? '').toString();
     final extra = (v['extra'] is Map) ? Map<String, dynamic>.from(v['extra'] as Map) : const <String, dynamic>{};
-    final match = _chapterForVolumeNumber(number);
+    final match = _chapterForVolume(v, effNum);
     final c = match?['chapter'] as Map<String, dynamic>?;
     final chapterId = c?['id'] as int?;
     final downloaded = chapterId != null && _downloadedIds.contains(chapterId);
@@ -1446,13 +1451,13 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                 ),
               ),
               // Associer manuellement ce tome à un chapitre précis -- utile quand le
-              // matching par numéro échoue/est ambigu (voir _chapterForVolumeNumber).
+              // matching par numéro échoue/est ambigu (voir _chapterForVolume).
               IconButton(
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                 icon: Icon(Icons.link, size: 15, color: AppTheme.t3),
                 tooltip: 'Associer à un chapitre précis',
-                onPressed: () => _pickChapterFor(number),
+                onPressed: () => _pickChapterFor(v),
               ),
             ]),
             if (chapterId == null) ...[
@@ -1543,7 +1548,7 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _pushingVolumes = true);
-    final (sent, unmatched) = await pushNautVolumesToKavita(context, seriesId: widget.seriesId, chapters: _chapters, nautVolumes: _nautVolumes!);
+    final (sent, unmatched) = await pushNautVolumesToKavita(context, seriesId: widget.seriesId, seriesName: widget.seriesName, chapters: _chapters, nautVolumes: _nautVolumes!);
     if (!mounted) return;
     setState(() => _pushingVolumes = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1860,7 +1865,29 @@ class _KavitaSeriesDetailScreenState extends State<KavitaSeriesDetailScreen> {
                   label: const Text('Envoyer les tomes vers Kavita'),
                 ),
                 const SizedBox(height: 10),
-                Column(children: _nautVolumes!.map(_nautVolumeCard).toList()),
+                Builder(builder: (_) {
+                  final resolved = resolveDisplayVolumes(_nautVolumes!, widget.seriesName);
+                  final matched = <Widget>[];
+                  final unmatched = <Widget>[];
+                  for (final (v, effNum) in resolved) {
+                    final card = _nautVolumeCard(v, effNum);
+                    (_chapterForVolume(v, effNum) != null ? matched : unmatched).add(card);
+                  }
+                  return Column(children: [
+                    ...matched,
+                    if (unmatched.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      OutlinedButton(
+                        onPressed: () => setState(() => _showUnmatchedVolumes = !_showUnmatchedVolumes),
+                        child: Text(
+                          '${_showUnmatchedVolumes ? '▲ Masquer' : '▼ Afficher'} les ${unmatched.length} tome(s) sans correspondance',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      if (_showUnmatchedVolumes) ...[const SizedBox(height: 8), ...unmatched],
+                    ],
+                  ]);
+                }),
               ],
             ],
           ],

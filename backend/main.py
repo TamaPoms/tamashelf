@@ -2114,6 +2114,10 @@ async def kavita_push_volumes(series_id: int, admin=Depends(require_admin)):
     editions = nautiljon_db.manga_editions(cfg["nautiljon_url"])
     edition = _pick_edition_with_override((editions or {}).get("editions") or [], series.get("name") or "", cfg["edition_override"])
     naut_volumes = (edition or {}).get("volumes") or []
+    # Sous-groupe "Cycle N"/"Box N"/... détecté depuis le nom de la série Kavita --
+    # filtre + renumérote localement les tomes concernés si l'édition Nautiljon a été
+    # scindée en plusieurs séries Kavita (voir resolve_display_volumes).
+    resolved_volumes = nautiljon_db.resolve_display_volumes(naut_volumes, series.get("name") or "")
     volume_links = cfg["volume_links"]
 
     chapters = []
@@ -2123,21 +2127,18 @@ async def kavita_push_volumes(series_id: int, admin=Depends(require_admin)):
 
     sent = 0
     unmatched = 0
-    for nv in naut_volumes:
-        raw_num = str(nv.get("number") or "").strip()
-        # Liaison manuelle (voir kavita_set_volume_link) prioritaire -- indispensable
-        # quand la numérotation Nautiljon ne correspond pas à celle de Kavita (ex.
-        # éditions "Cycle N - Tome M" numérotées en continu côté Nautiljon).
-        linked_id = volume_links.get(raw_num)
+    for nv, eff_num in resolved_volumes:
+        # Liaison manuelle (voir kavita_set_volume_link, clé = id Nautiljon du tome --
+        # stable, indépendant du numéro brut ou du renumérotage de sous-groupe)
+        # prioritaire, sinon matching par numéro effectif (brut ou local au sous-groupe).
+        linked_id = volume_links.get(str(nv.get("id")))
         if linked_id is not None:
             matches = [{"volume": None, "chapter": {"id": int(linked_id)}}]
         else:
-            try:
-                vol_num = float(raw_num)
-            except ValueError:
+            if eff_num is None:
                 unmatched += 1
                 continue
-            matches = [it for it in chapters if it["volume"].get("number") == vol_num]
+            matches = [it for it in chapters if it["volume"].get("number") == eff_num]
             if not matches:
                 unmatched += 1
                 continue
@@ -2511,26 +2512,26 @@ async def komga_push_volumes(series_id: str, admin=Depends(require_admin)):
     editions = nautiljon_db.manga_editions(cfg["nautiljon_url"])
     edition = _pick_edition_with_override((editions or {}).get("editions") or [], komga_series_title(series), cfg["edition_override"])
     naut_volumes = (edition or {}).get("volumes") or []
+    # Sous-groupe "Cycle N"/"Box N"/... voir kavita_push_volumes pour le même principe.
+    resolved_volumes = nautiljon_db.resolve_display_volumes(naut_volumes, komga_series_title(series))
     volume_links = cfg["volume_links"]
     books_by_id = {b["id"]: b for b in books}
 
     sent = 0
     unmatched = 0
-    for nv in naut_volumes:
-        raw_num = str(nv.get("number") or "").strip()
-        # Liaison manuelle (voir komga_set_volume_link) prioritaire -- voir
-        # kavita_push_volumes pour le même principe côté Kavita.
-        linked_id = volume_links.get(raw_num)
+    for nv, eff_num in resolved_volumes:
+        # Liaison manuelle (voir komga_set_volume_link, clé = id Nautiljon du tome)
+        # prioritaire, sinon matching par numéro effectif (brut ou local au
+        # sous-groupe) -- voir kavita_push_volumes pour le même principe côté Kavita.
+        linked_id = volume_links.get(str(nv.get("id")))
         if linked_id is not None:
             linked_book = books_by_id.get(str(linked_id))
             matches = [linked_book] if linked_book else [{"id": str(linked_id)}]
         else:
-            try:
-                vol_num = float(raw_num)
-            except ValueError:
+            if eff_num is None:
                 unmatched += 1
                 continue
-            matches = [b for b in books if b.get("number") == vol_num]
+            matches = [b for b in books if b.get("number") == eff_num]
             if not matches:
                 unmatched += 1
                 continue

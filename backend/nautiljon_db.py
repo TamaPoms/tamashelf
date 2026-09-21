@@ -236,6 +236,39 @@ def pick_edition(editions: list, series_title: str) -> Optional[dict]:
     return editions[0]
 
 
+def _volume_number(v: dict) -> Optional[float]:
+    try:
+        return float(str(v.get("number") or "").strip())
+    except ValueError:
+        return None
+
+
+def resolve_display_volumes(volumes: list, series_title: str) -> list:
+    """Certaines éditions Nautiljon (ex. "Dragon Ball Z - Anime Comics", 39 tomes) sont
+    scindées côté Kavita/Komga en PLUSIEURS séries -- une par "cycle"/"box"/"partie" --
+    chacune numérotant ses propres chapitres/livres à partir de 1, alors que Nautiljon
+    numérote les tomes en continu sur toute l'édition (1 à 39). Le matching par numéro
+    échoue donc dès le 2e sous-groupe (tome Nautiljon 6 vs chapitre Kavita 1).
+
+    On détecte un mot-clé de sous-groupe en fin de titre de la série source ("Cycle 1",
+    "Box 2", "Partie 3"...) et on ne garde que les tomes dont le TITRE Nautiljon
+    commence par ce même mot-clé (ex. "Cycle 1 - Tome 1"), renumérotés localement
+    1..N -- c'est ce numéro local qui sert alors au matching, au lieu du numéro brut.
+    Si aucun mot-clé n'est détecté, ou qu'aucun sous-ensemble propre n'en ressort
+    (aucun tome ne matche, ou tous matchent), on retombe sur la liste et la numérotation
+    d'origine -- comportement strictement inchangé pour les séries "normales".
+
+    Renvoie une liste de (volume, numero_effectif) dans l'ordre d'affichage --
+    numero_effectif est None si le tome n'a ni numéro exploitable ni sous-groupe."""
+    m = re.search(r"(\S+)\s+(\d+)\s*$", (series_title or "").strip())
+    if m:
+        keyword = f"{m.group(1)} {m.group(2)}".strip().lower()
+        subset = [v for v in volumes if (v.get("title") or v.get("titre") or "").strip().lower().startswith(keyword)]
+        if 0 < len(subset) < len(volumes):
+            return [(v, float(i + 1)) for i, v in enumerate(subset)]
+    return [(v, _volume_number(v)) for v in volumes]
+
+
 def split_tag_list(valeur) -> list:
     """Alias public de _liste_depuis -- utilisé hors de ce module (main.py, envoi vers
     Kavita/Komga) pour découper une valeur "extra" de tome en liste de tags."""

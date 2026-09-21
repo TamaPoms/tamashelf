@@ -162,6 +162,28 @@ Map<String, dynamic>? pickEdition(List<Map<String, dynamic>> editions, String se
   return editions.first;
 }
 
+// Certaines éditions Nautiljon (ex. "Dragon Ball Z - Anime Comics", 39 tomes) sont
+// scindées côté Kavita/Komga en PLUSIEURS séries -- une par "cycle"/"box"/"partie" --
+// chacune numérotant ses propres chapitres/livres à partir de 1, alors que Nautiljon
+// numérote les tomes en continu sur toute l'édition. On détecte un mot-clé de
+// sous-groupe en fin de titre de la série source ("Cycle 1", "Box 2"...) et on ne
+// garde que les tomes dont le TITRE Nautiljon commence par ce même mot-clé,
+// renumérotés localement 1..N -- ce numéro local sert alors au matching à la place du
+// numéro brut. Sans mot-clé détecté (ou sans sous-ensemble propre), comportement
+// inchangé (liste et numérotation d'origine). Miroir de resolve_display_volumes
+// (nautiljon_db.py, backend) / resolveDisplayVolumesJs (App.jsx, web).
+List<(Map<String, dynamic>, num?)> resolveDisplayVolumes(List<Map<String, dynamic>> volumes, String seriesTitle) {
+  final m = RegExp(r'(\S+)\s+(\d+)\s*$').firstMatch(seriesTitle.trim());
+  if (m != null) {
+    final keyword = '${m.group(1)} ${m.group(2)}'.toLowerCase();
+    final subset = volumes.where((v) => (v['title'] ?? v['titre'] ?? '').toString().trim().toLowerCase().startsWith(keyword)).toList();
+    if (subset.isNotEmpty && subset.length < volumes.length) {
+      return [for (var i = 0; i < subset.length; i++) (subset[i], i + 1)];
+    }
+  }
+  return [for (final v in volumes) (v, num.tryParse((v['number'] ?? '').toString().trim()))];
+}
+
 // Convertit une date Nautiljon "JJ/MM/AAAA" (ex. "Date de parution VF",
 // voir les champs "extra" d'un tome, NautiljonService.mangaEditions) au
 // format ISO "AAAA-MM-JJ" attendu par les API Kavita/Komga -- null si le

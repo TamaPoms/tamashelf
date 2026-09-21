@@ -2542,6 +2542,28 @@ function pickEditionJs(editions, seriesTitle) {
   return editions[0];
 }
 
+// Certaines éditions Nautiljon (ex. "Dragon Ball Z - Anime Comics", 39 tomes) sont
+// scindées côté Kavita/Komga en PLUSIEURS séries -- une par "cycle"/"box"/"partie" --
+// chacune numérotant ses propres chapitres/livres à partir de 1, alors que Nautiljon
+// numérote les tomes en continu sur toute l'édition. On détecte un mot-clé de
+// sous-groupe en fin de titre de la série source ("Cycle 1", "Box 2"...) et on ne
+// garde que les tomes dont le TITRE Nautiljon commence par ce même mot-clé,
+// renumérotés localement 1..N -- ce numéro local sert alors au matching à la place du
+// numéro brut. Sans mot-clé détecté (ou sans sous-ensemble propre), comportement
+// inchangé (liste et numérotation d'origine). Miroir de resolve_display_volumes
+// (nautiljon_db.py, backend).
+function resolveDisplayVolumesJs(volumes, seriesTitle) {
+  const m = (seriesTitle || "").trim().match(/(\S+)\s+(\d+)\s*$/);
+  if (m) {
+    const keyword = `${m[1]} ${m[2]}`.toLowerCase();
+    const subset = volumes.filter(v => (v.title || v.titre || "").trim().toLowerCase().startsWith(keyword));
+    if (subset.length > 0 && subset.length < volumes.length) {
+      return subset.map((v, i) => ({ v, effNum: i + 1 }));
+    }
+  }
+  return volumes.map(v => ({ v, effNum: Number.isFinite(parseFloat(v.number)) ? parseFloat(v.number) : null }));
+}
+
 // Carte "tome Nautiljon" en 3 colonnes (cover à gauche, synopsis au milieu, infos à
 // droite) -- cliquable pour ouvrir directement la lecture du chapitre/livre associé
 // (par numéro de tome), sans passer par la grille de chapitres/livres brute (qui
@@ -2637,11 +2659,13 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
   const [pushingSeries, setPushingSeries] = useState(false);
   const [pushingVolumes, setPushingVolumes] = useState(false);
   // Édition choisie à la main (sinon "" = choix automatique pick_edition) + liaisons
-  // tome -> chapitre choisies à la main ({numero_tome: chapterId}), persistées côté
-  // backend (kavita_matches.edition_override/volume_links_json) -- voir
-  // pickEditionForDisplay/chapterForNumber plus bas.
+  // tome -> chapitre choisies à la main ({id_tome_nautiljon: chapterId}, clé stable --
+  // pas le numéro, qui peut être renuméroté localement par un sous-groupe "Cycle N",
+  // voir resolveDisplayVolumesJs), persistées côté backend (kavita_matches.
+  // edition_override/volume_links_json).
   const [editionOverride, setEditionOverride] = useState("");
   const [volumeLinks, setVolumeLinks] = useState({});
+  const [showUnmatched, setShowUnmatched] = useState(false);
 
   const refreshMatchesMap = useCallback(() => {
     api.kavitaMatches().then(setMatchesMap).catch(() => {});
@@ -2835,6 +2859,7 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
     setMatchResults([]);
     setEditionOverride("");
     setVolumeLinks({});
+    setShowUnmatched(false);
     try {
       const m = await api.kavitaGetMatch(series.id);
       setEditionOverride(m.edition_override || "");
@@ -3065,6 +3090,10 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
             : pickEditionJs(editions, sel.name);
           const nautVolumes = edition?.volumes || [];
           if (nautVolumes.length > 0) {
+            // Sous-groupe "Cycle N"/"Box N"/... (édition Nautiljon scindée en plusieurs
+            // séries Kavita) -- filtre + renumérote localement si détecté, sinon liste
+            // et numéros d'origine (voir resolveDisplayVolumesJs).
+            const resolved = resolveDisplayVolumesJs(nautVolumes, sel.name);
             // Chaque chapitre Kavita dispo (V<volume>·Ch.<chapitre>) pour le picker
             // d'association manuelle -- voir NautVolumeCard.linkOptions.
             const allChapters = volumes.flatMap(v => (v.chapters || []).map(c => ({
@@ -3072,41 +3101,53 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
               label: `V${v.number > 0 ? v.number : "?"} · Ch.${c.number === -100000 ? "—" : c.number}${c.title ? " — " + c.title : ""}`,
               chapter: c,
             })));
-            const chapterForNumber = (numStr) => {
-              const linked = volumeLinks[String(numStr)];
+            const chapterFor = (v, effNum) => {
+              const linked = volumeLinks[String(v.id)];
               if (linked != null) {
                 const found = allChapters.find(o => o.value === String(linked));
                 if (found) return found.chapter;
                 return { id: Number(linked) }; // lien enregistré mais chapitre pas (encore) listé
               }
-              const n = parseFloat(numStr);
-              for (const v of volumes) {
-                if (v.number === n) {
-                  const c = (v.chapters || [])[0];
+              if (effNum == null) return null;
+              for (const kv of volumes) {
+                if (kv.number === effNum) {
+                  const c = (kv.chapters || [])[0];
                   if (c) return c;
                 }
               }
               return null;
             };
-            const openForNumber = async (numStr) => {
-              const c = chapterForNumber(numStr);
-              if (!c) { show("Aucun chapitre Kavita ne correspond à ce tome."); return; }
+            const openChapter = async (c) => {
               try {
                 const info = await api.kavitaChapterInfo(c.id);
                 onOpenChapter(sel.id, sel.name, c.id, info.pages || c.pages, 0, info.volumeId, info.libraryId);
               } catch (e) { show(`Erreur Kavita : ${e.message}`); }
             };
-            const setVolumeLink = async (volumeNumber, chapterId) => {
+            const setVolumeLink = async (volumeId, chapterId) => {
               try {
                 if (chapterId) {
-                  await api.kavitaSetVolumeLink(sel.id, volumeNumber, chapterId);
-                  setVolumeLinks(prev => ({ ...prev, [String(volumeNumber)]: Number(chapterId) }));
+                  await api.kavitaSetVolumeLink(sel.id, volumeId, chapterId);
+                  setVolumeLinks(prev => ({ ...prev, [String(volumeId)]: Number(chapterId) }));
                 } else {
-                  await api.kavitaDeleteVolumeLink(sel.id, volumeNumber);
-                  setVolumeLinks(prev => { const n = { ...prev }; delete n[String(volumeNumber)]; return n; });
+                  await api.kavitaDeleteVolumeLink(sel.id, volumeId);
+                  setVolumeLinks(prev => { const n = { ...prev }; delete n[String(volumeId)]; return n; });
                 }
               } catch (e) { show(`❌ ${e.message}`); }
             };
+            const withChapter = resolved.map(({ v, effNum }) => ({ v, effNum, c: chapterFor(v, effNum) }));
+            const matched = withChapter.filter(x => x.c);
+            const unmatched = withChapter.filter(x => !x.c);
+            const renderCard = ({ v, c }) => (
+              <NautVolumeCard
+                key={v.id} v={v} onOpen={c ? () => openChapter(c) : null}
+                onDownload={c ? () => downloadKavitaChapter(c.id, v.title || `Tome ${v.number}`, v.cover_full || v.cover_url) : null}
+                downloaded={c ? downloadedSet.has(c.id) : false}
+                downloading={c ? downloadingKey === c.id : false}
+                linkOptions={allChapters}
+                linkedValue={volumeLinks[String(v.id)] != null ? String(volumeLinks[String(v.id)]) : ""}
+                onLinkChange={(val) => setVolumeLink(v.id, val)}
+              />
+            );
             return (
               <div style={{ padding: "0 12px" }}>
                 {editions.length > 1 && (
@@ -3122,20 +3163,15 @@ function KavitaBrowser({ onOpenChapter, show, isAdmin, progress, onResume }) {
                     </select>
                   </div>
                 )}
-                {nautVolumes.map((v, i) => {
-                  const c = chapterForNumber(v.number);
-                  return (
-                    <NautVolumeCard
-                      key={v.id || i} v={v} onOpen={() => openForNumber(v.number)}
-                      onDownload={c ? () => downloadKavitaChapter(c.id, v.title || `Tome ${v.number}`, v.cover_full || v.cover_url) : null}
-                      downloaded={c ? downloadedSet.has(c.id) : false}
-                      downloading={c ? downloadingKey === c.id : false}
-                      linkOptions={allChapters}
-                      linkedValue={volumeLinks[String(v.number)] != null ? String(volumeLinks[String(v.number)]) : ""}
-                      onLinkChange={(val) => setVolumeLink(v.number, val)}
-                    />
-                  );
-                })}
+                {matched.map(renderCard)}
+                {unmatched.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn btn-s" onClick={() => setShowUnmatched(v => !v)}>
+                      {showUnmatched ? "▲ Masquer" : "▼ Afficher"} les {unmatched.length} tome(s) sans correspondance
+                    </button>
+                    {showUnmatched && <div style={{ marginTop: 8 }}>{unmatched.map(renderCard)}</div>}
+                  </div>
+                )}
               </div>
             );
           }
@@ -3487,10 +3523,12 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
   const [pushingSeries, setPushingSeries] = useState(false);
   const [pushingVolumes, setPushingVolumes] = useState(false);
   const [pushingAllVolumes, setPushingAllVolumes] = useState(false);
-  // Voir l'équivalent dans KavitaBrowser -- édition/liaisons tome->livre choisies à la
-  // main, persistées côté backend (komga_matches.edition_override/volume_links_json).
+  // Voir l'équivalent dans KavitaBrowser -- édition/liaisons tome->livre (clé = id
+  // Nautiljon du tome) choisies à la main, persistées côté backend
+  // (komga_matches.edition_override/volume_links_json).
   const [editionOverride, setEditionOverride] = useState("");
   const [volumeLinks, setVolumeLinks] = useState({});
+  const [showUnmatched, setShowUnmatched] = useState(false);
 
   const refreshMatchesMap = useCallback(() => {
     api.komgaMatches().then(setMatchesMap).catch(() => {});
@@ -3668,6 +3706,7 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
     setMatchResults([]);
     setEditionOverride("");
     setVolumeLinks({});
+    setShowUnmatched(false);
     try {
       const m = await api.komgaGetMatch(series.id);
       setEditionOverride(m.edition_override || "");
@@ -3885,35 +3924,48 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
             : pickEditionJs(editions, seriesTitle);
           const nautVolumes = edition?.volumes || [];
           if (nautVolumes.length > 0) {
+            // Sous-groupe "Cycle N"/"Box N"/... voir resolveDisplayVolumesJs (même
+            // principe que KavitaBrowser).
+            const resolved = resolveDisplayVolumesJs(nautVolumes, seriesTitle);
             // Chaque livre Komga dispo pour le picker d'association manuelle -- voir
             // NautVolumeCard.linkOptions.
             const allBooks = books.map(b => ({ value: b.id, label: `${komgaBookLabel(b)}${b.number != null ? ` (n°${b.number})` : ""}`, book: b }));
-            const bookForNumber = (numStr) => {
-              const linked = volumeLinks[String(numStr)];
+            const bookFor = (v, effNum) => {
+              const linked = volumeLinks[String(v.id)];
               if (linked != null) {
                 const found = allBooks.find(o => o.value === String(linked));
                 if (found) return found.book;
                 return { id: String(linked) }; // lien enregistré mais livre pas (encore) listé
               }
-              const n = parseFloat(numStr);
-              return books.find(bk => bk.number === n) || null;
+              if (effNum == null) return null;
+              return books.find(bk => bk.number === effNum) || null;
             };
-            const openForNumber = (numStr) => {
-              const b = bookForNumber(numStr);
-              if (!b) { show("Aucun livre Komga ne correspond à ce tome."); return; }
-              onOpenBook(sel.id, seriesTitle, b.id, (b.media?.pagesCount) || 0, 0);
-            };
-            const setVolumeLink = async (volumeNumber, bookId) => {
+            const openBook = (b) => onOpenBook(sel.id, seriesTitle, b.id, (b.media?.pagesCount) || 0, 0);
+            const setVolumeLink = async (volumeId, bookId) => {
               try {
                 if (bookId) {
-                  await api.komgaSetVolumeLink(sel.id, volumeNumber, bookId);
-                  setVolumeLinks(prev => ({ ...prev, [String(volumeNumber)]: bookId }));
+                  await api.komgaSetVolumeLink(sel.id, volumeId, bookId);
+                  setVolumeLinks(prev => ({ ...prev, [String(volumeId)]: bookId }));
                 } else {
-                  await api.komgaDeleteVolumeLink(sel.id, volumeNumber);
-                  setVolumeLinks(prev => { const n = { ...prev }; delete n[String(volumeNumber)]; return n; });
+                  await api.komgaDeleteVolumeLink(sel.id, volumeId);
+                  setVolumeLinks(prev => { const n = { ...prev }; delete n[String(volumeId)]; return n; });
                 }
               } catch (e) { show(`❌ ${e.message}`); }
             };
+            const withBook = resolved.map(({ v, effNum }) => ({ v, effNum, b: bookFor(v, effNum) }));
+            const matched = withBook.filter(x => x.b);
+            const unmatched = withBook.filter(x => !x.b);
+            const renderCard = ({ v, b }) => (
+              <NautVolumeCard
+                key={v.id} v={v} onOpen={b ? () => openBook(b) : null}
+                onDownload={b ? () => downloadKomgaBook(b.id, v.title || `Tome ${v.number}`, (b.media?.pagesCount) || 0, v.cover_full || v.cover_url) : null}
+                downloaded={b ? downloadedSet.has(b.id) : false}
+                downloading={b ? downloadingKey === b.id : false}
+                linkOptions={allBooks}
+                linkedValue={volumeLinks[String(v.id)] != null ? String(volumeLinks[String(v.id)]) : ""}
+                onLinkChange={(val) => setVolumeLink(v.id, val)}
+              />
+            );
             return (
               <div style={{ padding: "0 12px" }}>
                 {editions.length > 1 && (
@@ -3929,20 +3981,15 @@ function KomgaBrowser({ onOpenBook, show, isAdmin, progress, onResume }) {
                     </select>
                   </div>
                 )}
-                {nautVolumes.map((v, i) => {
-                  const b = bookForNumber(v.number);
-                  return (
-                    <NautVolumeCard
-                      key={v.id || i} v={v} onOpen={() => openForNumber(v.number)}
-                      onDownload={b ? () => downloadKomgaBook(b.id, v.title || `Tome ${v.number}`, (b.media?.pagesCount) || 0, v.cover_full || v.cover_url) : null}
-                      downloaded={b ? downloadedSet.has(b.id) : false}
-                      downloading={b ? downloadingKey === b.id : false}
-                      linkOptions={allBooks}
-                      linkedValue={volumeLinks[String(v.number)] != null ? String(volumeLinks[String(v.number)]) : ""}
-                      onLinkChange={(val) => setVolumeLink(v.number, val)}
-                    />
-                  );
-                })}
+                {matched.map(renderCard)}
+                {unmatched.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn btn-s" onClick={() => setShowUnmatched(v => !v)}>
+                      {showUnmatched ? "▲ Masquer" : "▼ Afficher"} les {unmatched.length} tome(s) sans correspondance
+                    </button>
+                    {showUnmatched && <div style={{ marginTop: 8 }}>{unmatched.map(renderCard)}</div>}
+                  </div>
+                )}
               </div>
             );
           }
