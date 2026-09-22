@@ -93,7 +93,7 @@ def _largest_quad_from_mask(mask: np.ndarray, img_area: int):
     return quad, area_ratio
 
 
-def _find_page_contour(small_bgr: np.ndarray):
+def _find_page_contour(small_bgr: np.ndarray, min_area_ratio: float = _MIN_AREA_RATIO):
     """Cherche le contour de la page sur une image BGR déjà réduite.
 
     Combine deux signaux, car aucun des deux ne suffit seul :
@@ -107,6 +107,10 @@ def _find_page_contour(small_bgr: np.ndarray):
     On calcule les deux candidats et on garde celui dont la surface
     détectée est la plus grande tout en restant plausible (ni bruit ni
     quasi-totalité du cadre, signe que la méthode n'a pas su isoler le fond).
+    `min_area_ratio` permet d'exiger un candidat plus proche du cadre entier
+    (ex. quand on raffine à l'intérieur d'un rectangle déjà choisi à la
+    main : on ne veut qu'un redressement/rognage mineur, pas une nouvelle
+    sélection qui pourrait à nouveau exclure une zone sombre voulue).
     """
     img_area = small_bgr.shape[0] * small_bgr.shape[1]
     gray = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2GRAY)
@@ -123,14 +127,14 @@ def _find_page_contour(small_bgr: np.ndarray):
         if found is not None:
             candidates.append(found)
 
-    valid = [c for c in candidates if _MIN_AREA_RATIO <= c[1] <= _MAX_AREA_RATIO]
+    valid = [c for c in candidates if min_area_ratio <= c[1] <= _MAX_AREA_RATIO]
     if not valid:
         return None
 
     return max(valid, key=lambda c: c[1])
 
 
-def clean_page(image_bgr: np.ndarray, padding: int = 6) -> CleanResult:
+def clean_page(image_bgr: np.ndarray, padding: int = 6, min_area_ratio: float = _MIN_AREA_RATIO) -> CleanResult:
     """Détecte et retire l'arrière-plan photographié autour d'une page.
 
     Retourne toujours une image valide : si aucune zone fiable n'est
@@ -141,7 +145,7 @@ def clean_page(image_bgr: np.ndarray, padding: int = 6) -> CleanResult:
     scale = min(1.0, _DETECT_MAX_DIM / max(h, w))
     small = cv2.resize(image_bgr, (int(w * scale), int(h * scale))) if scale < 1.0 else image_bgr
 
-    found = _find_page_contour(small)
+    found = _find_page_contour(small, min_area_ratio=min_area_ratio)
     if found is None:
         return CleanResult(image=image_bgr, method="unchanged", confidence=0.0)
 
@@ -186,12 +190,22 @@ def clean_image_bytes(data: bytes) -> tuple[bytes, str, float]:
     return _bgr_to_jpeg_bytes(result.image), result.method, result.confidence
 
 
+# Quand on raffine à l'intérieur d'un rectangle choisi à la main, le
+# candidat doit couvrir la quasi-totalité du rectangle : on ne veut qu'un
+# redressement de perspective ou un léger rognage de marge, jamais une
+# nouvelle sélection qui pourrait re-exclure une zone que l'utilisateur a
+# délibérément incluse (c'est justement ce qu'il corrigeait).
+_MANUAL_REFINE_MIN_AREA_RATIO = 0.85
+
+
 def clean_page_in_region(image_bgr: np.ndarray, rect_norm: tuple[float, float, float, float]) -> CleanResult:
     """Recadre une image sur un rectangle approximatif choisi à la main (fractions 0..1 de l'image).
 
     Le rectangle n'a pas besoin d'être précis : on recadre dessus d'abord,
-    puis on laisse la détection automatique affiner à l'intérieur si elle y
-    trouve un contour net (marge de bureau encore visible, coin manquant...).
+    puis on laisse la détection automatique affiner *légèrement* à
+    l'intérieur (redressement de perspective, fine marge de bureau encore
+    visible) sans jamais pouvoir re-exclure une portion significative de ce
+    que l'utilisateur a inclus dans son rectangle.
     """
     h, w = image_bgr.shape[:2]
     x0f, y0f, x1f, y1f = rect_norm
@@ -205,7 +219,7 @@ def clean_page_in_region(image_bgr: np.ndarray, rect_norm: tuple[float, float, f
     if cropped.size == 0:
         return CleanResult(image=image_bgr, method="manual", confidence=1.0)
 
-    refined = clean_page(cropped)
+    refined = clean_page(cropped, min_area_ratio=_MANUAL_REFINE_MIN_AREA_RATIO)
     return CleanResult(image=refined.image, method="manual", confidence=refined.confidence)
 
 
