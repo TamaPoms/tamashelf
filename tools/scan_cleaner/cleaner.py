@@ -18,9 +18,11 @@ from PIL import Image
 # Dimension max sur laquelle on cherche les contours (perf), on remet à
 # l'échelle d'origine ensuite.
 _DETECT_MAX_DIM = 1200
-# En dessous de cette fraction de l'image totale, on ne fait pas confiance au
-# contour trouvé et on renvoie l'image telle quelle (probablement déjà propre).
+# En dehors de cette fourchette de fraction de l'image totale, on ne fait pas
+# confiance au contour trouvé : trop petit = probablement du bruit, trop
+# proche de 100% = la méthode n'a pas su séparer le fond (elle a tout pris).
 _MIN_AREA_RATIO = 0.20
+_MAX_AREA_RATIO = 0.97
 
 
 @dataclass
@@ -65,16 +67,10 @@ def _four_point_warp(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return cv2.warpPerspective(image, matrix, (max_width, max_height))
 
 
-def _find_page_contour(gray: np.ndarray):
-    """Cherche le contour de la page (zone claire) sur une image en niveaux de gris déjà réduite."""
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Seuil d'Otsu : sépare la page (claire) du fond (bureau bois/tissu/noir).
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Ferme les petits trous (texte, poussière) puis enlève le bruit isolé.
+def _largest_quad_from_mask(mask: np.ndarray, img_area: int):
+    """Réduit un masque binaire à son plus grand contour, sous forme de quadrilatère + ratio de surface."""
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel, iterations=1)
 
     contours, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -82,22 +78,56 @@ def _find_page_contour(gray: np.ndarray):
         return None
 
     largest = max(contours, key=cv2.contourArea)
-    img_area = gray.shape[0] * gray.shape[1]
     area_ratio = cv2.contourArea(largest) / img_area
-    if area_ratio < _MIN_AREA_RATIO:
-        return None, area_ratio
 
     peri = cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
     if len(approx) == 4:
-        return approx.reshape(4, 2), area_ratio
+        quad = approx.reshape(4, 2)
+    else:
+        # Pas un quadrilatère net (page légèrement courbée, angle arrondi...) :
+        # on retombe sur le rectangle englobant à aire minimale.
+        quad = cv2.boxPoints(cv2.minAreaRect(largest))
 
-    # Pas un quadrilatère net (page légèrement courbée, angle arrondi...) :
-    # on retombe sur le rectangle englobant à aire minimale.
-    rect = cv2.minAreaRect(largest)
-    box = cv2.boxPoints(rect)
-    return box, area_ratio
+    return quad, area_ratio
+
+
+def _find_page_contour(small_bgr: np.ndarray):
+    """Cherche le contour de la page sur une image BGR déjà réduite.
+
+    Combine deux signaux, car aucun des deux ne suffit seul :
+    - luminosité (Otsu) : sépare une page claire d'un bureau sombre, mais
+      échoue si la page a un fond sombre (ex. couverture) proche en
+      luminosité du bureau ;
+    - saturation couleur (Otsu inversé) : un bureau en bois/tissu est
+      généralement bien plus saturé (coloré) que du papier, même sombre,
+      donc sépare mieux les pages "sombres mais peu colorées" du fond.
+
+    On calcule les deux candidats et on garde celui dont la surface
+    détectée est la plus grande tout en restant plausible (ni bruit ni
+    quasi-totalité du cadre, signe que la méthode n'a pas su isoler le fond).
+    """
+    img_area = small_bgr.shape[0] * small_bgr.shape[1]
+    gray = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    hsv = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2HSV)
+    saturation = hsv[..., 1]
+
+    _, bright_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, sat_mask = cv2.threshold(saturation, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    candidates = []
+    for mask in (bright_mask, sat_mask):
+        found = _largest_quad_from_mask(mask, img_area)
+        if found is not None:
+            candidates.append(found)
+
+    valid = [c for c in candidates if _MIN_AREA_RATIO <= c[1] <= _MAX_AREA_RATIO]
+    if not valid:
+        return None
+
+    return max(valid, key=lambda c: c[1])
 
 
 def clean_page(image_bgr: np.ndarray, padding: int = 6) -> CleanResult:
@@ -110,9 +140,8 @@ def clean_page(image_bgr: np.ndarray, padding: int = 6) -> CleanResult:
     h, w = image_bgr.shape[:2]
     scale = min(1.0, _DETECT_MAX_DIM / max(h, w))
     small = cv2.resize(image_bgr, (int(w * scale), int(h * scale))) if scale < 1.0 else image_bgr
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
-    found = _find_page_contour(gray)
+    found = _find_page_contour(small)
     if found is None:
         return CleanResult(image=image_bgr, method="unchanged", confidence=0.0)
 
