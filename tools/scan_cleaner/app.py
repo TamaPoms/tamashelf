@@ -176,4 +176,6 @@ def api_download(job_id):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5050, debug=False)
+    host = os.environ.get("SCAN_CLEANER_HOST", "0.0.0.0")
+    port = int(os.environ.get("SCAN_CLEANER_PORT", "5050"))
+    app.run(host=host, port=port, debug=False)

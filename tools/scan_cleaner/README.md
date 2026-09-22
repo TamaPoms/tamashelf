@@ -27,7 +27,17 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Puis ouvrir http://127.0.0.1:5050 dans un navigateur.
+Le serveur écoute par défaut sur toutes les interfaces réseau (`0.0.0.0`), donc
+accessible depuis n'importe quel appareil de ton réseau local, pas seulement
+depuis la machine qui l'exécute :
+
+- Sur la machine qui exécute le serveur : http://127.0.0.1:5050
+- Depuis un autre appareil du même réseau : http://IP_DE_LA_MACHINE:5050
+  (trouve l'IP avec `hostname -I` ou `ip a` sur la machine qui exécute `app.py`)
+
+Aucune authentification n'est mise en place : n'expose ce port qu'à un réseau
+local de confiance, jamais directement sur Internet. Pour restreindre l'accès
+à la seule machine locale, relance avec `SCAN_CLEANER_HOST=127.0.0.1 python app.py`.
 
 ## Utilisation
 
