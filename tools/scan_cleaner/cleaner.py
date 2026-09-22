@@ -167,6 +167,14 @@ def clean_page(image_bgr: np.ndarray, padding: int = 6) -> CleanResult:
     return CleanResult(image=result, method=method, confidence=area_ratio)
 
 
+def _bgr_to_jpeg_bytes(image_bgr: np.ndarray) -> bytes:
+    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+    buf = io.BytesIO()
+    pil_img.save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 def clean_image_bytes(data: bytes) -> tuple[bytes, str, float]:
     """Nettoie une image fournie en bytes (jpg/png/...) et renvoie (jpeg_bytes, method, confidence)."""
     pil_img = Image.open(io.BytesIO(data))
@@ -175,9 +183,38 @@ def clean_image_bytes(data: bytes) -> tuple[bytes, str, float]:
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
     result = clean_page(bgr)
+    return _bgr_to_jpeg_bytes(result.image), result.method, result.confidence
 
-    out_rgb = cv2.cvtColor(result.image, cv2.COLOR_BGR2RGB)
-    out_pil = Image.fromarray(out_rgb)
-    buf = io.BytesIO()
-    out_pil.save(buf, format="JPEG", quality=92)
-    return buf.getvalue(), result.method, result.confidence
+
+def clean_page_in_region(image_bgr: np.ndarray, rect_norm: tuple[float, float, float, float]) -> CleanResult:
+    """Recadre une image sur un rectangle approximatif choisi à la main (fractions 0..1 de l'image).
+
+    Le rectangle n'a pas besoin d'être précis : on recadre dessus d'abord,
+    puis on laisse la détection automatique affiner à l'intérieur si elle y
+    trouve un contour net (marge de bureau encore visible, coin manquant...).
+    """
+    h, w = image_bgr.shape[:2]
+    x0f, y0f, x1f, y1f = rect_norm
+    x0f, x1f = sorted((max(0.0, min(1.0, x0f)), max(0.0, min(1.0, x1f))))
+    y0f, y1f = sorted((max(0.0, min(1.0, y0f)), max(0.0, min(1.0, y1f))))
+
+    x0, x1 = int(x0f * w), max(int(x1f * w), int(x0f * w) + 1)
+    y0, y1 = int(y0f * h), max(int(y1f * h), int(y0f * h) + 1)
+    cropped = image_bgr[y0:y1, x0:x1]
+
+    if cropped.size == 0:
+        return CleanResult(image=image_bgr, method="manual", confidence=1.0)
+
+    refined = clean_page(cropped)
+    return CleanResult(image=refined.image, method="manual", confidence=refined.confidence)
+
+
+def clean_region_bytes(data: bytes, rect_norm: tuple[float, float, float, float]) -> tuple[bytes, str, float]:
+    """Comme clean_image_bytes, mais contraint à un rectangle choisi à la main."""
+    pil_img = Image.open(io.BytesIO(data))
+    pil_img = pil_img.convert("RGB")
+    rgb = np.array(pil_img)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    result = clean_page_in_region(bgr, rect_norm)
+    return _bgr_to_jpeg_bytes(result.image), result.method, result.confidence

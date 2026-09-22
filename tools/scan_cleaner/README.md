@@ -43,9 +43,14 @@ local de confiance, jamais directement sur Internet. Pour restreindre l'accès
 
 1. Glisser-déposer un ou plusieurs fichiers `.cbz` et/ou des images
    (`.jpg`, `.png`, `.webp`, `.bmp`).
-2. Cliquer sur **Nettoyer**. Un aperçu avant/après s'affiche pour les
-   premières pages traitées.
-3. Cliquer sur **Télécharger le résultat (.zip)** : le zip contient, pour
+2. Cliquer sur **Nettoyer**. Un aperçu avant/après s'affiche pour toutes les
+   pages traitées (un onglet par `.cbz` si plusieurs sont déposés).
+3. Si une page est mal détectée, cliquer sur **Corriger manuellement** sous
+   sa vignette : trace un rectangle approximatif autour de la page à garder
+   sur la photo d'origine, puis valide. Pas besoin d'être précis — le
+   rectangle sert juste à écarter le fond, la détection automatique affine
+   ensuite à l'intérieur si elle trouve un contour net.
+4. Cliquer sur **Télécharger le résultat (.zip)** : le zip contient, pour
    chaque `.cbz` fourni, une version `*_clean.cbz` avec les pages nettoyées,
    et pour chaque image fournie, sa version `*_clean.jpg`.
 

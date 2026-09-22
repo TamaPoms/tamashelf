@@ -108,8 +108,38 @@
     display: flex; justify-content: space-between;
   }
   .card .meta .name { color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .fix {
+    display: block; width: 100%;
+    background: var(--panel); color: var(--t2);
+    border: none; border-top: 1px solid var(--border);
+    border-radius: 0; padding: 7px; font-size: 12px;
+  }
+  .card .fix:hover { background: #262a33; color: var(--text); }
 
   #downloadRow { margin-top: 24px; display: none; }
+
+  #cropModal {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.7);
+    z-index: 50;
+    align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  #cropModal.open { display: flex; }
+  #cropModal .box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    max-width: 100%;
+    max-height: 100%;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #cropModal p { margin: 0; font-size: 13px; color: var(--t2); }
+  #cropCanvasWrap { position: relative; line-height: 0; touch-action: none; }
+  #cropCanvasWrap canvas { max-width: 80vw; max-height: 65vh; cursor: crosshair; border-radius: 6px; display: block; }
+  #cropModal .row { display: flex; gap: 10px; justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -138,6 +168,19 @@
   <div id="previews"></div>
 </div>
 
+<div id="cropModal">
+  <div class="box">
+    <p>Trace un rectangle approximatif autour de la page à garder (pas besoin d'être précis), puis valide.</p>
+    <div id="cropCanvasWrap">
+      <canvas id="cropCanvas"></canvas>
+    </div>
+    <div class="row">
+      <button id="cropCancelBtn" class="secondary">Annuler</button>
+      <button id="cropValidateBtn">Recadrer avec ce rectangle</button>
+    </div>
+  </div>
+</div>
+
 <script>
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
@@ -150,10 +193,17 @@
   const downloadRow = document.getElementById('downloadRow');
   const downloadBtn = document.getElementById('downloadBtn');
 
+  const cropModal = document.getElementById('cropModal');
+  const cropCanvas = document.getElementById('cropCanvas');
+  const cropCtx = cropCanvas.getContext('2d');
+  const cropCancelBtn = document.getElementById('cropCancelBtn');
+  const cropValidateBtn = document.getElementById('cropValidateBtn');
+
   let selectedFiles = [];
   let currentJobId = null;
   let previewsByContainer = [];
   let activeContainer = null;
+  let cropState = null; // { pageId, img, rect: [x0,y0,x1,y1] in canvas px, dragging }
 
   function renderFileList() {
     fileListEl.innerHTML = '';
@@ -285,10 +335,118 @@
           <span class="name">${p.name}</span>
           <span>${p.method}${p.confidence ? ' · ' + Math.round(p.confidence * 100) + '%' : ''}</span>
         </div>
+        <button class="fix">Corriger manuellement</button>
       `;
+      card.querySelector('.fix').addEventListener('click', () => openCropModal(p.page_id));
       previewsEl.appendChild(card);
     });
   }
+
+  function findPreview(pageId) {
+    for (const g of previewsByContainer) {
+      const p = g.items.find(x => x.page_id === pageId);
+      if (p) return p;
+    }
+    return null;
+  }
+
+  function openCropModal(pageId) {
+    const p = findPreview(pageId);
+    if (!p) return;
+    const img = new Image();
+    img.onload = () => {
+      const maxW = window.innerWidth * 0.8;
+      const maxH = window.innerHeight * 0.65;
+      const scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+      cropCanvas.width = img.naturalWidth * scale;
+      cropCanvas.height = img.naturalHeight * scale;
+      cropState = { pageId, img, rect: null, dragging: false, start: null };
+      drawCrop();
+      cropModal.classList.add('open');
+    };
+    img.src = 'data:image/jpeg;base64,' + p.before;
+  }
+
+  function closeCropModal() {
+    cropModal.classList.remove('open');
+    cropState = null;
+  }
+
+  function drawCrop() {
+    if (!cropState) return;
+    cropCtx.drawImage(cropState.img, 0, 0, cropCanvas.width, cropCanvas.height);
+    if (cropState.rect) {
+      const [x0, y0, x1, y1] = cropState.rect;
+      cropCtx.strokeStyle = '#5b8def';
+      cropCtx.lineWidth = 2;
+      cropCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      cropCtx.fillStyle = 'rgba(91,141,239,0.15)';
+      cropCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+  }
+
+  function canvasPoint(e) {
+    const r = cropCanvas.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return [
+      Math.max(0, Math.min(cropCanvas.width, cx * cropCanvas.width / r.width)),
+      Math.max(0, Math.min(cropCanvas.height, cy * cropCanvas.height / r.height)),
+    ];
+  }
+
+  cropCanvas.addEventListener('pointerdown', e => {
+    if (!cropState) return;
+    cropCanvas.setPointerCapture(e.pointerId);
+    const [x, y] = canvasPoint(e);
+    cropState.dragging = true;
+    cropState.start = [x, y];
+    cropState.rect = [x, y, x, y];
+  });
+  cropCanvas.addEventListener('pointermove', e => {
+    if (!cropState || !cropState.dragging) return;
+    const [x, y] = canvasPoint(e);
+    cropState.rect = [
+      Math.min(cropState.start[0], x), Math.min(cropState.start[1], y),
+      Math.max(cropState.start[0], x), Math.max(cropState.start[1], y),
+    ];
+    drawCrop();
+  });
+  ['pointerup', 'pointercancel'].forEach(evt =>
+    cropCanvas.addEventListener(evt, () => { if (cropState) cropState.dragging = false; })
+  );
+
+  cropCancelBtn.addEventListener('click', closeCropModal);
+
+  cropValidateBtn.addEventListener('click', async () => {
+    if (!cropState || !cropState.rect || !currentJobId) return;
+    const [x0, y0, x1, y1] = cropState.rect;
+    if (x1 - x0 < 4 || y1 - y0 < 4) { closeCropModal(); return; }
+    const rect = [x0 / cropCanvas.width, y0 / cropCanvas.height, x1 / cropCanvas.width, y1 / cropCanvas.height];
+    const pageId = cropState.pageId;
+    cropValidateBtn.disabled = true;
+    cropValidateBtn.textContent = 'Recadrage…';
+    try {
+      const res = await fetch('/api/recrop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: currentJobId, page_id: pageId, rect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erreur inconnue');
+      for (const g of previewsByContainer) {
+        const idx = g.items.findIndex(x => x.page_id === pageId);
+        if (idx !== -1) g.items[idx] = data.preview;
+      }
+      renderActiveGrid();
+      closeCropModal();
+    } catch (err) {
+      alert('Échec du recadrage : ' + err.message);
+    } finally {
+      cropValidateBtn.disabled = false;
+      cropValidateBtn.textContent = 'Recadrer avec ce rectangle';
+    }
+  });
 </script>
 </body>
 </html>
