@@ -26,9 +26,10 @@ from cleaner import clean_image_bytes
 app = Flask(__name__)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-MAX_PREVIEWS = 8
 THUMB_MAX_DIM = 360
 JOB_MAX_AGE_SECONDS = 3600
+LOOSE_IMAGES_KEY = "__images__"
+LOOSE_IMAGES_LABEL = "Images"
 
 _JOBS_ROOT = os.path.join(tempfile.gettempdir(), "scan_cleaner_jobs")
 os.makedirs(_JOBS_ROOT, exist_ok=True)
@@ -60,7 +61,7 @@ def _is_image(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in IMAGE_EXTS
 
 
-def _process_cbz(data: bytes, out_dir: str, previews: list) -> str:
+def _process_cbz(data: bytes, out_dir: str, previews: list, container: str, container_label: str) -> str:
     """Nettoie chaque page d'un CBZ, renvoie le chemin du CBZ nettoyé produit."""
     in_buf = io.BytesIO(data)
     out_name = None
@@ -77,16 +78,17 @@ def _process_cbz(data: bytes, out_dir: str, previews: list) -> str:
                     cleaned, method, confidence = raw, "error", 0.0
                 base, _ = os.path.splitext(entry)
                 zout.writestr(base + ".jpg", cleaned)
-                if len(previews) < MAX_PREVIEWS:
-                    previews.append(
-                        {
-                            "name": entry,
-                            "before": _thumb_b64(raw),
-                            "after": _thumb_b64(cleaned),
-                            "method": method,
-                            "confidence": round(confidence, 2),
-                        }
-                    )
+                previews.append(
+                    {
+                        "name": entry,
+                        "container": container,
+                        "container_label": container_label,
+                        "before": _thumb_b64(raw),
+                        "after": _thumb_b64(cleaned),
+                        "method": method,
+                        "confidence": round(confidence, 2),
+                    }
+                )
         out_name = out_path
     return out_name
 
@@ -119,10 +121,11 @@ def api_process():
             continue
         try:
             if filename.lower().endswith(".cbz"):
-                cbz_out_dir = os.path.join(job_dir, os.path.splitext(filename)[0])
+                stem = os.path.splitext(filename)[0]
+                cbz_out_dir = os.path.join(job_dir, stem)
                 os.makedirs(cbz_out_dir, exist_ok=True)
-                cbz_path = _process_cbz(data, cbz_out_dir, previews)
-                out_name = os.path.splitext(filename)[0] + "_clean.cbz"
+                cbz_path = _process_cbz(data, cbz_out_dir, previews, container=stem, container_label=filename)
+                out_name = stem + "_clean.cbz"
                 outputs.append((out_name, cbz_path))
             elif _is_image(filename):
                 cleaned, method, confidence = clean_image_bytes(data)
@@ -132,16 +135,17 @@ def api_process():
                 with open(out_path, "wb") as fh:
                     fh.write(cleaned)
                 outputs.append((out_name, out_path))
-                if len(previews) < MAX_PREVIEWS:
-                    previews.append(
-                        {
-                            "name": filename,
-                            "before": _thumb_b64(data),
-                            "after": _thumb_b64(cleaned),
-                            "method": method,
-                            "confidence": round(confidence, 2),
-                        }
-                    )
+                previews.append(
+                    {
+                        "name": filename,
+                        "container": LOOSE_IMAGES_KEY,
+                        "container_label": LOOSE_IMAGES_LABEL,
+                        "before": _thumb_b64(data),
+                        "after": _thumb_b64(cleaned),
+                        "method": method,
+                        "confidence": round(confidence, 2),
+                    }
+                )
             else:
                 errors.append(f"{filename} : type de fichier non pris en charge.")
         except Exception as exc:  # noqa: BLE001 - on veut remonter l'erreur au client

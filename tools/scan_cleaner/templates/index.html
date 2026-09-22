@@ -62,8 +62,29 @@
   #status { font-size: 13px; color: var(--t2); }
   #status.error { color: #e0667a; }
 
+  #tabs {
+    margin-top: 24px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+  }
+  #tabs button {
+    background: transparent;
+    color: var(--t2);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  #tabs button:hover:not(:disabled) { background: var(--panel); color: var(--text); }
+  #tabs button.active { background: var(--panel); color: var(--text); border-color: var(--border); }
+  #tabs .count { color: var(--t3); margin-left: 6px; }
+
   #previews {
-    margin-top: 28px;
+    margin-top: 16px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 16px;
@@ -94,7 +115,7 @@
 <body>
 <div class="wrap">
   <h1>Nettoyeur d'arrière-plan de scans</h1>
-  <p class="sub">Dépose un ou plusieurs fichiers .cbz, ou des images (jpg/png), pour détecter et retirer automatiquement le bureau/l'arrière-plan photographié autour de chaque page, puis récupère le résultat.</p>
+  <p class="sub">Dépose un ou plusieurs fichiers .cbz, ou des images (jpg/png), pour détecter et retirer automatiquement le bureau/l'arrière-plan photographié autour de chaque page, puis récupère le résultat. L'aperçu avant/après montre toutes les pages, avec un onglet par .cbz déposé.</p>
 
   <div id="dropzone">
     <div><strong>Clique ici</strong> ou glisse-dépose des fichiers .cbz / images</div>
@@ -113,6 +134,7 @@
     <button id="downloadBtn">Télécharger le résultat (.zip)</button>
   </div>
 
+  <div id="tabs"></div>
   <div id="previews"></div>
 </div>
 
@@ -124,11 +146,14 @@
   const clearBtn = document.getElementById('clearBtn');
   const statusEl = document.getElementById('status');
   const previewsEl = document.getElementById('previews');
+  const tabsEl = document.getElementById('tabs');
   const downloadRow = document.getElementById('downloadRow');
   const downloadBtn = document.getElementById('downloadBtn');
 
   let selectedFiles = [];
   let currentJobId = null;
+  let previewsByContainer = [];
+  let activeContainer = null;
 
   function renderFileList() {
     fileListEl.innerHTML = '';
@@ -164,6 +189,9 @@
     fileInput.value = '';
     renderFileList();
     previewsEl.innerHTML = '';
+    tabsEl.innerHTML = '';
+    previewsByContainer = [];
+    activeContainer = null;
     downloadRow.style.display = 'none';
     statusEl.textContent = '';
     statusEl.className = '';
@@ -177,6 +205,7 @@
     statusEl.className = '';
     statusEl.textContent = 'Traitement en cours…';
     previewsEl.innerHTML = '';
+    tabsEl.innerHTML = '';
     downloadRow.style.display = 'none';
 
     const form = new FormData();
@@ -211,8 +240,40 @@
   });
 
   function renderPreviews(previews) {
-    previewsEl.innerHTML = '';
+    const groups = new Map();
     previews.forEach(p => {
+      const key = p.container || '';
+      if (!groups.has(key)) groups.set(key, { label: p.container_label || key, items: [] });
+      groups.get(key).items.push(p);
+    });
+    previewsByContainer = Array.from(groups.entries()).map(([key, g]) => ({ key, ...g }));
+
+    activeContainer = previewsByContainer.length ? previewsByContainer[0].key : null;
+    renderTabs();
+    renderActiveGrid();
+  }
+
+  function renderTabs() {
+    tabsEl.innerHTML = '';
+    if (previewsByContainer.length <= 1) return;
+    previewsByContainer.forEach(g => {
+      const btn = document.createElement('button');
+      btn.className = g.key === activeContainer ? 'active' : '';
+      btn.innerHTML = `${g.label}<span class="count">(${g.items.length})</span>`;
+      btn.addEventListener('click', () => {
+        activeContainer = g.key;
+        renderTabs();
+        renderActiveGrid();
+      });
+      tabsEl.appendChild(btn);
+    });
+  }
+
+  function renderActiveGrid() {
+    previewsEl.innerHTML = '';
+    const group = previewsByContainer.find(g => g.key === activeContainer);
+    const items = group ? group.items : [];
+    items.forEach(p => {
       const card = document.createElement('div');
       card.className = 'card';
       card.innerHTML = `
