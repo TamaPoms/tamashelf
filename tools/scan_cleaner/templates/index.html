@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nettoyeur d'arrière-plan de scans</title>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1d2027;
+    --border: #2c303a;
+    --text: #e8e9ec;
+    --t2: #a8adb8;
+    --t3: #767c88;
+    --accent: #5b8def;
+    --accent-hover: #6f9cf2;
+    --ok: #3fbf7f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: var(--t2); margin-top: 0; margin-bottom: 24px; font-size: 14px; }
+
+  #dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--t2);
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #dropzone.drag { border-color: var(--accent); background: #1a2333; }
+  #dropzone strong { color: var(--text); }
+  #fileInput { display: none; }
+
+  #fileList { margin-top: 14px; font-size: 13px; color: var(--t2); }
+  #fileList div { padding: 2px 0; }
+
+  #actions { margin-top: 18px; display: flex; gap: 10px; align-items: center; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { background: #33384a; color: var(--t3); cursor: not-allowed; }
+  button.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  button.secondary:hover:not(:disabled) { background: #262a33; }
+
+  #status { font-size: 13px; color: var(--t2); }
+  #status.error { color: #e0667a; }
+
+  #previews {
+    margin-top: 28px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .card .imgs { display: flex; }
+  .card .imgs > div { flex: 1; position: relative; }
+  .card img { width: 100%; display: block; }
+  .card .label {
+    position: absolute; top: 4px; left: 4px;
+    background: rgba(0,0,0,.55); color: #fff;
+    font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  }
+  .card .meta {
+    padding: 8px 10px; font-size: 11px; color: var(--t3);
+    display: flex; justify-content: space-between;
+  }
+  .card .meta .name { color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #downloadRow { margin-top: 24px; display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Nettoyeur d'arrière-plan de scans</h1>
+  <p class="sub">Dépose un ou plusieurs fichiers .cbz, ou des images (jpg/png), pour détecter et retirer automatiquement le bureau/l'arrière-plan photographié autour de chaque page, puis récupère le résultat.</p>
+
+  <div id="dropzone">
+    <div><strong>Clique ici</strong> ou glisse-dépose des fichiers .cbz / images</div>
+    <input type="file" id="fileInput" multiple accept=".cbz,.jpg,.jpeg,.png,.webp,.bmp" />
+  </div>
+
+  <div id="fileList"></div>
+
+  <div id="actions">
+    <button id="processBtn" disabled>Nettoyer</button>
+    <button id="clearBtn" class="secondary" disabled>Effacer la sélection</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="downloadRow">
+    <button id="downloadBtn">Télécharger le résultat (.zip)</button>
+  </div>
+
+  <div id="previews"></div>
+</div>
+
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const fileListEl = document.getElementById('fileList');
+  const processBtn = document.getElementById('processBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const statusEl = document.getElementById('status');
+  const previewsEl = document.getElementById('previews');
+  const downloadRow = document.getElementById('downloadRow');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  let selectedFiles = [];
+  let currentJobId = null;
+
+  function renderFileList() {
+    fileListEl.innerHTML = '';
+    selectedFiles.forEach(f => {
+      const d = document.createElement('div');
+      d.textContent = `${f.name} (${(f.size / 1024).toFixed(0)} Ko)`;
+      fileListEl.appendChild(d);
+    });
+    processBtn.disabled = selectedFiles.length === 0;
+    clearBtn.disabled = selectedFiles.length === 0;
+  }
+
+  function addFiles(fileArray) {
+    selectedFiles = selectedFiles.concat(Array.from(fileArray));
+    renderFileList();
+  }
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => addFiles(e.target.files));
+
+  ['dragenter', 'dragover'].forEach(evt =>
+    dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag'); })
+  );
+  dropzone.addEventListener('drop', e => {
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  });
+
+  clearBtn.addEventListener('click', () => {
+    selectedFiles = [];
+    fileInput.value = '';
+    renderFileList();
+    previewsEl.innerHTML = '';
+    downloadRow.style.display = 'none';
+    statusEl.textContent = '';
+    statusEl.className = '';
+    currentJobId = null;
+  });
+
+  processBtn.addEventListener('click', async () => {
+    if (!selectedFiles.length) return;
+    processBtn.disabled = true;
+    clearBtn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = 'Traitement en cours…';
+    previewsEl.innerHTML = '';
+    downloadRow.style.display = 'none';
+
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append('files', f));
+
+    try {
+      const res = await fetch('/api/process', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erreur inconnue');
+      }
+      currentJobId = data.job_id;
+      statusEl.textContent = `${data.file_count} fichier(s) traité(s).` +
+        (data.errors && data.errors.length ? ` ${data.errors.length} erreur(s).` : '');
+      if (data.errors && data.errors.length) {
+        statusEl.className = 'error';
+      }
+      renderPreviews(data.previews || []);
+      downloadRow.style.display = 'block';
+    } catch (err) {
+      statusEl.className = 'error';
+      statusEl.textContent = 'Échec : ' + err.message;
+    } finally {
+      processBtn.disabled = false;
+      clearBtn.disabled = false;
+    }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!currentJobId) return;
+    window.location = `/api/download/${currentJobId}`;
+  });
+
+  function renderPreviews(previews) {
+    previewsEl.innerHTML = '';
+    previews.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="imgs">
+          <div><span class="label">Avant</span><img src="data:image/jpeg;base64,${p.before}" /></div>
+          <div><span class="label">Après</span><img src="data:image/jpeg;base64,${p.after}" /></div>
+        </div>
+        <div class="meta">
+          <span class="name">${p.name}</span>
+          <span>${p.method}${p.confidence ? ' · ' + Math.round(p.confidence * 100) + '%' : ''}</span>
+        </div>
+      `;
+      previewsEl.appendChild(card);
+    });
+  }
+</script>
+</body>
+</html>
