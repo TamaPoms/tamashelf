@@ -62,7 +62,7 @@
   #status { font-size: 13px; color: var(--t2); }
   #status.error { color: #e0667a; }
 
-  #tabs {
+  #tabs, #splitTabs {
     margin-top: 24px;
     display: flex;
     gap: 6px;
@@ -70,7 +70,7 @@
     border-bottom: 1px solid var(--border);
     padding-bottom: 0;
   }
-  #tabs button {
+  #tabs button, #splitTabs button {
     background: transparent;
     color: var(--t2);
     border: 1px solid transparent;
@@ -79,9 +79,9 @@
     padding: 8px 14px;
     font-size: 13px;
   }
-  #tabs button:hover:not(:disabled) { background: var(--panel); color: var(--text); }
-  #tabs button.active { background: var(--panel); color: var(--text); border-color: var(--border); }
-  #tabs .count { color: var(--t3); margin-left: 6px; }
+  #tabs button:hover:not(:disabled), #splitTabs button:hover:not(:disabled) { background: var(--panel); color: var(--text); }
+  #tabs button.active, #splitTabs button.active { background: var(--panel); color: var(--text); border-color: var(--border); }
+  #tabs .count, #splitTabs .count { color: var(--t3); margin-left: 6px; }
 
   #previews {
     margin-top: 16px;
@@ -116,7 +116,44 @@
   }
   .card .fix:hover { background: #262a33; color: var(--text); }
 
-  #downloadRow { margin-top: 24px; display: none; }
+  #downloadRow { margin-top: 24px; display: none; gap: 10px; }
+
+  #splitView { display: none; margin-top: 24px; }
+  #splitView.open { display: block; }
+  #splitBar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 16px;
+  }
+  #splitBar label { font-size: 13px; color: var(--t2); display: flex; align-items: center; gap: 6px; }
+  #splitBar select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  #splitBar p { margin: 0; font-size: 12px; color: var(--t3); width: 100%; }
+
+  #splitPreviews {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+  }
+  .splitCard {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  .splitCard canvas { width: 100%; display: block; cursor: crosshair; touch-action: none; }
+  .splitCard .meta { padding: 6px 10px; font-size: 11px; color: var(--t3); }
+  .splitCard .row { display: flex; }
+  .splitCard .row button {
+    flex: 1; background: var(--panel); color: var(--t2); border: none;
+    border-top: 1px solid var(--border); border-radius: 0; padding: 7px; font-size: 12px;
+  }
+  .splitCard .row button + button { border-left: 1px solid var(--border); }
+  .splitCard .row button:hover:not(:disabled) { background: #262a33; color: var(--text); }
+  .splitCard .row button.primary { color: var(--ok); }
+  .splitCard .side-badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    background: rgba(91,141,239,0.2); color: #9db8f0; margin-left: 6px;
+  }
 
   #cropModal {
     display: none;
@@ -162,10 +199,27 @@
 
   <div id="downloadRow">
     <button id="downloadBtn">Télécharger le résultat (.zip)</button>
+    <button id="goSplitBtn" class="secondary">Couper les pages en 2…</button>
   </div>
 
   <div id="tabs"></div>
   <div id="previews"></div>
+
+  <div id="splitView">
+    <div id="splitBar">
+      <button id="backFromSplitBtn" class="secondary">← Retour</button>
+      <label>Sens de lecture :
+        <select id="directionSelect">
+          <option value="rtl" selected>Japonais (droite → gauche)</option>
+          <option value="ltr">Occidental (gauche → droite)</option>
+        </select>
+      </label>
+      <button id="finalizeBtn">Terminer et télécharger</button>
+      <p>Pour une double page à séparer, clique 2 points le long de la reliure (haut puis bas), puis « Diviser ». Les pages sans points restent telles quelles. Le sens de lecture ne sert qu'à l'ordre final des pages découpées.</p>
+    </div>
+    <div id="splitTabs"></div>
+    <div id="splitPreviews"></div>
+  </div>
 </div>
 
 <div id="cropModal">
@@ -199,11 +253,23 @@
   const cropCancelBtn = document.getElementById('cropCancelBtn');
   const cropValidateBtn = document.getElementById('cropValidateBtn');
 
+  const goSplitBtn = document.getElementById('goSplitBtn');
+  const backFromSplitBtn = document.getElementById('backFromSplitBtn');
+  const splitView = document.getElementById('splitView');
+  const splitTabsEl = document.getElementById('splitTabs');
+  const splitPreviewsEl = document.getElementById('splitPreviews');
+  const directionSelect = document.getElementById('directionSelect');
+  const finalizeBtn = document.getElementById('finalizeBtn');
+
   let selectedFiles = [];
   let currentJobId = null;
   let previewsByContainer = [];
   let activeContainer = null;
   let cropState = null; // { pageId, img, rect: [x0,y0,x1,y1] in canvas px, dragging }
+
+  let splitByContainer = [];   // même forme que previewsByContainer, copie indépendante pour la vue découpe
+  let splitActiveContainer = null;
+  const splitPoints = new Map(); // page_id -> [[x,y],[x,y]] en fractions 0..1, ou [] / absent
 
   function renderFileList() {
     fileListEl.innerHTML = '';
@@ -246,6 +312,10 @@
     statusEl.textContent = '';
     statusEl.className = '';
     currentJobId = null;
+    splitByContainer = [];
+    splitActiveContainer = null;
+    splitPoints.clear();
+    splitView.classList.remove('open');
   });
 
   processBtn.addEventListener('click', async () => {
@@ -274,7 +344,7 @@
         statusEl.className = 'error';
       }
       renderPreviews(data.previews || []);
-      downloadRow.style.display = 'block';
+      downloadRow.style.display = 'flex';
     } catch (err) {
       statusEl.className = 'error';
       statusEl.textContent = 'Échec : ' + err.message;
@@ -445,6 +515,163 @@
     } finally {
       cropValidateBtn.disabled = false;
       cropValidateBtn.textContent = 'Recadrer avec ce rectangle';
+    }
+  });
+
+  // --- Vue "Couper les pages" ---
+
+  goSplitBtn.addEventListener('click', () => {
+    splitByContainer = previewsByContainer.map(g => ({ key: g.key, label: g.label, items: g.items.slice() }));
+    splitActiveContainer = splitByContainer.length ? splitByContainer[0].key : null;
+    splitPoints.clear();
+    splitView.classList.add('open');
+    renderSplitTabs();
+    renderSplitGrid();
+    splitView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  backFromSplitBtn.addEventListener('click', () => {
+    splitView.classList.remove('open');
+  });
+
+  function renderSplitTabs() {
+    splitTabsEl.innerHTML = '';
+    if (splitByContainer.length <= 1) return;
+    splitByContainer.forEach(g => {
+      const btn = document.createElement('button');
+      btn.className = g.key === splitActiveContainer ? 'active' : '';
+      btn.innerHTML = `${g.label}<span class="count">(${g.items.length})</span>`;
+      btn.addEventListener('click', () => {
+        splitActiveContainer = g.key;
+        renderSplitTabs();
+        renderSplitGrid();
+      });
+      splitTabsEl.appendChild(btn);
+    });
+  }
+
+  function renderSplitGrid() {
+    splitPreviewsEl.innerHTML = '';
+    const group = splitByContainer.find(g => g.key === splitActiveContainer);
+    const items = group ? group.items : [];
+    items.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'splitCard';
+      const sideLabel = p.side === 'right' ? '<span class="side-badge">droite</span>'
+        : p.side === 'left' ? '<span class="side-badge">gauche</span>' : '';
+      card.innerHTML = `
+        <canvas></canvas>
+        <div class="meta">${p.name}${sideLabel}</div>
+        <div class="row">
+          <button class="resetBtn">Réinitialiser</button>
+          <button class="splitBtn primary" disabled>Diviser en 2</button>
+        </div>
+      `;
+      const canvas = card.querySelector('canvas');
+      const splitBtn = card.querySelector('.splitBtn');
+      const resetBtn = card.querySelector('.resetBtn');
+      setupSplitCanvas(canvas, p, splitBtn);
+      resetBtn.addEventListener('click', () => {
+        splitPoints.delete(p.page_id);
+        splitBtn.disabled = true;
+        drawSplitCanvas(canvas, p.page_id);
+      });
+      splitBtn.addEventListener('click', () => doSplit(p.page_id, group.key));
+      splitPreviewsEl.appendChild(card);
+    });
+  }
+
+  function drawSplitCanvas(canvas, pageId) {
+    const ctx = canvas.getContext('2d');
+    const img = canvas._img;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const pts = splitPoints.get(pageId);
+    if (pts && pts.length >= 1) {
+      ctx.fillStyle = '#5b8def';
+      pts.forEach(([fx, fy]) => {
+        ctx.beginPath();
+        ctx.arc(fx * canvas.width, fy * canvas.height, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+    if (pts && pts.length === 2) {
+      ctx.strokeStyle = '#5b8def';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] * canvas.width, pts[0][1] * canvas.height);
+      ctx.lineTo(pts[1][0] * canvas.width, pts[1][1] * canvas.height);
+      ctx.stroke();
+    }
+  }
+
+  function setupSplitCanvas(canvas, p, splitBtn) {
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 420;
+      const scale = Math.min(1, maxW / img.naturalWidth);
+      canvas.width = img.naturalWidth * scale;
+      canvas.height = img.naturalHeight * scale;
+      canvas._img = img;
+      drawSplitCanvas(canvas, p.page_id);
+    };
+    img.src = 'data:image/jpeg;base64,' + p.after;
+
+    canvas.addEventListener('pointerdown', e => {
+      const r = canvas.getBoundingClientRect();
+      const fx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      const fy = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+      let pts = splitPoints.get(p.page_id) || [];
+      if (pts.length >= 2) pts = [];
+      pts = pts.concat([[fx, fy]]);
+      splitPoints.set(p.page_id, pts);
+      splitBtn.disabled = pts.length !== 2;
+      drawSplitCanvas(canvas, p.page_id);
+    });
+  }
+
+  async function doSplit(pageId, containerKey) {
+    if (!currentJobId) return;
+    const pts = splitPoints.get(pageId);
+    if (!pts || pts.length !== 2) return;
+    try {
+      const res = await fetch('/api/split', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: currentJobId, page_id: pageId, points: pts }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erreur inconnue');
+      splitPoints.delete(pageId);
+      const group = splitByContainer.find(g => g.key === containerKey);
+      if (group) {
+        const idx = group.items.findIndex(x => x.page_id === pageId);
+        if (idx !== -1) group.items.splice(idx, 1, ...data.previews);
+      }
+      renderSplitTabs();
+      renderSplitGrid();
+    } catch (err) {
+      alert('Échec de la découpe : ' + err.message);
+    }
+  }
+
+  finalizeBtn.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    finalizeBtn.disabled = true;
+    finalizeBtn.textContent = 'Finalisation…';
+    try {
+      const res = await fetch('/api/finalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: currentJobId, direction: directionSelect.value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erreur inconnue');
+      window.location = `/api/download/${currentJobId}`;
+    } catch (err) {
+      alert('Échec de la finalisation : ' + err.message);
+    } finally {
+      finalizeBtn.disabled = false;
+      finalizeBtn.textContent = 'Terminer et télécharger';
     }
   });
 </script>

@@ -54,6 +54,23 @@ local de confiance, jamais directement sur Internet. Pour restreindre l'accès
    chaque `.cbz` fourni, une version `*_clean.cbz` avec les pages nettoyées,
    et pour chaque image fournie, sa version `*_clean.jpg`.
 
+### Découper les doubles pages
+
+Si le CBZ contient des photos de double page (livre ouvert), clique sur
+**Couper les pages en 2…** au lieu de télécharger directement :
+
+1. Pour chaque page à séparer, clique 2 points le long de la reliure (un en
+   haut, un en bas — pas besoin d'être exactement dessus), puis **Diviser en
+   2**. La page devient deux pages (droite / gauche), affichées à la place
+   de l'originale. Les pages qu'on ne touche pas restent inchangées.
+2. Choisis le **sens de lecture** (japonais = droite à gauche par défaut,
+   ou occidental = gauche à droite) : il détermine l'ordre final entre
+   chaque paire droite/gauche issue d'une découpe.
+3. Clique **Terminer et télécharger** : toutes les pages du `.cbz` sont
+   renumérotées dans l'ordre final (`0001.jpg`, `0002.jpg`, ...) pour que
+   n'importe quel lecteur les affiche dans le bon ordre, puis le zip se
+   télécharge.
+
 ## Utilisation en ligne de commande (sans UI)
 
 Le cœur du traitement (`cleaner.py`) est indépendant de Flask et réutilisable :

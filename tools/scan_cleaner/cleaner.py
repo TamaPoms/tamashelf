@@ -9,6 +9,7 @@ transformation de perspective puis on la recadre, sans le fond photographié.
 from __future__ import annotations
 
 import io
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -221,6 +222,69 @@ def clean_page_in_region(image_bgr: np.ndarray, rect_norm: tuple[float, float, f
 
     refined = clean_page(cropped, min_area_ratio=_MANUAL_REFINE_MIN_AREA_RATIO)
     return CleanResult(image=refined.image, method="manual", confidence=refined.confidence)
+
+
+# Angle max (degrés) qu'on corrige par rapport à la verticale : un point mal
+# placé ne doit pas pouvoir faire pivoter l'image de travers.
+_MAX_SPLIT_ANGLE_DEG = 25.0
+
+
+def split_page(image_bgr: np.ndarray, p1: tuple[float, float], p2: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    """Coupe une image (double page) en deux le long de la droite définie par 2 points.
+
+    p1/p2 sont en pixels, dans le repère de l'image d'origine. La droite n'a
+    pas besoin d'être parfaitement verticale : l'image entière est
+    légèrement pivotée pour aligner la coupure, avant d'être séparée en deux
+    moitiés rectangulaires. Renvoie (moitié_gauche, moitié_droite).
+    """
+    h, w = image_bgr.shape[:2]
+    (x1, y1), (x2, y2) = p1, p2
+    dx, dy = x2 - x1, y2 - y1
+    if abs(dy) < 1e-6:
+        dy = 1e-6
+    angle_deg = math.degrees(math.atan2(dx, dy))
+    angle_deg = max(-_MAX_SPLIT_ANGLE_DEG, min(_MAX_SPLIT_ANGLE_DEG, angle_deg))
+
+    center = (w / 2.0, h / 2.0)
+    matrix = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+    cos, sin = abs(matrix[0, 0]), abs(matrix[0, 1])
+    new_w = int(h * sin + w * cos)
+    new_h = int(h * cos + w * sin)
+    matrix[0, 2] += new_w / 2.0 - center[0]
+    matrix[1, 2] += new_h / 2.0 - center[1]
+    rotated = cv2.warpAffine(image_bgr, matrix, (new_w, new_h), borderValue=(255, 255, 255))
+
+    def transform(pt):
+        x, y = pt
+        return (
+            matrix[0, 0] * x + matrix[0, 1] * y + matrix[0, 2],
+            matrix[1, 0] * x + matrix[1, 1] * y + matrix[1, 2],
+        )
+
+    rx1, _ = transform((x1, y1))
+    rx2, _ = transform((x2, y2))
+    cut_x = int(round((rx1 + rx2) / 2.0))
+    cut_x = max(1, min(new_w - 1, cut_x))
+
+    left = rotated[:, :cut_x]
+    right = rotated[:, cut_x:]
+    return left, right
+
+
+def split_region_bytes(
+    data: bytes, p1_norm: tuple[float, float], p2_norm: tuple[float, float]
+) -> tuple[bytes, bytes]:
+    """Comme split_page, mais à partir de bytes image et de points en fractions 0..1."""
+    pil_img = Image.open(io.BytesIO(data))
+    pil_img = pil_img.convert("RGB")
+    rgb = np.array(pil_img)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+
+    p1 = (p1_norm[0] * w, p1_norm[1] * h)
+    p2 = (p2_norm[0] * w, p2_norm[1] * h)
+    left, right = split_page(bgr, p1, p2)
+    return _bgr_to_jpeg_bytes(left), _bgr_to_jpeg_bytes(right)
 
 
 def clean_region_bytes(data: bytes, rect_norm: tuple[float, float, float, float]) -> tuple[bytes, str, float]:
