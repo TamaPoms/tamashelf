@@ -21,7 +21,7 @@ import numpy as np
 from flask import Flask, jsonify, request, send_file, render_template
 from werkzeug.utils import secure_filename
 
-from cleaner import clean_image_bytes, clean_region_bytes, split_region_bytes
+from cleaner import clean_image_bytes, clean_region_bytes, split_region_bytes, auto_clean_and_split_bytes
 
 app = Flask(__name__)
 
@@ -72,7 +72,7 @@ def _is_image(filename: str) -> bool:
 
 def _add_page(
     job_dir, job, container, container_label, name, raw_bytes, cleaned_bytes, method, confidence,
-    order, side=None, original_path=None,
+    order, side=None, original_path=None, flagged=False,
 ):
     """Persiste l'original + le résultat d'une page sur disque et l'enregistre dans le job.
 
@@ -105,6 +105,7 @@ def _add_page(
         "confidence": confidence,
         "order": order,
         "side": side,
+        "flagged": flagged,
     }
     job["containers"][container] = container_label
     return page_id
@@ -126,6 +127,7 @@ def _preview_for_page(job, page_id) -> dict:
         "method": page["method"],
         "confidence": round(page["confidence"], 2),
         "side": page["side"],
+        "flagged": page.get("flagged", False),
     }
 
 
@@ -189,6 +191,36 @@ def _process_cbz(data: bytes, job_dir, job, container: str, container_label: str
             previews.append(_preview_for_page(job, page_id))
 
 
+def _process_cbz_auto(data: bytes, job_dir, job, container: str, container_label: str, previews: list) -> None:
+    """Mode 100% automatique : recadre et découpe chaque page sans intervention.
+
+    Si une page ne se découpe pas (pas d'aspect de double page détecté),
+    elle est marquée `flagged` pour relecture plutôt que traitée à l'aveugle
+    silencieusement : sur les photos de double page, l'absence de découpe
+    signale souvent qu'une moitié (ex. couverture sombre) n'a pas été
+    détectée, pas qu'il s'agit réellement d'une page simple.
+    """
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
+        entries = [n for n in zin.namelist() if not n.endswith("/") and _is_image(n)]
+        entries.sort()
+        for order, entry in enumerate(entries):
+            raw = zin.read(entry)
+            try:
+                sub_pages = auto_clean_and_split_bytes(raw)
+            except Exception:
+                sub_pages = [(raw, None, "error", 0.0)]
+            flagged = len(sub_pages) == 1
+            shared_original_path = None
+            for cleaned, side, method, confidence in sub_pages:
+                name = entry if side is None else f"{entry} ({'droite' if side == 'right' else 'gauche'})"
+                page_id = _add_page(
+                    job_dir, job, container, container_label, name, raw, cleaned, method, confidence,
+                    order=order, side=side, flagged=flagged, original_path=shared_original_path,
+                )
+                shared_original_path = job["pages"][page_id]["original_path"]
+                previews.append(_preview_for_page(job, page_id))
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -201,6 +233,7 @@ def api_process():
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "Aucun fichier reçu."}), 400
+    auto = request.form.get("auto") == "true"
 
     job_id = uuid.uuid4().hex
     job_dir = os.path.join(_JOBS_ROOT, job_id)
@@ -221,16 +254,33 @@ def api_process():
         try:
             if filename.lower().endswith(".cbz"):
                 stem = os.path.splitext(filename)[0]
-                _process_cbz(data, job_dir, job, stem, filename, previews)
+                if auto:
+                    _process_cbz_auto(data, job_dir, job, stem, filename, previews)
+                else:
+                    _process_cbz(data, job_dir, job, stem, filename, previews)
                 file_count += 1
             elif _is_image(filename):
-                cleaned, method, confidence = clean_image_bytes(data)
-                page_id = _add_page(
-                    job_dir, job, LOOSE_IMAGES_KEY, LOOSE_IMAGES_LABEL, filename, data, cleaned, method, confidence,
-                    order=loose_image_order,
-                )
+                if auto:
+                    sub_pages = auto_clean_and_split_bytes(data)
+                    flagged = len(sub_pages) == 1
+                    shared_original_path = None
+                    for cleaned, side, method, confidence in sub_pages:
+                        name = filename if side is None else f"{filename} ({'droite' if side == 'right' else 'gauche'})"
+                        page_id = _add_page(
+                            job_dir, job, LOOSE_IMAGES_KEY, LOOSE_IMAGES_LABEL, name, data, cleaned, method,
+                            confidence, order=loose_image_order, side=side, flagged=flagged,
+                            original_path=shared_original_path,
+                        )
+                        shared_original_path = job["pages"][page_id]["original_path"]
+                        previews.append(_preview_for_page(job, page_id))
+                else:
+                    cleaned, method, confidence = clean_image_bytes(data)
+                    page_id = _add_page(
+                        job_dir, job, LOOSE_IMAGES_KEY, LOOSE_IMAGES_LABEL, filename, data, cleaned, method,
+                        confidence, order=loose_image_order,
+                    )
+                    previews.append(_preview_for_page(job, page_id))
                 loose_image_order += 1
-                previews.append(_preview_for_page(job, page_id))
                 file_count += 1
             else:
                 errors.append(f"{filename} : type de fichier non pris en charge.")

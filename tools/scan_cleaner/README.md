@@ -54,6 +54,26 @@ local de confiance, jamais directement sur Internet. Pour restreindre l'accès
    chaque `.cbz` fourni, une version `*_clean.cbz` avec les pages nettoyées,
    et pour chaque image fournie, sa version `*_clean.jpg`.
 
+### Traitement 100% automatique
+
+Coche **Traitement 100% automatique** avant de cliquer sur **Nettoyer** si
+chacune de tes photos contient toujours 2 emplacements de page (ton flux de
+prise de vue habituel — même quand un côté n'est qu'une couverture noire) :
+chaque photo est recadrée puis systématiquement découpée en 2, sans que tu
+aies à cliquer quoi que ce soit page par page.
+
+Quand une photo ne se découpe pas automatiquement, elle est marquée
+**⚠️ à vérifier** (bordure orange) plutôt que traitée à l'aveugle : c'est en
+général le signe qu'une moitié (souvent une couverture sombre) n'a pas été
+détectée. Ne traite que ces pages-là avec **Corriger manuellement** puis
+**Couper les pages en 2…**, pas besoin de relire tout le volume.
+
+Limite connue : la détection actuelle (couleur/luminosité) peut échouer
+sur une couverture sombre posée sur un bureau lui-même sombre et peu
+coloré — les deux se ressemblent trop pour être distingués par la couleur
+seule. C'est justement le genre de cas qu'une détection par IA (SAM) est
+mieux placée pour résoudre.
+
 ### Découper les doubles pages
 
 Si le CBZ contient des photos de double page (livre ouvert), clique sur

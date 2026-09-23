@@ -115,6 +115,14 @@
     border-radius: 0; padding: 7px; font-size: 12px;
   }
   .card .fix:hover { background: #262a33; color: var(--text); }
+  .card.flagged { border-color: #c9821f; }
+  .card .flagBanner {
+    background: rgba(201,130,31,0.18); color: #e0a545;
+    font-size: 11px; padding: 5px 10px;
+  }
+
+  #autoRow { margin-top: 14px; font-size: 13px; color: var(--t2); display: flex; align-items: center; gap: 8px; }
+  #autoRow input { width: 16px; height: 16px; }
 
   #downloadRow { margin-top: 24px; display: none; gap: 10px; }
 
@@ -191,6 +199,11 @@
 
   <div id="fileList"></div>
 
+  <div id="autoRow">
+    <input type="checkbox" id="autoCheck" />
+    <label for="autoCheck">Traitement 100% automatique (recadre et découpe chaque photo en 2 pages sans intervention ; les pages qui ne se découpent pas sont signalées pour relecture, pas devinées à l'aveugle)</label>
+  </div>
+
   <div id="actions">
     <button id="processBtn" disabled>Nettoyer</button>
     <button id="clearBtn" class="secondary" disabled>Effacer la sélection</button>
@@ -241,6 +254,7 @@
   const fileListEl = document.getElementById('fileList');
   const processBtn = document.getElementById('processBtn');
   const clearBtn = document.getElementById('clearBtn');
+  const autoCheck = document.getElementById('autoCheck');
   const statusEl = document.getElementById('status');
   const previewsEl = document.getElementById('previews');
   const tabsEl = document.getElementById('tabs');
@@ -330,6 +344,7 @@
 
     const form = new FormData();
     selectedFiles.forEach(f => form.append('files', f));
+    if (autoCheck.checked) form.append('auto', 'true');
 
     try {
       const res = await fetch('/api/process', { method: 'POST', body: form });
@@ -338,9 +353,11 @@
         throw new Error(data.error || 'Erreur inconnue');
       }
       currentJobId = data.job_id;
+      const flaggedCount = (data.previews || []).filter(p => p.flagged).length;
       statusEl.textContent = `${data.file_count} fichier(s) traité(s).` +
+        (flaggedCount ? ` ${flaggedCount} page(s) à vérifier (marquées ⚠️).` : '') +
         (data.errors && data.errors.length ? ` ${data.errors.length} erreur(s).` : '');
-      if (data.errors && data.errors.length) {
+      if ((data.errors && data.errors.length) || flaggedCount) {
         statusEl.className = 'error';
       }
       renderPreviews(data.previews || []);
@@ -395,8 +412,9 @@
     const items = group ? group.items : [];
     items.forEach(p => {
       const card = document.createElement('div');
-      card.className = 'card';
+      card.className = 'card' + (p.flagged ? ' flagged' : '');
       card.innerHTML = `
+        ${p.flagged ? '<div class="flagBanner">⚠️ Pas découpée automatiquement — vérifie qu\'il ne manque pas une moitié (ex. couverture), corrige/découpe à la main si besoin.</div>' : ''}
         <div class="imgs">
           <div><span class="label">Avant</span><img src="data:image/jpeg;base64,${p.before}" /></div>
           <div><span class="label">Après</span><img src="data:image/jpeg;base64,${p.after}" /></div>

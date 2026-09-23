@@ -296,3 +296,76 @@ def clean_region_bytes(data: bytes, rect_norm: tuple[float, float, float, float]
 
     result = clean_page_in_region(bgr, rect_norm)
     return _bgr_to_jpeg_bytes(result.image), result.method, result.confidence
+
+
+# Une page simple est portrait (plus haute que large). Une double page
+# photographiée est nettement plus large que haute une fois recadrée : on
+# s'en sert pour décider automatiquement si une page nettoyée doit être
+# découpée en deux, sans intervention.
+_SPREAD_ASPECT_RATIO = 1.15
+
+
+def _detect_gutter_x(image_bgr: np.ndarray) -> tuple[int, float]:
+    """Cherche la reliure (bande verticale la plus sombre) au centre de l'image.
+
+    Utilisé uniquement pour le mode 100% automatique : localise où couper
+    une double page sans qu'un humain ait à cliquer 2 points.
+    """
+    h, w = image_bgr.shape[:2]
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    center_band = gray[int(h * 0.1):int(h * 0.9), :]
+    col_means = center_band.mean(axis=0).astype(float)
+
+    start, end = int(w * 0.3), int(w * 0.7)
+    zone = col_means[start:end]
+    if zone.size == 0:
+        return w // 2, 0.0
+
+    kernel = max(15, int(w * 0.01))
+    smoothed = np.convolve(zone, np.ones(kernel) / kernel, mode="same")
+    min_idx = int(np.argmin(smoothed))
+    gutter_x = min_idx + start
+
+    mean_v = smoothed.mean()
+    min_v = smoothed[min_idx]
+    confidence = max(0.0, min(1.0, (mean_v - min_v) / max(1.0, mean_v)))
+    if confidence < 0.05:
+        return w // 2, 0.3
+    return gutter_x, confidence
+
+
+@dataclass
+class AutoPage:
+    image: np.ndarray
+    side: str | None  # None (page simple) | "left" | "right"
+    method: str
+    confidence: float
+
+
+def auto_clean_and_split(image_bgr: np.ndarray) -> list[AutoPage]:
+    """Pipeline 100% automatique pour une image : recadre, puis découpe si
+    le résultat a l'aspect d'une double page. Ne dépend d'aucune action
+    manuelle — pensé pour traiter un CBZ entier sans relecture page à page.
+    """
+    cleaned = clean_page(image_bgr)
+    h, w = cleaned.image.shape[:2]
+    if h == 0 or w / h < _SPREAD_ASPECT_RATIO:
+        return [AutoPage(cleaned.image, None, cleaned.method, cleaned.confidence)]
+
+    gutter_x, _gutter_conf = _detect_gutter_x(cleaned.image)
+    left, right = split_page(cleaned.image, (gutter_x, 0), (gutter_x, h))
+    return [
+        AutoPage(right, "right", "auto-split", cleaned.confidence),
+        AutoPage(left, "left", "auto-split", cleaned.confidence),
+    ]
+
+
+def auto_clean_and_split_bytes(data: bytes) -> list[tuple[bytes, str | None, str, float]]:
+    """Comme auto_clean_and_split, à partir/vers des bytes JPEG."""
+    pil_img = Image.open(io.BytesIO(data))
+    pil_img = pil_img.convert("RGB")
+    rgb = np.array(pil_img)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    pages = auto_clean_and_split(bgr)
+    return [(_bgr_to_jpeg_bytes(p.image), p.side, p.method, p.confidence) for p in pages]
