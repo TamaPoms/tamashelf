@@ -318,21 +318,37 @@ def _detect_gutter_x(image_bgr: np.ndarray) -> tuple[int, float]:
     center_band = gray[int(h * 0.1):int(h * 0.9), :]
     col_means = center_band.mean(axis=0).astype(float)
 
+    # Lisser sur TOUTE la largeur avant de découper la zone de recherche :
+    # lisser après avoir découpé crée un faux creux artificiel pile sur les
+    # bords de la zone (effet de bord de la convolution sur un tableau
+    # court), qui a longtemps fait croire à une reliure là où il n'y en a
+    # pas — cause du bug des pages coupées n'importe où.
+    kernel = max(15, int(w * 0.01))
+    smoothed_full = np.convolve(col_means, np.ones(kernel) / kernel, mode="same")
+
     start, end = int(w * 0.3), int(w * 0.7)
-    zone = col_means[start:end]
+    zone = smoothed_full[start:end]
     if zone.size == 0:
         return w // 2, 0.0
 
-    kernel = max(15, int(w * 0.01))
-    smoothed = np.convolve(zone, np.ones(kernel) / kernel, mode="same")
-    min_idx = int(np.argmin(smoothed))
+    min_idx = int(np.argmin(zone))
     gutter_x = min_idx + start
 
-    mean_v = smoothed.mean()
-    min_v = smoothed[min_idx]
+    # Une vraie ombre de reliure forme un creux à l'intérieur de la zone : si
+    # le minimum se trouve collé à un bord de la zone de recherche, la vraie
+    # source (souvent un aplat noir du dessin, pas la reliure) est
+    # probablement hors zone — pas une vallée fiable. On rejette plutôt que
+    # de couper au mauvais endroit.
+    edge_margin = max(1, int(len(zone) * 0.08))
+    if min_idx < edge_margin or min_idx > len(zone) - 1 - edge_margin:
+        return w // 2, 0.0
+
+    mean_v = zone.mean()
+    min_v = zone[min_idx]
     confidence = max(0.0, min(1.0, (mean_v - min_v) / max(1.0, mean_v)))
     if confidence < 0.05:
-        return w // 2, 0.3
+        # Profil trop plat pour qu'un vrai creux se distingue du bruit.
+        return w // 2, 0.0
     return gutter_x, confidence
 
 
@@ -345,11 +361,15 @@ class AutoPage:
 
 
 def _split_if_spread(image_bgr: np.ndarray, method: str, confidence: float) -> list[AutoPage] | None:
-    """Découpe en 2 si l'image a l'aspect d'une double page, sinon renvoie None."""
+    """Découpe en 2 si l'image a l'aspect d'une double page ET qu'une reliure
+    fiable a été localisée, sinon renvoie None (garder la double page entière
+    plutôt que couper au hasard — cf. _detect_gutter_x)."""
     h, w = image_bgr.shape[:2]
     if h == 0 or w / h < _SPREAD_ASPECT_RATIO:
         return None
-    gutter_x, _gutter_conf = _detect_gutter_x(image_bgr)
+    gutter_x, gutter_conf = _detect_gutter_x(image_bgr)
+    if gutter_conf <= 0:
+        return None
     left, right = split_page(image_bgr, (gutter_x, 0), (gutter_x, h))
     return [
         AutoPage(right, "right", method, confidence),
@@ -362,16 +382,28 @@ def auto_clean_and_split(image_bgr: np.ndarray) -> list[AutoPage]:
     le résultat a l'aspect d'une double page. Ne dépend d'aucune action
     manuelle — pensé pour traiter un CBZ entier sans relecture page à page.
 
-    Si la détection couleur ne trouve pas un aspect de double page (cas
-    typique : une couverture sombre posée sur un bureau lui-même sombre,
-    indiscernables par la couleur), on retente avec SAM si disponible
-    (`sam_engine`) avant d'abandonner — SAM segmente par forme/contour, pas
-    par couleur, donc peut réussir là où cleaner.py échoue.
+    Deux façons d'échouer, traitées différemment :
+    - le recadrage couleur ne trouve même pas une largeur de double page
+      (cas typique : une couverture sombre posée sur un bureau lui-même
+      sombre, indiscernables par la couleur) → on retente avec SAM si
+      disponible (`sam_engine`), qui segmente par forme/contour, pas
+      couleur, et peut réussir là où cleaner.py échoue ;
+    - le recadrage a la bonne largeur mais la reliure n'est pas repérée
+      avec confiance → SAM n'y changerait rien (il ne cherche pas la
+      reliure), on garde direct la double page entière pour découpe
+      manuelle plutôt que de risquer une coupure n'importe où.
     """
     cleaned = clean_page(image_bgr)
+    h, w = cleaned.image.shape[:2]
+    is_spread_width = h > 0 and w / h >= _SPREAD_ASPECT_RATIO
+
     split = _split_if_spread(cleaned.image, "auto-split", cleaned.confidence)
     if split is not None:
         return split
+    if is_spread_width:
+        # Largeur correcte, seule la reliure a manqué : SAM ne la trouvera
+        # pas mieux, inutile de le solliciter pour rien.
+        return [AutoPage(cleaned.image, None, cleaned.method, cleaned.confidence)]
 
     if sam_engine.is_available():
         sam_result = sam_engine.detect_quad(image_bgr)
