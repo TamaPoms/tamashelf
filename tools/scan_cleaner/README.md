@@ -83,7 +83,7 @@ forme/contour, pas par couleur, donc réussit souvent là où l'heuristique
 couleur échoue (couverture sombre sur bureau sombre).
 
 ```bash
-pip install sam2   # ou : pip install "git+https://github.com/facebookresearch/sam2.git"
+pip install sam2 huggingface_hub   # ou : pip install "git+https://github.com/facebookresearch/sam2.git" huggingface_hub
 
 export SCAN_CLEANER_SAM=sam2
 export SCAN_CLEANER_SAM_MODEL=facebook/sam2.1-hiera-large   # défaut si omis
