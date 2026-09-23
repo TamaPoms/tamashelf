@@ -176,6 +176,71 @@ export const api = {
     return `/api/imgvol/page/${encodedFolder}?volume=${encodeURIComponent(volume)}&page=${page}&token=${encodeURIComponent(token)}`;
   },
 
+  // Kavita (serveur externe, lecture seule -- voir kavita_client.py)
+  kavitaHealth: () => request("/kavita/health"),
+  kavitaLibraries: () => request("/kavita/libraries"),
+  kavitaSeries: (libraryId) => request(`/kavita/series?libraryId=${encodeURIComponent(libraryId)}`),
+  kavitaSeriesDetail: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}`),
+  kavitaVolumes: (seriesId) => request(`/kavita/series/${encodeURIComponent(seriesId)}/volumes`),
+  kavitaChapterInfo: (chapterId) => request(`/kavita/chapter-info/${encodeURIComponent(chapterId)}`),
+  kavitaCoverUrl: (seriesId) => {
+    const token = getToken();
+    return `/api/kavita/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
+  },
+  kavitaChapterCoverUrl: (chapterId) => {
+    const token = getToken();
+    return `/api/kavita/chapter-cover/${encodeURIComponent(chapterId)}?token=${encodeURIComponent(token)}`;
+  },
+  kavitaPageUrl: (chapterId, page) => {
+    const token = getToken();
+    return `/api/kavita/read/${encodeURIComponent(chapterId)}?page=${page}&token=${encodeURIComponent(token)}`;
+  },
+  kavitaGetMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`),
+  kavitaSaveMatch: (seriesId, nautiljonUrl) => request(`/kavita/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
+  kavitaDeleteMatch: (seriesId) => request(`/kavita/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
+  kavitaMatches: () => request(`/kavita/matches`),
+  kavitaAutoMatch: (libraryId) => request(`/kavita/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
+  kavitaPushSeries: (seriesId) => request(`/kavita/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  kavitaPushVolumes: (seriesId) => request(`/kavita/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  kavitaPushProgress: (body) => request(`/kavita/progress`, { method: "POST", body: JSON.stringify(body) }),
+  // Édition choisie à la main (au lieu du choix automatique pick_edition) + liaisons
+  // tome -> chapitre choisies à la main (numérotation Nautiljon ne collant pas toujours
+  // à celle de Kavita, ex. éditions "Cycle N - Tome M").
+  kavitaSetEdition: (seriesId, editionName) => request(`/kavita/match/${encodeURIComponent(seriesId)}/edition?edition_name=${encodeURIComponent(editionName)}`, { method: "POST" }),
+  kavitaSetVolumeLink: (seriesId, volumeNumber, chapterId) => request(`/kavita/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}&chapter_id=${encodeURIComponent(chapterId)}`, { method: "POST" }),
+  kavitaDeleteVolumeLink: (seriesId, volumeNumber) => request(`/kavita/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}`, { method: "DELETE" }),
+
+  // Komga (serveur externe, lecture seule -- voir komga_client.py). Miroir de Kavita
+  // ci-dessus, avec des identifiants string (UUID) plutôt qu'entiers.
+  komgaHealth: () => request("/komga/health"),
+  komgaLibraries: () => request("/komga/libraries"),
+  komgaSeries: (libraryId) => request(`/komga/series?libraryId=${encodeURIComponent(libraryId)}`),
+  komgaSeriesDetail: (seriesId) => request(`/komga/series/${encodeURIComponent(seriesId)}`),
+  komgaBooks: (seriesId) => request(`/komga/series/${encodeURIComponent(seriesId)}/books`),
+  komgaCoverUrl: (seriesId) => {
+    const token = getToken();
+    return `/api/komga/cover/${encodeURIComponent(seriesId)}?token=${encodeURIComponent(token)}`;
+  },
+  komgaBookCoverUrl: (bookId) => {
+    const token = getToken();
+    return `/api/komga/book-cover/${encodeURIComponent(bookId)}?token=${encodeURIComponent(token)}`;
+  },
+  komgaPageUrl: (bookId, page) => {
+    const token = getToken();
+    return `/api/komga/read/${encodeURIComponent(bookId)}?page=${page}&token=${encodeURIComponent(token)}`;
+  },
+  komgaGetMatch: (seriesId) => request(`/komga/match/${encodeURIComponent(seriesId)}`),
+  komgaSaveMatch: (seriesId, nautiljonUrl) => request(`/komga/match/${encodeURIComponent(seriesId)}?nautiljon_url=${encodeURIComponent(nautiljonUrl)}`, { method: "POST" }),
+  komgaDeleteMatch: (seriesId) => request(`/komga/match/${encodeURIComponent(seriesId)}`, { method: "DELETE" }),
+  komgaMatches: () => request(`/komga/matches`),
+  komgaAutoMatch: (libraryId) => request(`/komga/auto-match/${encodeURIComponent(libraryId)}`, { method: "POST" }),
+  komgaPushSeries: (seriesId) => request(`/komga/push-series/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  komgaPushVolumes: (seriesId) => request(`/komga/push-volumes/${encodeURIComponent(seriesId)}`, { method: "POST" }),
+  komgaPushProgress: (body) => request(`/komga/progress`, { method: "POST", body: JSON.stringify(body) }),
+  komgaSetEdition: (seriesId, editionName) => request(`/komga/match/${encodeURIComponent(seriesId)}/edition?edition_name=${encodeURIComponent(editionName)}`, { method: "POST" }),
+  komgaSetVolumeLink: (seriesId, volumeNumber, bookId) => request(`/komga/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}&book_id=${encodeURIComponent(bookId)}`, { method: "POST" }),
+  komgaDeleteVolumeLink: (seriesId, volumeNumber) => request(`/komga/match/${encodeURIComponent(seriesId)}/volume-link?volume_number=${encodeURIComponent(volumeNumber)}`, { method: "DELETE" }),
+
   // Debug (admin)
   debugMangaRaw: (url) => request(`/debug/manga-raw?url=${encodeURIComponent(url)}`),
 

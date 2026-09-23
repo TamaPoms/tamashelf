@@ -35,6 +35,7 @@ peut joindre app.py.
 """
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -102,6 +103,17 @@ def _image_url(chemin_relatif) -> str:
     chemin = (chemin_relatif or "").strip()
     if not chemin:
         return ""
+    # Certaines entrées anciennes de la base n'ont jamais eu leur image téléchargée
+    # localement par app.py (image_jpg vide) : on retombe alors sur "image", une URL
+    # nautiljon.com absolue. La faire passer par IMAGE_ROUTE_PREFIX donnerait une URL
+    # absurde (proxy vers un "chemin" qui est en fait une URL complète, 404 assuré). On
+    # veut aussi éviter d'exposer un lien direct nautiljon.com au client : ça casse
+    # (hotlinking bloqué sans le bon Referer) et ça sort du principe "tout est servi
+    # depuis notre domaine, en cache". /api/nautiljon/img-external s'en charge : elle
+    # récupère l'image elle-même (avec les bons headers) et la met en cache comme les
+    # autres.
+    if chemin.startswith("http://") or chemin.startswith("https://"):
+        return f"{IMAGE_ROUTE_PREFIX}-external?url={urllib.parse.quote(chemin, safe='')}"
     if not chemin.startswith("/"):
         chemin = "/" + chemin
     return f"{IMAGE_ROUTE_PREFIX}{chemin}"
@@ -118,12 +130,149 @@ def _infos_brutes(row: dict) -> dict:
         return {}
 
 
+def clean_synopsis(raw: Optional[str]) -> str:
+    """Aplatit le synopsis Nautiljon (cassé par les liens <a> de noms de personnages qui
+    atterrissent sur leur propre ligne source) en un seul paragraphe. Portage de
+    cleanSynopsis() (nautiljon_service.dart) -- même bug côté web, même source de
+    données brute (nautiljon_db.manga_auto)."""
+    if not raw:
+        return ""
+    s = re.sub(r"\s+", " ", raw)
+    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
+    return s.strip()
+
+
 def _pick(infos: dict, *cles):
     for c in cles:
         v = infos.get(c)
         if v:
             return v
     return None
+
+
+def _pick_all(infos: dict, *cles) -> str:
+    """Contrairement à _pick (premier candidat trouvé, s'arrête là), regroupe TOUS les
+    candidats non-vides -- certaines fiches Nautiljon ont à la fois "Genre" (démographie
+    seule) et "Genres" (liste complète), avec un contenu réellement différent ; prendre
+    seulement le premier perdait des tags. Même correctif que pickAll() côté Flutter
+    (nautiljon_service.dart)."""
+    vus, out = set(), []
+    for c in cles:
+        v = infos.get(c)
+        if not v:
+            continue
+        s = str(v).strip()
+        if s and s not in vus:
+            vus.add(s)
+            out.append(s)
+    # Séparateur ", " (pas " - ") : _liste_depuis (utilisée pour découper ce résultat en
+    # liste de tags) ne coupe que sur virgule/point-virgule -- un tiret casserait des
+    # noms de genre/personne qui en contiennent légitimement un.
+    return ", ".join(out)
+
+
+# Clés d'infos_brutes déjà représentées ailleurs dans le dict volume (cover, id, url...)
+# -- à exclure de "extra" pour ne pas dupliquer une info déjà affichée sous une autre
+# forme. Même liste que _knownVolumeKeys côté Flutter (nautiljon_service.dart).
+_KNOWN_VOLUME_KEYS = {
+    "id", "numero", "titre", "synopsis", "url",
+    "image_jpg", "image_mini_jpg", "image", "image_mini", "image_id", "edition_id",
+}
+
+
+def _volume_extra(row: dict) -> dict:
+    """Aplatit infos_brutes (ISBN, date de parution, genres, auteur, traducteur,
+    éditeur...) d'un tome -- même donnée/même format que celle utilisée au niveau série,
+    mais ici par tome. C'est cette table qui alimente les cartes "tomes Nautiljon" et
+    l'envoi vers Kavita/Komga au niveau tome (voir push_series_to_kavita/komga dans
+    main.py). Portage direct de addExtra() dans nautiljon_service.dart."""
+    infos = _infos_brutes(row)
+    return {k: v for k, v in infos.items() if k not in _KNOWN_VOLUME_KEYS and v not in (None, "")}
+
+
+_MOIS_FR = {
+    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5,
+    "juin": 6, "juillet": 7, "août": 8, "aout": 8, "septembre": 9,
+    "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12,
+}
+
+
+def parse_french_date(s: Optional[str]) -> Optional[str]:
+    """"JJ/MM/AAAA" (ou "JJ mois AAAA") -> "AAAA-MM-JJ" (ISO, attendu par Kavita/Komga).
+    None si non reconnaissable. Portage de parseFrenchDate() (nautiljon_service.dart)."""
+    if not s:
+        return None
+    s = s.strip()
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = re.match(r"^(\d{1,2})\s+([A-Za-zéèûÛÉÈ]+)\s+(\d{4})$", s)
+    if m:
+        d, mois, y = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        mo = _MOIS_FR.get(mois)
+        if mo:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    return None
+
+
+def pick_edition(editions: list, series_title: str) -> Optional[dict]:
+    """Choisit l'édition Nautiljon à afficher pour une série -- si le titre source
+    (bibliothèque Kavita/Komga) mentionne une édition ("... Édition Deluxe"), on prend
+    celle dont le nom correspond ; sinon on retombe sur l'édition "standard" (nom vide ou
+    contenant "standard"), sinon la première. Portage de pickEdition()
+    (nautiljon_service.dart)."""
+    if not editions:
+        return None
+    title_low = (series_title or "").lower()
+    for ed in editions:
+        nom = (ed.get("name") or ed.get("nom") or "").strip().lower()
+        if nom and nom in title_low:
+            return ed
+    for ed in editions:
+        nom = (ed.get("name") or ed.get("nom") or "").strip().lower()
+        if not nom or "standard" in nom:
+            return ed
+    return editions[0]
+
+
+def _volume_number(v: dict) -> Optional[float]:
+    try:
+        return float(str(v.get("number") or "").strip())
+    except ValueError:
+        return None
+
+
+def resolve_display_volumes(volumes: list, series_title: str) -> list:
+    """Certaines éditions Nautiljon (ex. "Dragon Ball Z - Anime Comics", 39 tomes) sont
+    scindées côté Kavita/Komga en PLUSIEURS séries -- une par "cycle"/"box"/"partie" --
+    chacune numérotant ses propres chapitres/livres à partir de 1, alors que Nautiljon
+    numérote les tomes en continu sur toute l'édition (1 à 39). Le matching par numéro
+    échoue donc dès le 2e sous-groupe (tome Nautiljon 6 vs chapitre Kavita 1).
+
+    On détecte un mot-clé de sous-groupe en fin de titre de la série source ("Cycle 1",
+    "Box 2", "Partie 3"...) et on ne garde que les tomes dont le TITRE Nautiljon
+    commence par ce même mot-clé (ex. "Cycle 1 - Tome 1"), renumérotés localement
+    1..N -- c'est ce numéro local qui sert alors au matching, au lieu du numéro brut.
+    Si aucun mot-clé n'est détecté, ou qu'aucun sous-ensemble propre n'en ressort
+    (aucun tome ne matche, ou tous matchent), on retombe sur la liste et la numérotation
+    d'origine -- comportement strictement inchangé pour les séries "normales".
+
+    Renvoie une liste de (volume, numero_effectif) dans l'ordre d'affichage --
+    numero_effectif est None si le tome n'a ni numéro exploitable ni sous-groupe."""
+    m = re.search(r"(\S+)\s+(\d+)\s*$", (series_title or "").strip())
+    if m:
+        keyword = f"{m.group(1)} {m.group(2)}".strip().lower()
+        subset = [v for v in volumes if (v.get("title") or v.get("titre") or "").strip().lower().startswith(keyword)]
+        if 0 < len(subset) < len(volumes):
+            return [(v, float(i + 1)) for i, v in enumerate(subset)]
+    return [(v, _volume_number(v)) for v in volumes]
+
+
+def split_tag_list(valeur) -> list:
+    """Alias public de _liste_depuis -- utilisé hors de ce module (main.py, envoi vers
+    Kavita/Komga) pour découper une valeur "extra" de tome en liste de tags."""
+    return _liste_depuis(valeur)
 
 
 def _liste_depuis(valeur):
@@ -149,7 +298,7 @@ def _ligne_vers_item(row: dict) -> dict:
         cover = _image_url(row["image_jpg"])
     elif row.get("image"):
         cover = _image_url(row["image"])
-    synopsis = row.get("synopsis") or ""
+    synopsis = clean_synopsis(row.get("synopsis") or "")
     return {
         "url": row.get("url"),
         "title": row.get("titre"),
@@ -184,7 +333,7 @@ def _volume_vers_dict(row: dict) -> dict:
     titre = row.get("titre") or ""
     cover_full = _image_url(row["image_jpg"]) if row.get("image_jpg") else ""
     cover_mini = _image_url(row["image_mini_jpg"]) if row.get("image_mini_jpg") else (cover_full or "")
-    synopsis = row.get("synopsis") or ""
+    synopsis = clean_synopsis(row.get("synopsis") or "")
     return {
         "id": row.get("id"),
         "volume_id": row.get("id"),
@@ -202,6 +351,10 @@ def _volume_vers_dict(row: dict) -> dict:
         "cover_url": cover_full,
         "categorie_volume": row.get("categorie_volume") or "",
         "is_available": True,
+        # ISBN, date de parution, genres/thèmes, auteur, traducteur, éditeur... du tome --
+        # voir _volume_extra. Alimente les cartes "tomes Nautiljon" (3 colonnes) et
+        # l'envoi vers Kavita/Komga au niveau tome.
+        "extra": _volume_extra(row),
     }
 
 
@@ -240,8 +393,8 @@ def manga_auto(url: str) -> Optional[dict]:
 
     editions = _editions_depuis_reponse(data.get("editions"))
 
-    genres = _liste_depuis(_pick(infos, "Genre", "Genres"))
-    themes = _liste_depuis(_pick(infos, "Thème", "Thèmes", "Theme", "Themes"))
+    genres = _liste_depuis(_pick_all(infos, "Genre", "Genres"))
+    themes = _liste_depuis(_pick_all(infos, "Thème", "Thèmes", "Theme", "Themes"))
 
     details = {
         "title": row.get("titre"),
@@ -249,14 +402,14 @@ def manga_auto(url: str) -> Optional[dict]:
         "cover_url": cover_url,
         "image_url": cover_url,
         "main_cover_json": {"has_cover": bool(cover_url), "cover_full": cover_url, "cover_mini": cover_url},
-        "synopsis": row.get("synopsis") or "",
-        "description": row.get("synopsis") or "",
+        "synopsis": clean_synopsis(row.get("synopsis") or ""),
+        "description": clean_synopsis(row.get("synopsis") or ""),
         "type": row.get("type") or _pick(infos, "Type") or "",
         "status": _pick(infos, "Statut") or "",
         "country": row.get("origine") or _pick(infos, "Origine") or "",
-        "author": _pick(infos, "Auteur", "Auteurs") or "",
-        "artist": _pick(infos, "Dessinateur", "Dessinateurs") or "",
-        "publisher": _pick(infos, "Éditeur VF", "Éditeurs VF", "Éditeur VO", "Éditeurs VO") or "",
+        "author": _pick_all(infos, "Auteur", "Auteurs") or "",
+        "artist": _pick_all(infos, "Dessinateur", "Dessinateurs") or "",
+        "publisher": _pick_all(infos, "Éditeur VF", "Éditeurs VF", "Éditeur VO", "Éditeurs VO") or "",
         "magazine": _pick(infos, "Prépublié dans") or "",
         "year": row.get("annee_vf") or row.get("annee_vo") or _pick(infos, "Année VF", "Année VO") or "",
         "volumes_count": row.get("nb_volumes_vf") or row.get("nb_volumes_vo") or _pick(infos, "Nb volumes VF", "Nb volumes VO") or "",

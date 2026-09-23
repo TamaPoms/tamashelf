@@ -1,0 +1,12 @@
+1) Ouvre un terminal dans flutter/
+2) Lance :
+   flutter create .
+3) Si Flutter te demande d'écraser certains fichiers Android, accepte.
+4) Ensuite remets si besoin ces fichiers depuis ce projet :
+   - android/app/src/main/kotlin/fr/mangashelf/mangashelf/MainActivity.kt
+   - android/app/src/main/AndroidManifest.xml
+   - android/app/src/main/res/xml/network_security_config.xml
+5) Puis lance :
+   flutter clean
+   flutter pub get
+   flutter build apk --release

@@ -8,6 +8,7 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/.pytest_cache/
 *.pyc
+__pycache__/
 
 # Données runtime (montées en volume Docker, jamais versionnées)
 data/
@@ -21,3 +22,17 @@ data/
 .vscode/
 .idea/
 *.swp
+
+# Flutter / Android
+flutter/.dart_tool/
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+flutter/.packages
+flutter/build/
+flutter/android/.gradle/
+flutter/android/local.properties
+flutter/android/key.properties
+flutter/**/*.iml
+flutter/.idea/
+*.jks
+*.keystore
