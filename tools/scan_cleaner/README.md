@@ -68,11 +68,40 @@ général le signe qu'une moitié (souvent une couverture sombre) n'a pas été
 détectée. Ne traite que ces pages-là avec **Corriger manuellement** puis
 **Couper les pages en 2…**, pas besoin de relire tout le volume.
 
-Limite connue : la détection actuelle (couleur/luminosité) peut échouer
-sur une couverture sombre posée sur un bureau lui-même sombre et peu
-coloré — les deux se ressemblent trop pour être distingués par la couleur
-seule. C'est justement le genre de cas qu'une détection par IA (SAM) est
-mieux placée pour résoudre.
+Limite connue de la détection couleur seule : une couverture sombre posée
+sur un bureau lui-même sombre et peu coloré — les deux se ressemblent trop
+pour être distingués par la couleur. Voir la section SAM ci-dessous pour
+combler ce trou sur une machine avec GPU.
+
+### Secours par IA (SAM), sur une machine avec GPU
+
+Sur une machine avec une carte graphique NVIDIA (ex. le PC qui héberge
+scan_cleaner lui-même), tu peux activer SAM comme secours automatique :
+quand une photo ne donne pas un aspect de double page en couleur, SAM est
+retenté avant d'abandonner et de marquer la page ⚠️ — il segmente par
+forme/contour, pas par couleur, donc réussit souvent là où l'heuristique
+couleur échoue (couverture sombre sur bureau sombre).
+
+```bash
+pip install sam2   # ou : pip install "git+https://github.com/facebookresearch/sam2.git"
+
+export SCAN_CLEANER_SAM=sam2
+export SCAN_CLEANER_SAM_MODEL=facebook/sam2.1-hiera-large   # défaut si omis
+python app.py
+```
+
+Le bandeau sous la case "Traitement 100% automatique" indique si SAM est
+actif. Sans ces variables d'environnement (ou sans GPU/`sam2` installé),
+scan_cleaner continue de fonctionner exactement comme avant — SAM est
+entièrement optionnel.
+
+Pour utiliser SAM 1 à la place (package `segment-anything`, plus ancien) :
+
+```bash
+export SCAN_CLEANER_SAM=sam1
+export SCAN_CLEANER_SAM_MODEL=vit_h
+export SCAN_CLEANER_SAM_CHECKPOINT=/chemin/vers/sam_vit_h_4b8939.pth
+```
 
 ### Découper les doubles pages
 

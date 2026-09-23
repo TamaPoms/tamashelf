@@ -16,6 +16,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+import sam_engine
+
 # Dimension max sur laquelle on cherche les contours (perf), on remet à
 # l'échelle d'origine ensuite.
 _DETECT_MAX_DIM = 1200
@@ -342,22 +344,50 @@ class AutoPage:
     confidence: float
 
 
+def _split_if_spread(image_bgr: np.ndarray, method: str, confidence: float) -> list[AutoPage] | None:
+    """Découpe en 2 si l'image a l'aspect d'une double page, sinon renvoie None."""
+    h, w = image_bgr.shape[:2]
+    if h == 0 or w / h < _SPREAD_ASPECT_RATIO:
+        return None
+    gutter_x, _gutter_conf = _detect_gutter_x(image_bgr)
+    left, right = split_page(image_bgr, (gutter_x, 0), (gutter_x, h))
+    return [
+        AutoPage(right, "right", method, confidence),
+        AutoPage(left, "left", method, confidence),
+    ]
+
+
 def auto_clean_and_split(image_bgr: np.ndarray) -> list[AutoPage]:
     """Pipeline 100% automatique pour une image : recadre, puis découpe si
     le résultat a l'aspect d'une double page. Ne dépend d'aucune action
     manuelle — pensé pour traiter un CBZ entier sans relecture page à page.
+
+    Si la détection couleur ne trouve pas un aspect de double page (cas
+    typique : une couverture sombre posée sur un bureau lui-même sombre,
+    indiscernables par la couleur), on retente avec SAM si disponible
+    (`sam_engine`) avant d'abandonner — SAM segmente par forme/contour, pas
+    par couleur, donc peut réussir là où cleaner.py échoue.
     """
     cleaned = clean_page(image_bgr)
-    h, w = cleaned.image.shape[:2]
-    if h == 0 or w / h < _SPREAD_ASPECT_RATIO:
-        return [AutoPage(cleaned.image, None, cleaned.method, cleaned.confidence)]
+    split = _split_if_spread(cleaned.image, "auto-split", cleaned.confidence)
+    if split is not None:
+        return split
 
-    gutter_x, _gutter_conf = _detect_gutter_x(cleaned.image)
-    left, right = split_page(cleaned.image, (gutter_x, 0), (gutter_x, h))
-    return [
-        AutoPage(right, "right", "auto-split", cleaned.confidence),
-        AutoPage(left, "left", "auto-split", cleaned.confidence),
-    ]
+    if sam_engine.is_available():
+        sam_result = sam_engine.detect_quad(image_bgr)
+        if sam_result is not None:
+            quad, score = sam_result
+            try:
+                warped = _four_point_warp(image_bgr, quad)
+            except ValueError:
+                warped = None
+            if warped is not None:
+                split = _split_if_spread(warped, "auto-split-sam", score)
+                if split is not None:
+                    return split
+                return [AutoPage(warped, None, "sam", score)]
+
+    return [AutoPage(cleaned.image, None, cleaned.method, cleaned.confidence)]
 
 
 def auto_clean_and_split_bytes(data: bytes) -> list[tuple[bytes, str | None, str, float]]:

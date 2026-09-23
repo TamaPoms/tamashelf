@@ -203,6 +203,7 @@
     <input type="checkbox" id="autoCheck" />
     <label for="autoCheck">Traitement 100% automatique (recadre et découpe chaque photo en 2 pages sans intervention ; les pages qui ne se découpent pas sont signalées pour relecture, pas devinées à l'aveugle)</label>
   </div>
+  <div id="samStatus" style="font-size: 12px; color: var(--t3); margin-top: 4px;"></div>
 
   <div id="actions">
     <button id="processBtn" disabled>Nettoyer</button>
@@ -255,6 +256,7 @@
   const processBtn = document.getElementById('processBtn');
   const clearBtn = document.getElementById('clearBtn');
   const autoCheck = document.getElementById('autoCheck');
+  const samStatusEl = document.getElementById('samStatus');
   const statusEl = document.getElementById('status');
   const previewsEl = document.getElementById('previews');
   const tabsEl = document.getElementById('tabs');
@@ -284,6 +286,16 @@
   let splitByContainer = [];   // même forme que previewsByContainer, copie indépendante pour la vue découpe
   let splitActiveContainer = null;
   const splitPoints = new Map(); // page_id -> [[x,y],[x,y]] en fractions 0..1, ou [] / absent
+
+  fetch('/api/sam-status').then(r => r.json()).then(d => {
+    if (d.available) {
+      samStatusEl.textContent = `🧠 SAM détecté (${d.engine}, ${d.model}) — utilisé en secours sur les pages difficiles en mode automatique.`;
+    } else if (d.error) {
+      samStatusEl.textContent = `SAM configuré mais indisponible : ${d.error}`;
+    } else {
+      samStatusEl.textContent = 'SAM non configuré (voir sam_engine.py) — les pages difficiles seront juste signalées ⚠️.';
+    }
+  }).catch(() => { samStatusEl.textContent = ''; });
 
   function renderFileList() {
     fileListEl.innerHTML = '';

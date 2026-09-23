@@ -22,6 +22,7 @@ from flask import Flask, jsonify, request, send_file, render_template
 from werkzeug.utils import secure_filename
 
 from cleaner import clean_image_bytes, clean_region_bytes, split_region_bytes, auto_clean_and_split_bytes
+import sam_engine
 
 app = Flask(__name__)
 
@@ -224,6 +225,11 @@ def _process_cbz_auto(data: bytes, job_dir, job, container: str, container_label
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/sam-status")
+def api_sam_status():
+    return jsonify(sam_engine.status())
 
 
 @app.route("/api/process", methods=["POST"])
