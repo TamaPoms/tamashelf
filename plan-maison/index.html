@@ -1075,8 +1075,15 @@ $('#optCarry').addEventListener('change', e => { opts.carry = e.target.checked; 
 $('#optGhost').addEventListener('change', e => { opts.ghost = e.target.checked; saveOpts(); renderGhost(); });
 $('#optDims').addEventListener('change', e => { opts.dims = e.target.checked; saveOpts(); renderLabels(); });
 
-$('#exportBtn').addEventListener('click', () => {
+$('#exportBtn').addEventListener('click', async () => {
   closeMenus();
+  // dans la visionneuse claude.ai, les téléchargements passent par la capacité "downloads"
+  const dl = window.claude?.use ? await window.claude.use('downloads').catch(() => null) : null;
+  if (dl) {
+    try { await dl.save({ filename: 'plan-maison.json', data: snapshot() }); setStatus('Plan exporté'); }
+    catch (e) { setStatus(e?.code === 'declined' ? 'Export annulé' : 'Export impossible ici'); }
+    return;
+  }
   try {
     const blob = new Blob([snapshot()], { type: 'application/json' });
     const a = document.createElement('a');
