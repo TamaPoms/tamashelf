@@ -399,6 +399,7 @@ const PRESETS = [
   ['Salon', [['Canapé 3 places', 210, 90, 85], ['Canapé d\'angle', 260, 180, 85], ['Fauteuil', 80, 80, 90], ['Table basse', 110, 60, 40], ['Meuble TV', 180, 40, 50], ['Bibliothèque', 80, 30, 200]]],
   ['Repas & cuisine', [['Table 6 pers.', 180, 90, 75], ['Table ronde', 110, 110, 75], ['Chaise', 45, 50, 90], ['Réfrigérateur', 60, 65, 180], ['Plan de travail', 240, 60, 90], ['Cuisinière', 60, 60, 85]]],
   ['Chambre', [['Lit double 160', 160, 200, 50], ['Lit simple 90', 90, 190, 50], ['Table de nuit', 45, 40, 55], ['Armoire', 120, 60, 200], ['Commode', 100, 50, 85], ['Bureau', 120, 60, 75]]],
+  ['Rangements', [['Placard encastré', 120, 60, 240], ['Dressing', 200, 60, 240], ['Étagère', 80, 35, 180]]],
   ['Salle de bain', [['Baignoire', 170, 75, 55], ['Douche', 90, 90, 200], ['Lavabo', 60, 45, 85], ['WC', 40, 65, 80], ['Lave-linge', 60, 60, 85]]],
 ];
 
@@ -406,7 +407,48 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n, d = 0) => Number(n).toLocaleString('fr-FR', { maximumFractionDigits: d, minimumFractionDigits: d });
-const m2 = it => it.w * it.d / 10000;
+// contour d'une pièce dans son repère local (origine au coin haut-gauche) ; rectangle si pas de points
+const roomPts = it => (it.type === 'room' && it.pts && it.pts.length >= 3) ? it.pts : [{ x: 0, y: 0 }, { x: it.w, y: 0 }, { x: it.w, y: it.d }, { x: 0, y: it.d }];
+function polyArea(p) {
+  let a = 0;
+  for (let i = 0; i < p.length; i++) { const j = (i + 1) % p.length; a += p[i].x * p[j].y - p[j].x * p[i].y; }
+  return Math.abs(a) / 2;
+}
+function inPoly(p, x, y) {
+  let ok = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    if ((p[i].y > y) !== (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) ok = !ok;
+  }
+  return ok;
+}
+const m2 = it => (it.type === 'room' && it.pts ? polyArea(it.pts) : it.w * it.d) / 10000;
+const r1 = v => Math.round(v * 10) / 10;
+function localToWorld(it, p) {
+  const c = center(it), a = it.rot * Math.PI / 180, dx = p.x - it.w / 2, dy = p.y - it.d / 2;
+  return { x: c.x + dx * Math.cos(a) - dy * Math.sin(a), y: c.y + dx * Math.sin(a) + dy * Math.cos(a) };
+}
+const worldPts = it => roomPts(it).map(p => localToWorld(it, p));
+// la pièce contient-elle ce point du plan ?
+function roomHas(r, x, y) {
+  const l = toItemLocal(r, x, y);
+  return r.type === 'room' && r.pts ? inPoly(r.pts, l.x, l.y) : l.x >= 0 && l.x <= r.w && l.y >= 0 && l.y <= r.d;
+}
+// redéfinit le contour d'une pièce à partir de coins exprimés sur le plan (la rotation est conservée)
+function setRoomWorld(it, W) {
+  const a = it.rot * Math.PI / 180, co = Math.cos(a), si = Math.sin(a);
+  const q = W.map(p => ({ x: p.x * co + p.y * si, y: -p.x * si + p.y * co }));
+  const xs = q.map(p => p.x), ys = q.map(p => p.y);
+  const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+  it.w = Math.max(1, r1(maxx - minx)); it.d = Math.max(1, r1(maxy - miny));
+  it.pts = q.map(p => ({ x: r1(p.x - minx), y: r1(p.y - miny) }));
+  const cq = { x: (minx + maxx) / 2, y: (miny + maxy) / 2 };
+  it.x = r1(cq.x * co - cq.y * si - it.w / 2); it.y = r1(cq.x * si + cq.y * co - it.d / 2);
+}
+const SHAPES = {
+  L: [[0, 0], [.6, 0], [.6, .45], [1, .45], [1, 1], [0, 1]],
+  T: [[0, 0], [1, 0], [1, .4], [.68, .4], [.68, 1], [.32, 1], [.32, .4], [0, .4]],
+  U: [[0, 0], [.3, 0], [.3, .55], [.7, .55], [.7, 0], [1, 0], [1, 1], [0, 1]],
+};
 
 function makeItem(type, over = {}) {
   const t = TYPES[type];
@@ -470,6 +512,7 @@ function sampleDoc() {
    ========================================================= */
 let doc = null;
 let selId = null;
+let selVertex = null; // coin de pièce sélectionné
 const view = { s: 0.7, tx: 40, ty: 40 };
 const opts = { snap: 5, carry: true, ghost: true, dims: false };
 const undoStack = [], redoStack = [];
@@ -493,6 +536,7 @@ function restore(json) {
   const o = JSON.parse(json);
   doc.levels = o.levels; doc.cur = o.cur; doc.sample = o.sample;
   if (selId && !findItem(selId)) selId = null;
+  selVertex = null;
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); changed(true); }
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); changed(true); }
@@ -576,7 +620,9 @@ function baseSVG(it) {
   const { w, d } = it;
   switch (it.type) {
     case 'room':
-      return `<rect width="${w}" height="${d}" style="fill:${it.color};fill-opacity:.32" class="st-ink" stroke-width="3"/>`;
+      return it.pts
+        ? `<polygon points="${it.pts.map(p => p.x + ',' + p.y).join(' ')}" style="fill:${it.color};fill-opacity:.32" class="st-ink" stroke-width="3" stroke-linejoin="miter"/>`
+        : `<rect width="${w}" height="${d}" style="fill:${it.color};fill-opacity:.32" class="st-ink" stroke-width="3"/>`;
     case 'stairs': {
       const n = it.steps || Math.max(2, Math.round(d / 18));
       let s = `<rect width="${w}" height="${d}" style="fill:${it.color};fill-opacity:.4" class="st-ink" stroke-width="1.5"/>`;
@@ -584,7 +630,10 @@ function baseSVG(it) {
       return s;
     }
     case 'door': {
-      const leaf = it.flip ? `M${w} 0 L${w} ${-w} M${w} ${-w} A${w} ${w} 0 0 0 0 0` : `M0 0 L0 ${-w} M0 ${-w} A${w} ${w} 0 0 1 ${w} 0`;
+      const h2 = w / 2;
+      const leaf = it.double
+        ? `M0 0 L0 ${-h2} A${h2} ${h2} 0 0 1 ${h2} 0 M${w} 0 L${w} ${-h2} A${h2} ${h2} 0 0 0 ${h2} 0`
+        : it.flip ? `M${w} 0 L${w} ${-w} M${w} ${-w} A${w} ${w} 0 0 0 0 0` : `M0 0 L0 ${-w} M0 ${-w} A${w} ${w} 0 0 1 ${w} 0`;
       return `<rect width="${w}" height="${d}" class="fill-paper st-ink" stroke-width="1"/>`
         + `<path d="${leaf}" fill="none" class="st-ink" stroke-width="1.2" stroke-dasharray="0"/>`
         + `<rect x="0" y="${-w}" width="${w}" height="${w}" fill="transparent"/>`;
@@ -654,10 +703,10 @@ function renderLabels() {
     if (it.type === 'room') {
       if (big < 30) continue;
       // nom dans le coin haut-gauche de la pièce, pour laisser le centre aux meubles
-      const k = corners(it).reduce((a, b) => (b.y + b.x * .2 < a.y + a.x * .2 ? b : a));
+      const k = worldPts(it).reduce((a, b) => (b.y + b.x * .2 < a.y + a.x * .2 ? b : a));
       const lx = k.x + px(8), ly = k.y + px(20);
       out += `<text x="${lx}" y="${ly}" class="lbl" stroke-width="3" font-size="${px(14)}" font-weight="700">${esc(it.name)}</text>`;
-      if (Math.min(it.w, it.d) * s >= 130) out += `<text x="${lx}" y="${ly + px(15)}" class="lbl-muted num" stroke-width="3" font-size="${px(11)}">${fmt(m2(it), 1)} m² · ${fmt(it.w)}×${fmt(it.d)}</text>`;
+      if (Math.min(it.w, it.d) * s >= 130) out += `<text x="${lx}" y="${ly + px(15)}" class="lbl-muted num" stroke-width="3" font-size="${px(11)}">${fmt(m2(it), 1)} m²${it.pts ? '' : ` · ${fmt(it.w)}×${fmt(it.d)}`}</text>`;
     } else if (it.type === 'furniture') {
       if (big < 14 && it.id !== selId) continue;
       const fs = clamp(Math.min(it.w, it.d) * s / 4, 9, 12);
@@ -681,8 +730,10 @@ function renderSelection() {
   let h = `<g transform="${itemTransform(it)}">`;
   h += `<rect x="${-px(3)}" y="${-px(3)}" width="${w + px(6)}" height="${d + px(6)}" class="sel-line" stroke-width="1.5" stroke-dasharray="5 4"/>`;
   // cotes
-  h += `<text x="${w / 2}" y="${-px(10)}" text-anchor="middle" class="sel-txt num" stroke-width="3" font-size="${px(11)}" font-weight="600">${fmt(w)} cm</text>`;
-  h += `<text transform="translate(${w + px(12)} ${d / 2}) rotate(90)" text-anchor="middle" class="sel-txt num" stroke-width="3" font-size="${px(11)}" font-weight="600">${fmt(d)} cm</text>`;
+  if (!(it.type === 'room' && it.pts)) {
+    h += `<text x="${w / 2}" y="${-px(10)}" text-anchor="middle" class="sel-txt num" stroke-width="3" font-size="${px(11)}" font-weight="600">${fmt(w)} cm</text>`;
+    h += `<text transform="translate(${w + px(12)} ${d / 2}) rotate(90)" text-anchor="middle" class="sel-txt num" stroke-width="3" font-size="${px(11)}" font-weight="600">${fmt(d)} cm</text>`;
+  }
   // poignée de rotation
   h += `<line x1="${w / 2}" y1="${-px(3)}" x2="${w / 2}" y2="${-px(32)}" class="sel-line" stroke-width="1"/>`;
   h += `<circle cx="${w / 2}" cy="${-px(36)}" r="${px(7)}" class="sel-handle" stroke-width="1.5" data-h="rot" style="cursor:grab"/>`;
@@ -693,6 +744,20 @@ function renderSelection() {
     const x = (hx + 1) / 2 * w, y = (hy + 1) / 2 * d;
     h += `<rect x="${x - hs / 2}" y="${y - hs / 2}" width="${hs}" height="${hs}" class="sel-handle" stroke-width="1.5" data-h="${hx},${hy}" style="cursor:${cur[hx + ',' + hy]}-resize"/>`;
   }
+  if (it.type === 'room') {
+    // coins déplaçables, "+" au milieu de chaque mur pour ajouter un coin, longueur de chaque mur
+    const P = roomPts(it), n = P.length;
+    P.forEach((a, i) => {
+      const b = P[(i + 1) % n], mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, len = Math.hypot(b.x - a.x, b.y - a.y);
+      let nx = -(b.y - a.y) / (len || 1), ny = (b.x - a.x) / (len || 1);
+      if (inPoly(P, mx + nx * 2, my + ny * 2)) { nx = -nx; ny = -ny; } // vers l'extérieur
+      if (it.pts) h += `<text x="${mx + nx * px(14)}" y="${my + ny * px(14) + px(4)}" text-anchor="middle" class="sel-txt num" stroke-width="3" font-size="${px(11)}" font-weight="600">${fmt(len)}</text>`;
+      if (len * s > 40) h += `<g data-h="a,${i}" style="cursor:copy"><circle cx="${mx}" cy="${my}" r="${px(8)}" class="sel-handle" stroke-width="1"/><path d="M${mx - px(4)} ${my}h${px(8)}M${mx} ${my - px(4)}v${px(8)}" class="sel-line" stroke-width="1.5"/></g>`;
+    });
+    P.forEach((a, i) => {
+      h += `<circle cx="${a.x}" cy="${a.y}" r="${px(i === selVertex ? 8 : 6)}" class="sel-handle" stroke-width="${i === selVertex ? 3 : 2}" data-h="v,${i}" style="cursor:move${i === selVertex ? ';fill:var(--sel)' : ''}"/>`;
+    });
+  }
   h += '</g>';
   gSel.innerHTML = h;
 }
@@ -702,7 +767,7 @@ function renderGhost() {
   const below = idx > 0 ? doc.levels[idx - 1] : null;
   if (!opts.ghost || !below) { gGhost.innerHTML = ''; return; }
   gGhost.innerHTML = below.items.filter(i => i.type === 'room' || i.type === 'stairs')
-    .map(it => `<rect transform="${itemTransform(it)}" width="${it.w}" height="${it.d}" class="ghost-shape" stroke-width="1.2"/>`).join('');
+    .map(it => `<polygon transform="${itemTransform(it)}" points="${roomPts(it).map(p => p.x + ',' + p.y).join(' ')}" class="ghost-shape" stroke-width="1.2"/>`).join('');
 }
 
 function renderLevels() {
@@ -723,8 +788,10 @@ function renderPanel() {
   const pane = $('#pane');
   const it = selected();
   $('#grip').textContent = it ? `${TYPES[it.type].label} · ${it.name}` : level().name;
-  if (!it) { pane.innerHTML = levelPanel(); return; }
-  pane.innerHTML = itemPanel(it);
+  // garde le champ en cours de saisie quand le panneau est redessiné
+  const ae = document.activeElement, keep = ae && pane.contains(ae) && ae.id ? ae.id : null;
+  pane.innerHTML = it ? itemPanel(it) : levelPanel();
+  if (keep) { const n = document.getElementById(keep); if (n) n.focus(); }
 }
 
 function levelPanel() {
@@ -781,13 +848,28 @@ function itemPanel(it) {
     ${num('d', thin ? 'Épaisseur' : it.type === 'room' ? 'Longueur' : 'Profondeur', it.d)}
     ${num('h', it.type === 'room' ? 'Plafond' : 'Hauteur', it.h)}
   </div>`;
-  if (it.type === 'room') h += `<div class="facts"><span>Surface <b>${fmt(m2(it), 2)} m²</b></span><span>Volume <b>${fmt(it.w * it.d * it.h / 1e6, 1)} m³</b></span></div>`;
+  if (it.type === 'room') {
+    h += `<div class="facts"><span>Surface <b>${fmt(m2(it), 2)} m²</b></span><span>Volume <b>${fmt(m2(it) * it.h / 100, 1)} m³</b></span></div>`;
+    const shape = it.pts ? '' : 'rect';
+    h += `</div><div class="section"><span class="eyebrow">Forme</span>
+      <div class="actions">
+        <button class="btn" data-shape="rect" aria-pressed="${shape === 'rect'}">Rectangle</button>
+        <button class="btn" data-shape="L">En L</button><button class="btn" data-shape="T">En T</button><button class="btn" data-shape="U">En U</button>
+      </div>
+      <p class="empty" style="margin:0;font-size:12px">Sur le plan, tirez un <b>rond</b> pour déplacer un coin, ou un <b>+</b> au milieu d'un mur pour ajouter un coin.</p>`;
+    if (it.pts) {
+      const P = it.pts;
+      h += `<div class="grid3">${P.map((a, i) => { const b = P[(i + 1) % P.length];
+        return `<label class="field"><span>Mur ${i + 1}</span><span class="unit" data-u="cm"><input type="number" inputmode="decimal" step="1" data-edge="${i}" id="f-edge-${i}" value="${Math.round(Math.hypot(b.x - a.x, b.y - a.y))}"></span></label>`; }).join('')}</div>`;
+      if (selVertex !== null && P.length > 3) h += `<button class="btn danger" data-act="delVertex">Supprimer le coin sélectionné</button>`;
+    }
+  }
   if (it.type === 'stairs') {
     const n = it.steps || Math.max(2, Math.round(it.d / 18));
     h += `<div class="grid2">${num('steps', 'Marches', n, 'u')}<div class="field"><span>Marche</span><div class="facts" style="height:34px;align-items:center"><span>giron <b>${fmt(it.d / n, 1)}</b></span><span>haut. <b>${fmt(it.h / n, 1)}</b></span></div></div></div>
       <button class="btn" data-act="reverse">Inverser le sens de montée</button>`;
   }
-  if (it.type === 'door') h += `<button class="btn" data-act="flip">Changer le côté des gonds</button>`;
+  if (it.type === 'door') h += `<div class="actions"><button class="btn" data-act="double">${it.double ? 'Porte simple' : 'Porte double (placard)'}</button>${it.double ? '' : '<button class="btn" data-act="flip">Changer le côté des gonds</button>'}</div>`;
   h += `</div>`;
 
   h += `<div class="section"><span class="eyebrow">Position</span><div class="grid3">
@@ -810,6 +892,10 @@ function itemPanel(it) {
 
 function syncPanel() {
   const it = selected(); if (!it) return;
+  if (it.type === 'room' && it.pts) it.pts.forEach((a, i) => {
+    const inp = document.getElementById('f-edge-' + i), b = it.pts[(i + 1) % it.pts.length];
+    if (inp && document.activeElement !== inp) inp.value = Math.round(Math.hypot(b.x - a.x, b.y - a.y));
+  });
   for (const k of ['x', 'y', 'w', 'd', 'rot']) {
     const inp = document.getElementById('f-' + k);
     if (inp && document.activeElement !== inp) inp.value = Math.round(it[k] * 10) / 10;
@@ -863,14 +949,19 @@ function nudge(dx, dy) {
   for (const m of movers(it)) { m.x += dx; m.y += dy; }
   changed(false); syncPanel();
 }
-function select(id) { selId = id; renderPanel(); renderPlan(); }
+function delVertex() {
+  const it = selected();
+  if (!it || it.type !== 'room' || selVertex === null || roomPts(it).length <= 3) return false;
+  pushHistory();
+  const W = worldPts(it); W.splice(selVertex, 1); setRoomWorld(it, W);
+  selVertex = null; changed(true); return true;
+}
+function select(id) { selId = id; selVertex = null; renderPanel(); renderPlan(); }
 
 // éléments qui suivent une pièce déplacée
 function inside(room, it) {
-  const c = center(it), rc = center(room), a = -room.rot * Math.PI / 180;
-  const dx = c.x - rc.x, dy = c.y - rc.y;
-  const lx = dx * Math.cos(a) - dy * Math.sin(a), ly = dx * Math.sin(a) + dy * Math.cos(a);
-  return Math.abs(lx) <= room.w / 2 && Math.abs(ly) <= room.d / 2;
+  const c = center(it);
+  return roomHas(room, c.x, c.y);
 }
 function movers(it) {
   if (it.type !== 'room' || !opts.carry) return [it];
@@ -989,10 +1080,22 @@ svg.addEventListener('pointerdown', e => {
   if (handle && it) {
     const hv = handle.getAttribute('data-h');
     if (hv === 'rot') g = { mode: 'rotate', it, rot0: it.rot };
-    else { const [hx, hy] = hv.split(',').map(Number); g = { mode: 'resize', it, hx, hy, o: { x: it.x, y: it.y, w: it.w, d: it.d } }; }
+    else if (hv[0] === 'v' || hv[0] === 'a') {
+      let i = +hv.split(',')[1];
+      if (hv[0] === 'a') { // nouveau coin au milieu du mur, aussitôt déplaçable
+        pushHistory();
+        const W = worldPts(it), a = W[i], b = W[(i + 1) % W.length];
+        W.splice(i + 1, 0, { x: r1((a.x + b.x) / 2), y: r1((a.y + b.y) / 2) });
+        setRoomWorld(it, W); i++;
+        renderItems(); renderLabels();
+      }
+      selVertex = i; renderSelection();
+      g = { mode: 'vertex', it, i, W: worldPts(it), pushed: hv[0] === 'a' };
+    }
+    else { const [hx, hy] = hv.split(',').map(Number); g = { mode: 'resize', it, hx, hy, o: { x: it.x, y: it.y, w: it.w, d: it.d, pts: it.pts && it.pts.map(p => ({ ...p })) } }; }
   } else if (target) {
     const id = target.getAttribute('data-id');
-    if (id !== selId) { selId = id; renderPanel(); renderSelection(); }
+    if (id !== selId) { selId = id; selVertex = null; renderPanel(); renderSelection(); }
     const t = findItem(id);
     g = { mode: 'move', it: t, list: movers(t).map(m => ({ m, x: m.x, y: m.y })) };
   } else {
@@ -1021,7 +1124,7 @@ svg.addEventListener('pointermove', e => {
 
   if (g.mode === 'pan') { g.tap = false; view.tx = g.tx0 + dxs; view.ty = g.ty0 + dys; applyView(); return; }
 
-  if (!g.dirty) { pushHistory(); g.dirty = true; }
+  if (!g.dirty) { if (!g.pushed) pushHistory(); g.dirty = true; }
   const it = g.it;
   if (g.mode === 'move') {
     const first = g.list[0];
@@ -1037,6 +1140,20 @@ svg.addEventListener('pointermove', e => {
     if (g.hy) { nd = Math.max(min, snapv(o.d + g.hy * ly)); sy = g.hy * (nd - o.d) / 2; }
     const cx = o.x + o.w / 2 + sx * co - sy * si, cy = o.y + o.d / 2 + sx * si + sy * co;
     it.w = nw; it.d = nd; it.x = Math.round((cx - nw / 2) * 10) / 10; it.y = Math.round((cy - nd / 2) * 10) / 10;
+    if (o.pts) it.pts = o.pts.map(p => ({ x: r1(p.x * nw / o.w), y: r1(p.y * nd / o.d) }));
+  } else if (g.mode === 'vertex') {
+    const W = g.W.map(p => ({ ...p })), n = W.length;
+    const a = it.rot * Math.PI / 180, co = Math.cos(a), si = Math.sin(a);
+    const toL = p => ({ x: p.x * co + p.y * si, y: -p.x * si + p.y * co }), toW = q => ({ x: q.x * co - q.y * si, y: q.x * si + q.y * co });
+    const q = toL({ x: snapv(g.W[g.i].x + dx), y: snapv(g.W[g.i].y + dy) }), tol = 8 / view.s;
+    // s'aligne sur les coins voisins pour garder des murs droits
+    for (const j of [g.i - 1, g.i + 1]) {
+      const nb = toL(g.W[(j + n) % n]);
+      if (Math.abs(q.x - nb.x) < tol) q.x = nb.x;
+      if (Math.abs(q.y - nb.y) < tol) q.y = nb.y;
+    }
+    W[g.i] = toW(q);
+    setRoomWorld(it, W);
   } else if (g.mode === 'rotate') {
     const c = center(it);
     let ang = Math.atan2(w.y - c.y, w.x - c.x) * 180 / Math.PI + 90;
@@ -1052,8 +1169,9 @@ function endPointer(e) {
   svg.classList.remove('panning');
   if (!g) return;
   if (g.mode === 'pinch') { if (ptrs.size === 0) g = null; return; }
-  if (g.mode === 'pan' && g.tap && selId) { selId = null; renderPanel(); renderSelection(); }
-  if (g.dirty) { changed(false); if (g.it && g.it.type === 'room') renderPanel(); }
+  if (g.mode === 'pan' && g.tap && selId) { selId = null; selVertex = null; renderPanel(); renderSelection(); }
+  if (g.mode === 'vertex') changed(true);
+  else if (g.dirty) { changed(false); if (g.it && g.it.type === 'room') renderPanel(); }
   else if (g.mode === 'move' && e.pointerType !== 'mouse') openSheet();
   g = null;
 }
@@ -1178,12 +1296,27 @@ $('#newBtn').addEventListener('click', async () => {
 // panneau : délégation
 const pane = $('#pane');
 let editPushed = null;
+let panelStale = false;
+pane.addEventListener('focusout', e => {
+  if (panelStale && !(e.relatedTarget && pane.contains(e.relatedTarget))) { panelStale = false; setTimeout(renderPanel); }
+});
 pane.addEventListener('focusin', e => { if (e.target.matches('[data-k], #lvName')) editPushed = null; });
 pane.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'lvName') {
     if (editPushed !== t) { pushHistory(); editPushed = t; }
     level().name = t.value || 'Niveau'; renderLevels(); $('#grip').textContent = level().name; scheduleSave(); return;
+  }
+  if (t.dataset.edge !== undefined) {
+    const it = selected(), v = parseFloat(t.value); if (!it || !it.pts || !(v > 0)) return;
+    if (editPushed !== t) { pushHistory(); editPushed = t; }
+    // allonge le mur : le coin suivant et celui d'après glissent dans le même sens
+    const W = worldPts(it), n = W.length, i = +t.dataset.edge, a = W[i], b = W[(i + 1) % n];
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / len, uy = (b.y - a.y) / len, dl = v - len;
+    for (const j of new Set([(i + 1) % n, (i + 2) % n])) if (j !== i) { W[j].x += ux * dl; W[j].y += uy * dl; }
+    setRoomWorld(it, W);
+    renderItems(); renderLabels(); renderSelection(); syncPanel(); scheduleSave(); updateUndoButtons();
+    return;
   }
   const k = t.dataset.k; const it = selected(); if (!k || !it) return;
   if (k === 'showPhoto') { pushHistory(); it.showPhoto = t.checked; changed(false); return; }
@@ -1193,6 +1326,7 @@ pane.addEventListener('input', e => {
   if (k === 'steps') v = clamp(Math.round(v), 2, 60);
   if (k === 'rot') v = ((v % 360) + 360) % 360;
   if (editPushed !== t) { pushHistory(); editPushed = t; }
+  if (it.type === 'room' && it.pts && (k === 'w' || k === 'd')) { const f = v / it[k]; it.pts.forEach(p => { p[k === 'w' ? 'x' : 'y'] = r1(p[k === 'w' ? 'x' : 'y'] * f); }); }
   it[k] = v;
   if (k === 'name') $('#grip').textContent = `${TYPES[it.type].label} · ${it.name}`;
   if (k === 'color') pane.querySelectorAll('.swatch').forEach(s => s.setAttribute('aria-pressed', s.dataset.color.toLowerCase() === v.toLowerCase()));
@@ -1200,7 +1334,7 @@ pane.addEventListener('input', e => {
 });
 pane.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.k && ['w', 'd', 'h', 'steps'].includes(t.dataset.k)) renderPanel(); // met à jour surface / marches
+  if ((t.dataset.k && ['w', 'd', 'h', 'steps'].includes(t.dataset.k)) || t.dataset.edge !== undefined) panelStale = true; // surface / marches recalculées en quittant le panneau
   if (t.dataset.actSelect === 'moveLevel' && t.value) {
     const it = selected(); const dest = doc.levels.find(l => l.id === t.value);
     if (!it || !dest) return;
@@ -1213,6 +1347,13 @@ pane.addEventListener('change', e => {
 pane.addEventListener('click', async e => {
   const pick = e.target.closest('[data-pick]');
   if (pick) { select(pick.dataset.pick); return; }
+  const sh = e.target.closest('[data-shape]');
+  if (sh) {
+    const it = selected(); pushHistory(); selVertex = null;
+    if (sh.dataset.shape === 'rect') delete it.pts;
+    else it.pts = SHAPES[sh.dataset.shape].map(([x, y]) => ({ x: r1(x * it.w), y: r1(y * it.d) }));
+    changed(true); return;
+  }
   const sw = e.target.closest('[data-color]');
   if (sw) { const it = selected(); pushHistory(); it.color = sw.dataset.color; changed(true); return; }
   if (e.target.closest('#drop')) { const it = selected(); if (it && it.photo) openLightbox(it); else $('#photoInput').click(); return; }
@@ -1227,6 +1368,8 @@ pane.addEventListener('click', async e => {
     case 'zoomPhoto': openLightbox(it); break;
     case 'rmPhoto': pushHistory(); it.photo = null; changed(true); break;
     case 'flip': pushHistory(); it.flip = !it.flip; changed(false); break;
+    case 'double': pushHistory(); it.double = !it.double; changed(true); break;
+    case 'delVertex': delVertex(); break;
     case 'reverse': pushHistory(); it.reverse = !it.reverse; changed(false); break;
     case 'front': case 'back': {
       pushHistory();
@@ -1291,8 +1434,8 @@ document.addEventListener('keydown', e => {
   if (!selected()) return;
   const step = (e.shiftKey ? 10 : 1) * (opts.snap || 1);
   switch (e.key) {
-    case 'Delete': case 'Backspace': e.preventDefault(); delSel(); break;
-    case 'Escape': selId = null; renderPanel(); renderSelection(); break;
+    case 'Delete': case 'Backspace': e.preventDefault(); if (!delVertex()) delSel(); break;
+    case 'Escape': selId = null; selVertex = null; renderPanel(); renderSelection(); break;
     case 'r': case 'R': rotSel(e.shiftKey ? -90 : 90); break;
     case 'ArrowLeft': e.preventDefault(); nudge(-step, 0); break;
     case 'ArrowRight': e.preventDefault(); nudge(step, 0); break;
@@ -1336,6 +1479,7 @@ function toItemLocal(it, x, y) {
   return { x: dx * Math.cos(a) - dy * Math.sin(a) + it.w / 2, y: dx * Math.sin(a) + dy * Math.cos(a) + it.d / 2 };
 }
 function inRect(it, x, y, m = 0) {
+  if (it.type === 'room' && it.pts) return roomHas(it, x, y);
   const l = toItemLocal(it, x, y);
   return l.x >= -m && l.x <= it.w + m && l.y >= -m && l.y <= it.d + m;
 }
@@ -1415,7 +1559,8 @@ function buildScene() {
 
     for (const r of rooms) {
       // sol, découpé autour des trémies d'escalier du niveau inférieur
-      const xs = new Set([0, r.w]), ys = new Set([0, r.d]), holes = [];
+      const P = roomPts(r);
+      const xs = new Set(P.map(p => p.x)), ys = new Set(P.map(p => p.y)), holes = [];
       for (const st of wells) {
         const pts = corners(st).map(p => toItemLocal(r, p.x, p.y));
         const h = { x0: clamp(Math.min(...pts.map(p => p.x)), 0, r.w), x1: clamp(Math.max(...pts.map(p => p.x)), 0, r.w),
@@ -1424,9 +1569,16 @@ function buildScene() {
       }
       const X = [...xs].sort((a, b) => a - b), Y = [...ys].sort((a, b) => a - b);
       const floorMat = mat(mixHex(r.color, '#ffffff', .45), { side: THREE.DoubleSide });
-      for (let i = 0; i < X.length - 1; i++) for (let j = 0; j < Y.length - 1; j++) {
+      if (!holes.length) { // sol d'un seul tenant, à la forme exacte de la pièce
+        const shp = new THREE.Shape(P.map(p => new THREE.Vector2(p.x, -p.y)));
+        const fl = new THREE.Mesh(new THREE.ShapeGeometry(shp), floorMat);
+        fl.rotation.x = -Math.PI / 2; fl.receiveShadow = true;
+        const holder = new THREE.Group(); holder.add(fl);
+        placeLocal(holder, r, 0, 0, y0 + .5);
+        grp.add(holder);
+      } else for (let i = 0; i < X.length - 1; i++) for (let j = 0; j < Y.length - 1; j++) {
         const cx = (X[i] + X[i + 1]) / 2, cy = (Y[j] + Y[j + 1]) / 2;
-        if (holes.some(h => cx > h.x0 && cx < h.x1 && cy > h.y0 && cy < h.y1)) continue;
+        if (!inPoly(P, cx, cy) || holes.some(h => cx > h.x0 && cx < h.x1 && cy > h.y0 && cy < h.y1)) continue;
         const pl = new THREE.Mesh(new THREE.PlaneGeometry(X[i + 1] - X[i], Y[j + 1] - Y[j]), floorMat);
         pl.rotation.x = -Math.PI / 2; pl.receiveShadow = true;
         const holder = new THREE.Group(); holder.add(pl);
@@ -1436,13 +1588,14 @@ function buildScene() {
 
       // murs, avec les ouvertures des portes et fenêtres posées dessus
       // s'il y a un étage, les murs montent jusqu'à son plancher
-      const C = corners(r), H = doc.levels[li + 1] ? Math.max(r.h, layout.elev[li + 1] - y0) : r.h;
-      for (let k = 0; k < 4; k++) {
-        const p0 = C[k], p1 = C[(k + 1) % 4];
+      const C = worldPts(r), H = doc.levels[li + 1] ? Math.max(r.h, layout.elev[li + 1] - y0) : r.h;
+      for (let k = 0; k < C.length; k++) {
+        const p0 = C[k], p1 = C[(k + 1) % C.length];
         const len = Math.hypot(p1.x - p0.x, p1.y - p0.y); if (len < 1) continue;
         const u = { x: (p1.x - p0.x) / len, y: (p1.y - p0.y) / len };
-        const rc = center(r); let n = { x: -u.y, y: u.x };
-        if ((rc.x - p0.x) * n.x + (rc.y - p0.y) * n.y < 0) n = { x: -n.x, y: -n.y };
+        let n = { x: -u.y, y: u.x }; // vers l'intérieur de la pièce
+        const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+        if (!roomHas(r, mx + n.x * 2, my + n.y * 2)) n = { x: -n.x, y: -n.y };
         const ops = [];
         for (const o of openings) {
           const oc = center(o), ax = { x: Math.cos(o.rot * Math.PI / 180), y: Math.sin(o.rot * Math.PI / 180) };
@@ -1487,10 +1640,13 @@ function buildScene() {
     // portes : battant ouvert à 90°
     for (const o of lv.items.filter(i => i.type === 'door')) {
       const top = o.h || DOOR_TOP_DEFAULT;
-      const leaf = withEdges(box(4, top - 2, o.w - 4, mat(o.color)));
-      const holder = new THREE.Group(); holder.add(leaf);
-      placeLocal(holder, o, o.flip ? o.w - 2 : 2, -o.w / 2 + 2, y0 + top / 2);
-      grp.add(holder);
+      const leaves = o.double ? [[2, o.w / 2], [o.w - 2, o.w / 2]] : [[o.flip ? o.w - 2 : 2, o.w]];
+      for (const [hx, lw] of leaves) {
+        const leaf = withEdges(box(4, top - 2, lw - 4, mat(o.color)));
+        const holder = new THREE.Group(); holder.add(leaf);
+        placeLocal(holder, o, hx, -lw / 2 + 2, y0 + top / 2);
+        grp.add(holder);
+      }
     }
 
     // escaliers qui montent depuis ce niveau

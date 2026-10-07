@@ -5,7 +5,10 @@ pour dessiner les niveaux d'une maison et y placer ses meubles.
 
 - **Niveaux** : rez-de-chaussée, étage, combles… avec le niveau du dessous en
   pointillés pour aligner l'escalier.
-- **Éléments** : pièces, escaliers (nombre de marches, sens de montée), portes,
+- **Pièces de toutes formes** : rectangle, en L, en T, en U, ou forme libre en
+  déplaçant les coins (ronds) et en ajoutant des coins (+ au milieu d'un mur) ;
+  la longueur de chaque mur se règle dans le panneau.
+- **Éléments** : pièces, escaliers (nombre de marches, sens de montée), portes (simples ou doubles, pour un placard),
   fenêtres, meubles (catalogue de tailles courantes ou meuble libre).
 - **Tailles** : largeur, profondeur/longueur, hauteur en cm, réglables au clavier
   dans le panneau ou à la souris/au doigt avec les poignées ; rotation libre
