@@ -20,3 +20,19 @@ Pour le transférer sur un autre appareil : *Options › Exporter*, puis *Import
 
 Ouvrir `index.html` dans un navigateur suffit. On peut aussi le servir avec
 n'importe quel serveur statique, par exemple `python3 -m http.server` dans ce dossier.
+
+## Vue 3D
+
+Le bouton **3D** construit la maison en volume à partir du plan :
+
+- **Vue d'ensemble** : maquette qu'on fait tourner (niveau affiché et ceux du dessous).
+  Un clic sur un meuble affiche sa photo et ses dimensions ; un double-clic sur le sol
+  y dépose le promeneur.
+- **Se promener** : à hauteur d'yeux. `Z Q S D` (ou `W A S D`) et les flèches pour marcher,
+  `Maj` pour courir, glisser pour regarder. Sur téléphone : pouce gauche pour avancer,
+  glisser à droite pour regarder. Les murs arrêtent le promeneur, les portes laissent passer,
+  et les escaliers mènent au niveau du dessus.
+
+Les murs sont générés autour de chaque pièce ; une porte ou une fenêtre posée sur un mur
+y découpe une ouverture. La photo d'un meuble est plaquée sur sa face avant (le trait épais
+sur le plan). La 3D utilise three.js, chargé depuis un CDN à la première ouverture.

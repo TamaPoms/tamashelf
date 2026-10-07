@@ -203,6 +203,33 @@ dialog::backdrop { background: rgba(10, 15, 17, .55); }
 #lightbox img { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; border-radius: 8px; }
 
 /* ---------- Téléphone ---------- */
+/* ---------- Vue 3D ---------- */
+.v3d { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; flex-direction: column; }
+.v3d canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+.v3d-stage { position: relative; flex: 1; min-height: 0; }
+.v3d-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.v3d-bar .where { font-family: var(--font-num); font-size: 12px; color: var(--muted); margin-right: auto; }
+.v3d-help {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 6px 14px;
+  font-size: 12px; color: var(--muted); text-align: center; pointer-events: none;
+}
+.joy { position: absolute; width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%; border: 2px solid var(--accent); background: var(--accent-soft); pointer-events: none; }
+.joy i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; background: var(--accent); opacity: .8; }
+.card3d {
+  position: absolute; right: 16px; top: 16px; width: min(280px, calc(100% - 32px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.card3d img { width: 100%; max-height: 200px; object-fit: contain; border-radius: 8px; background: var(--paper); }
+.card3d b { font-size: 15px; }
+.card3d .facts { font-size: 11px; }
+.v3d-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); padding: 16px; text-align: center; }
+
 @media (max-width: 760px) {
   main { flex-direction: column; }
   .top { flex-wrap: wrap; overflow-x: visible; row-gap: 6px; padding-block: 8px; }
@@ -250,6 +277,8 @@ dialog::backdrop { background: rgba(10, 15, 17, .55); }
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 7h12v5H2zM4 12v2M12 12v2M3 7V4h10v3"/></svg><span class="lbl-txt">Meuble ▾</span></summary>
       <div class="dropdown" id="furnList"></div>
     </details>
+    <button class="btn has-lbl" id="open3d" title="Voir en 3D et se promener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5zM2 5l6 3.5L14 5M8 8.5v6"/></svg><span class="lbl-txt">3D</span></button>
   </div>
   <div class="sep"></div>
   <div class="group">
@@ -275,6 +304,7 @@ dialog::backdrop { background: rgba(10, 15, 17, .55); }
         <div class="title">Fichier</div>
         <button id="exportBtn">Exporter le plan (.json)</button>
         <button id="importBtn">Importer un plan…</button>
+        <button id="sampleBtn">Recharger le plan d'exemple…</button>
         <button id="newBtn" class="danger">Nouveau plan vide…</button>
       </div>
     </details>
@@ -308,6 +338,23 @@ dialog::backdrop { background: rgba(10, 15, 17, .55); }
 
 <input type="file" id="photoInput" accept="image/*" hidden>
 <input type="file" id="importInput" accept="application/json,.json" hidden>
+
+<div class="v3d" id="v3d" hidden>
+  <div class="v3d-bar">
+    <div class="levels" role="group" aria-label="Mode 3D">
+      <button id="m3Over" aria-pressed="true">Vue d'ensemble</button>
+      <button id="m3Walk" aria-pressed="false">Se promener</button>
+    </div>
+    <span class="where" id="v3Where"></span>
+    <button class="btn" id="v3Close">Revenir au plan</button>
+  </div>
+  <div class="v3d-stage" id="v3Stage">
+    <div class="v3d-msg" id="v3Msg">Chargement de la 3D…</div>
+    <div class="joy" id="joy" hidden><i></i></div>
+    <div class="card3d" id="card3d" hidden></div>
+    <div class="v3d-help" id="v3Help"></div>
+  </div>
+</div>
 
 <dialog id="lightbox">
   <div class="dlg">
@@ -372,7 +419,7 @@ function makeItem(type, over = {}) {
 function sampleDoc() {
   const R = (name, x, y, w, d, color) => makeItem('room', { name, x, y, w, d, color });
   const F = (name, x, y, w, d, h, color, rot = 0) => makeItem('furniture', { name, x, y, w, d, h, color: color || TYPES.furniture.color, rot });
-  const stairsA = makeItem('stairs', { name: 'Escalier', x: 262, y: 312, w: 90, d: 280, steps: 15 });
+  const stairsA = makeItem('stairs', { name: 'Escalier', x: 262, y: 350, w: 90, d: 240, steps: 14 });
   const rdc = {
     id: uid(), name: 'Rez-de-chaussée', items: [
       R('Entrée', 0, 0, 250, 300, '#D6CFC1'),
@@ -381,8 +428,10 @@ function sampleDoc() {
       stairsA,
       makeItem('door', { name: 'Porte d\'entrée', x: 80, y: -5, w: 90, d: 10, rot: 180 }),
       makeItem('door', { name: 'Porte cuisine', x: 140, y: 295, w: 83, d: 10, rot: 180, flip: true }),
+      makeItem('door', { name: 'Porte séjour', x: 208.5, y: 145, w: 83, d: 10, rot: 90 }),
+      makeItem('door', { name: 'Porte cuisine-séjour', x: 208.5, y: 445, w: 83, d: 10, rot: 90, flip: true }),
       makeItem('window', { x: 480, y: 594, w: 200, d: 12, name: 'Baie vitrée' }),
-      makeItem('window', { x: 794, y: 200, w: 120, d: 12, rot: 90 }),
+      makeItem('window', { x: 740, y: 254, w: 120, d: 12, rot: 90 }),
       makeItem('window', { x: 60, y: 594, w: 100, d: 12 }),
       F('Canapé 3 places', 420, 60, 210, 90, 85, '#5F7A6A'),
       F('Table basse', 470, 180, 110, 60, 40, '#D9C3A0'),
@@ -395,20 +444,22 @@ function sampleDoc() {
   };
   const etage = {
     id: uid(), name: 'Étage', items: [
-      R('Chambre parentale', 0, 0, 420, 320, '#C7B8E0'),
-      R('Chambre enfant', 420, 0, 380, 320, '#9CC5A1'),
-      R('Salle de bain', 0, 320, 250, 280, '#8FD0C9'),
-      R('Palier', 250, 320, 550, 280, '#D6CFC1'),
-      makeItem('stairs', { name: 'Escalier', x: 262, y: 312, w: 90, d: 280, steps: 15, reverse: true }),
+      R('Chambre parentale', 0, 0, 420, 300, '#C7B8E0'),
+      R('Chambre enfant', 420, 0, 380, 300, '#9CC5A1'),
+      R('Salle de bain', 0, 300, 250, 300, '#8FD0C9'),
+      R('Palier', 250, 300, 550, 300, '#D6CFC1'),
+      makeItem('stairs', { name: 'Trémie escalier', x: 262, y: 350, w: 90, d: 240, steps: 14, reverse: true }),
       F('Lit double 160', 130, 20, 160, 200, 50, '#E5A9A0'),
-      F('Armoire', 10, 250, 120, 60, 200, '#7D6450'),
+      F('Armoire', 10, 230, 120, 60, 200, '#7D6450'),
       F('Lit simple 90', 690, 20, 90, 190, 50, '#E8C07D'),
       F('Bureau', 450, 20, 120, 60, 75),
       F('Baignoire', 10, 515, 170, 75, 55, '#A7C4E5'),
-      F('Lavabo', 180, 330, 60, 45, 85, '#A9B3B5'),
-      makeItem('door', { name: 'Porte chambre', x: 300, y: 315, w: 83, d: 10 }),
-      makeItem('door', { name: 'Porte chambre', x: 600, y: 315, w: 83, d: 10, flip: true }),
-      makeItem('door', { name: 'Porte SdB', x: 245, y: 480, w: 73, d: 10, rot: 90 }),
+      F('Lavabo', 180, 312, 60, 45, 85, '#A9B3B5'),
+      makeItem('door', { name: 'Porte chambre', x: 300, y: 295, w: 83, d: 10 }),
+      makeItem('door', { name: 'Porte chambre', x: 600, y: 295, w: 83, d: 10, flip: true }),
+      makeItem('door', { name: 'Porte SdB', x: 213.5, y: 445, w: 73, d: 10, rot: 90 }),
+      makeItem('window', { x: 150, y: -6, w: 120, d: 12 }),
+      makeItem('window', { x: 560, y: -6, w: 120, d: 12 }),
     ],
   };
   return { v: 1, sample: true, levels: [rdc, etage], cur: rdc.id };
@@ -549,7 +600,8 @@ function baseSVG(it) {
 }
 function topSVG(it) {
   const { w, d } = it;
-  if (it.type === 'furniture') return `<rect width="${w}" height="${d}" fill="none" class="st-ink" stroke-width="1.5"/>`;
+  if (it.type === 'furniture') return `<rect width="${w}" height="${d}" fill="none" class="st-ink" stroke-width="1.5"/>`
+    + `<line x1="0" y1="${d}" x2="${w}" y2="${d}" class="st-ink" stroke-width="4"/>`; // face avant (porte la photo en 3D)
   if (it.type === 'stairs') {
     // flèche de montée
     const cx = w / 2, a = it.reverse ? d - 12 : 12, b = it.reverse ? 14 : d - 14, hd = Math.min(18, w / 3);
@@ -699,7 +751,7 @@ function levelPanel() {
     h += `</div></div>`;
   }
   if (!lv.items.length) h += `<p class="empty">Ce niveau est vide. Ajoutez une pièce, un escalier ou un meuble avec les boutons du haut.</p>`;
-  h += `<div class="note">Touchez un élément pour le régler. Raccourcis : <kbd>Suppr</kbd> effacer, <kbd>Ctrl</kbd>+<kbd>D</kbd> dupliquer, <kbd>R</kbd> pivoter de 90°, flèches pour décaler (<kbd>Maj</kbd> ×10).</div>`;
+  h += `<div class="note">Touchez un élément pour le régler. Le bouton <b>3D</b> permet de visiter la maison. Le trait épais d'un meuble marque sa face avant, qui porte la photo en 3D. Raccourcis : <kbd>Suppr</kbd> effacer, <kbd>Ctrl</kbd>+<kbd>D</kbd> dupliquer, <kbd>R</kbd> pivoter de 90°, flèches pour décaler (<kbd>Maj</kbd> ×10).</div>`;
   return `<h2>${esc(lv.name)}</h2>` + h;
 }
 
@@ -1107,6 +1159,13 @@ $('#importInput').addEventListener('change', async e => {
     setStatus('Plan importé');
   } catch (err) { setStatus('Fichier non reconnu : choisissez un export .json de cette appli'); }
 });
+$('#sampleBtn').addEventListener('click', async () => {
+  closeMenus();
+  if (!await confirmBox('Recharger l\'exemple ?', 'Le plan actuel sera remplacé par la maison d\'exemple. Annuler permet de revenir en arrière tant que la page reste ouverte.', 'Recharger l\'exemple')) return;
+  pushHistory();
+  const o = sampleDoc(); doc.levels = o.levels; doc.cur = o.cur; doc.sample = true; selId = null;
+  changed(true); fit();
+});
 $('#newBtn').addEventListener('click', async () => {
   closeMenus();
   if (!await confirmBox('Nouveau plan vide ?', 'Le plan actuel sera remplacé. Vous pourrez encore revenir en arrière avec Annuler tant que la page reste ouverte.', 'Créer le plan vide')) return;
@@ -1224,7 +1283,7 @@ function openSheet() { aside.classList.remove('collapsed'); }
 $('#grip').addEventListener('click', () => aside.classList.toggle('collapsed'));
 
 document.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea, select, dialog')) return;
+  if (v3.open || e.target.closest('input, textarea, select, dialog')) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
@@ -1244,6 +1303,488 @@ document.addEventListener('keydown', e => {
 
 let resizeTimer = 0;
 new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderPlan, 50); }).observe(stage);
+
+/* =========================================================
+   Vue 3D : vue d'ensemble (maison de poupée) et promenade
+   ========================================================= */
+const THREE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+const ORBIT_URL = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js';
+const WALL_T = 8;        // épaisseur d'un demi-mur (cm), chaque pièce a ses propres murs
+const EYE = 160;         // hauteur des yeux (cm)
+const RADIUS = 22;       // "épaisseur" du promeneur pour les collisions
+const DOOR_TOP_DEFAULT = 204, WINDOW_TOP = 215;
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error(src));
+    document.head.appendChild(s);
+  });
+}
+let threeReady = null;
+function ensureThree() {
+  if (!threeReady) threeReady = (window.THREE ? Promise.resolve() : loadScript(THREE_URL))
+    .then(() => THREE.OrbitControls ? null : loadScript(ORBIT_URL))
+    .catch(e => { threeReady = null; throw e; });
+  return threeReady;
+}
+
+// point du plan -> repère local d'un élément (origine au coin haut-gauche)
+function toItemLocal(it, x, y) {
+  const c = center(it), a = -it.rot * Math.PI / 180;
+  const dx = x - c.x, dy = y - c.y;
+  return { x: dx * Math.cos(a) - dy * Math.sin(a) + it.w / 2, y: dx * Math.sin(a) + dy * Math.cos(a) + it.d / 2 };
+}
+function inRect(it, x, y, m = 0) {
+  const l = toItemLocal(it, x, y);
+  return l.x >= -m && l.x <= it.w + m && l.y >= -m && l.y <= it.d + m;
+}
+// avancement (0 en bas, 1 en haut) sur un escalier, ou null si hors de l'escalier
+function stairProgress(st, x, y) {
+  const l = toItemLocal(st, x, y);
+  if (l.x < 0 || l.x > st.w || l.y < 0 || l.y > st.d) return null;
+  return clamp(st.reverse ? l.y / st.d : (st.d - l.y) / st.d, 0, 1);
+}
+
+// altitude de chaque niveau ; un escalier posé au-dessus d'un escalier du niveau inférieur n'est que la trémie
+function houseLayout() {
+  const L = doc.levels, stairs = [], elev = [0];
+  L.forEach((lv, i) => {
+    const below = i > 0 ? stairs[i - 1] : [];
+    stairs[i] = lv.items.filter(it => it.type === 'stairs' && !below.some(b => inside(b, it) || inside(it, b)));
+    const rooms = lv.items.filter(it => it.type === 'room');
+    const hgt = stairs[i].length ? Math.max(...stairs[i].map(s => s.h)) : (rooms.length ? Math.max(...rooms.map(r => r.h)) : 250) + 20;
+    elev[i + 1] = elev[i] + hgt;
+  });
+  return { stairs, elev };
+}
+
+const v3 = {
+  open: false, mode: 'over', renderer: null, scene: null, cam: null, orbit: null, raf: 0, last: 0,
+  levelGroups: [], pick: [], blockers: [], layout: null,
+  walk: { x: 0, z: 0, yaw: 0, pitch: 0, lv: 0, y: 0 }, keys: new Set(),
+  joy: null, look: null, down: null,
+};
+
+function srgb(hex) { return new THREE.Color(hex).convertSRGBToLinear(); }
+function mixHex(hex, to, k) {
+  const a = new THREE.Color(hex), b = new THREE.Color(to);
+  return '#' + a.lerp(b, k).getHexString();
+}
+function mat(hex, extra = {}) { return new THREE.MeshStandardMaterial(Object.assign({ color: srgb(hex), roughness: .85, metalness: 0 }, extra)); }
+
+// place un objet au point (lx, ly) du repère local d'un élément
+function placeLocal(obj, it, lx, ly, y) {
+  const c = center(it), a = it.rot * Math.PI / 180;
+  const dx = lx - it.w / 2, dy = ly - it.d / 2;
+  obj.position.set(c.x + dx * Math.cos(a) - dy * Math.sin(a), y, c.y + dx * Math.sin(a) + dy * Math.cos(a));
+  obj.rotation.y = -a;
+}
+
+function buildScene() {
+  const scene = new THREE.Scene();
+  const css = getComputedStyle(document.documentElement);
+  scene.background = srgb(css.getPropertyValue('--bg').trim() || '#E7EBE8');
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8577, .75));
+  const sun = new THREE.DirectionalLight(0xffffff, .65);
+  scene.add(sun, sun.target);
+
+  const layout = houseLayout();
+  v3.layout = layout; v3.levelGroups = []; v3.pick = []; v3.blockers = [];
+  const texCache = new Map();
+  const tex = url => {
+    if (!texCache.has(url)) { const t = new THREE.TextureLoader().load(url); t.encoding = THREE.sRGBEncoding; texCache.set(url, t); }
+    return texCache.get(url);
+  };
+  const wallMat = mat('#EFEBE4'), edgeMat = new THREE.LineBasicMaterial({ color: srgb('#2a3236'), transparent: true, opacity: .35 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: srgb('#9fd0ec'), transparent: true, opacity: .3, roughness: .1, side: THREE.DoubleSide });
+  const box = (w, h, d, m) => { const me = new THREE.Mesh(new THREE.BoxGeometry(Math.max(w, .1), Math.max(h, .1), Math.max(d, .1)), m); me.castShadow = me.receiveShadow = true; return me; };
+  const withEdges = me => { const e = new THREE.LineSegments(new THREE.EdgesGeometry(me.geometry), edgeMat); me.add(e); return me; };
+
+  let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
+
+  doc.levels.forEach((lv, li) => {
+    const grp = new THREE.Group(); grp.userData.li = li;
+    const y0 = layout.elev[li];
+    const blockers = [];
+    const rooms = lv.items.filter(i => i.type === 'room');
+    const openings = lv.items.filter(i => i.type === 'door' || i.type === 'window');
+    const wells = li > 0 ? layout.stairs[li - 1] : [];
+
+    for (const it of lv.items) for (const p of corners(it)) { minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x); minz = Math.min(minz, p.y); maxz = Math.max(maxz, p.y); }
+
+    for (const r of rooms) {
+      // sol, découpé autour des trémies d'escalier du niveau inférieur
+      const xs = new Set([0, r.w]), ys = new Set([0, r.d]), holes = [];
+      for (const st of wells) {
+        const pts = corners(st).map(p => toItemLocal(r, p.x, p.y));
+        const h = { x0: clamp(Math.min(...pts.map(p => p.x)), 0, r.w), x1: clamp(Math.max(...pts.map(p => p.x)), 0, r.w),
+                    y0: clamp(Math.min(...pts.map(p => p.y)), 0, r.d), y1: clamp(Math.max(...pts.map(p => p.y)), 0, r.d) };
+        if (h.x1 - h.x0 > 1 && h.y1 - h.y0 > 1) { holes.push(h); xs.add(h.x0); xs.add(h.x1); ys.add(h.y0); ys.add(h.y1); }
+      }
+      const X = [...xs].sort((a, b) => a - b), Y = [...ys].sort((a, b) => a - b);
+      const floorMat = mat(mixHex(r.color, '#ffffff', .45), { side: THREE.DoubleSide });
+      for (let i = 0; i < X.length - 1; i++) for (let j = 0; j < Y.length - 1; j++) {
+        const cx = (X[i] + X[i + 1]) / 2, cy = (Y[j] + Y[j + 1]) / 2;
+        if (holes.some(h => cx > h.x0 && cx < h.x1 && cy > h.y0 && cy < h.y1)) continue;
+        const pl = new THREE.Mesh(new THREE.PlaneGeometry(X[i + 1] - X[i], Y[j + 1] - Y[j]), floorMat);
+        pl.rotation.x = -Math.PI / 2; pl.receiveShadow = true;
+        const holder = new THREE.Group(); holder.add(pl);
+        placeLocal(holder, r, cx, cy, y0 + .5);
+        grp.add(holder);
+      }
+
+      // murs, avec les ouvertures des portes et fenêtres posées dessus
+      // s'il y a un étage, les murs montent jusqu'à son plancher
+      const C = corners(r), H = doc.levels[li + 1] ? Math.max(r.h, layout.elev[li + 1] - y0) : r.h;
+      for (let k = 0; k < 4; k++) {
+        const p0 = C[k], p1 = C[(k + 1) % 4];
+        const len = Math.hypot(p1.x - p0.x, p1.y - p0.y); if (len < 1) continue;
+        const u = { x: (p1.x - p0.x) / len, y: (p1.y - p0.y) / len };
+        const rc = center(r); let n = { x: -u.y, y: u.x };
+        if ((rc.x - p0.x) * n.x + (rc.y - p0.y) * n.y < 0) n = { x: -n.x, y: -n.y };
+        const ops = [];
+        for (const o of openings) {
+          const oc = center(o), ax = { x: Math.cos(o.rot * Math.PI / 180), y: Math.sin(o.rot * Math.PI / 180) };
+          const along = (oc.x - p0.x) * u.x + (oc.y - p0.y) * u.y, across = (oc.x - p0.x) * n.x + (oc.y - p0.y) * n.y;
+          if (Math.abs(across) > Math.max(25, o.d) || Math.abs(ax.x * u.x + ax.y * u.y) < .9) continue;
+          const a = clamp(along - o.w / 2, 0, len), b = clamp(along + o.w / 2, 0, len);
+          if (b - a < 5) continue;
+          const top = Math.min(H - 5, o.type === 'door' ? (o.h || DOOR_TOP_DEFAULT) : WINDOW_TOP);
+          const bottom = o.type === 'door' ? 0 : clamp(WINDOW_TOP - o.h, 0, top - 10);
+          ops.push({ a, b, top, bottom, o });
+        }
+        ops.sort((p, q) => p.a - q.a);
+        const piece = (s0, s1, h0, h1, block) => {
+          if (s1 - s0 < .5 || h1 - h0 < .5) return;
+          const me = withEdges(box(s1 - s0, h1 - h0, WALL_T, wallMat));
+          const mid = (s0 + s1) / 2;
+          const cx = p0.x + u.x * mid + n.x * WALL_T / 2, cz = p0.y + u.y * mid + n.y * WALL_T / 2;
+          me.position.set(cx, y0 + (h0 + h1) / 2, cz);
+          me.rotation.y = -Math.atan2(u.y, u.x);
+          grp.add(me);
+          if (block) blockers.push({ x: cx, z: cz, u, n, hl: (s1 - s0) / 2, ht: WALL_T / 2 });
+        };
+        let s = 0;
+        for (const op of ops) {
+          if (op.a < s) { s = Math.max(s, op.b); continue; }
+          piece(s, op.a, 0, H, true);
+          piece(op.a, op.b, op.top, H, false);
+          if (op.bottom > 0) {
+            piece(op.a, op.b, 0, op.bottom, true);
+            const g = new THREE.Mesh(new THREE.PlaneGeometry(op.b - op.a, op.top - op.bottom), glassMat);
+            const mid = (op.a + op.b) / 2;
+            g.position.set(p0.x + u.x * mid + n.x * WALL_T / 2, y0 + (op.top + op.bottom) / 2, p0.y + u.y * mid + n.y * WALL_T / 2);
+            g.rotation.y = -Math.atan2(u.y, u.x);
+            grp.add(g);
+          }
+          s = op.b;
+        }
+        piece(s, len, 0, H, true);
+      }
+    }
+
+    // portes : battant ouvert à 90°
+    for (const o of lv.items.filter(i => i.type === 'door')) {
+      const top = o.h || DOOR_TOP_DEFAULT;
+      const leaf = withEdges(box(4, top - 2, o.w - 4, mat(o.color)));
+      const holder = new THREE.Group(); holder.add(leaf);
+      placeLocal(holder, o, o.flip ? o.w - 2 : 2, -o.w / 2 + 2, y0 + top / 2);
+      grp.add(holder);
+    }
+
+    // escaliers qui montent depuis ce niveau
+    const up = layout.stairs[li];
+    for (const st of up) {
+      const n = st.steps || Math.max(2, Math.round(st.d / 18));
+      const total = doc.levels[li + 1] ? layout.elev[li + 1] - y0 : st.h;
+      const m = mat(st.color);
+      for (let i = 0; i < n; i++) {
+        const hTop = total * (i + 1) / n, sd = st.d / n;
+        const ly = st.reverse ? sd * (i + .5) : st.d - sd * (i + .5);
+        const step = withEdges(box(st.w, hTop, sd, m));
+        const holder = new THREE.Group(); holder.add(step);
+        placeLocal(holder, st, st.w / 2, ly, y0 + hTop / 2);
+        holder.userData.item = st; step.userData.item = st;
+        grp.add(holder); v3.pick.push(step);
+      }
+    }
+
+    // meubles, la photo sur la face avant (le côté bas du meuble sur le plan)
+    for (const f of lv.items.filter(i => i.type === 'furniture')) {
+      const side = mat(f.color);
+      const front = f.photo ? new THREE.MeshStandardMaterial({ map: tex(f.photo), roughness: .8 }) : side;
+      const me = new THREE.Mesh(new THREE.BoxGeometry(Math.max(f.w, 1), Math.max(f.h, 1), Math.max(f.d, 1)), [side, side, side, side, front, side]);
+      me.castShadow = me.receiveShadow = true;
+      withEdges(me);
+      const holder = new THREE.Group(); holder.add(me);
+      placeLocal(holder, f, f.w / 2, f.d / 2, y0 + f.h / 2);
+      me.userData.item = f;
+      grp.add(holder); v3.pick.push(me);
+    }
+
+    v3.blockers[li] = blockers;
+    v3.levelGroups.push(grp);
+    scene.add(grp);
+  });
+
+  if (!isFinite(minx)) { minx = -300; maxx = 300; minz = -300; maxz = 300; }
+  const cx = (minx + maxx) / 2, cz = (minz + maxz) / 2, size = Math.max(maxx - minx, maxz - minz, 300);
+  v3.bounds = { cx, cz, size };
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(size * 40, size * 40), mat(mixHex(css.getPropertyValue('--bg').trim() || '#E7EBE8', '#7d8f74', .25)));
+  ground.rotation.x = -Math.PI / 2; ground.position.set(cx, -1, cz); ground.receiveShadow = true;
+  scene.add(ground);
+
+  sun.position.set(cx + size * .6, size * 1.4, cz + size * .9);
+  sun.target.position.set(cx, 0, cz);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera; sc.left = sc.bottom = -size; sc.right = sc.top = size; sc.near = 10; sc.far = size * 5;
+  sun.shadow.bias = -0.0005;
+  return scene;
+}
+
+function disposeScene(scene) {
+  if (!scene) return;
+  scene.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of ms) { if (m.map) m.map.dispose(); m.dispose(); }
+  });
+}
+
+function v3Resize() {
+  if (!v3.renderer) return;
+  const st = $('#v3Stage'), w = st.clientWidth, h = st.clientHeight;
+  v3.renderer.setSize(w, h, false);
+  v3.cam.aspect = w / Math.max(1, h); v3.cam.updateProjectionMatrix();
+}
+
+async function open3D() {
+  closeMenus();
+  $('#v3d').hidden = false; v3.open = true;
+  $('#v3Msg').hidden = false; $('#v3Msg').textContent = 'Chargement de la 3D…';
+  try { await ensureThree(); }
+  catch (e) { $('#v3Msg').textContent = 'La 3D n\'a pas pu se charger. Vérifiez la connexion Internet puis réessayez.'; return; }
+  if (!v3.open) return;
+  $('#v3Msg').hidden = true;
+  if (!v3.renderer) {
+    v3.renderer = new THREE.WebGLRenderer({ antialias: true });
+    v3.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    v3.renderer.outputEncoding = THREE.sRGBEncoding;
+    v3.renderer.shadowMap.enabled = true;
+    v3.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    $('#v3Stage').prepend(v3.renderer.domElement);
+    v3.cam = new THREE.PerspectiveCamera(60, 1, 5, 200000);
+    v3.cam.rotation.order = 'YXZ';
+    v3.orbit = new THREE.OrbitControls(v3.cam, v3.renderer.domElement);
+    v3.orbit.enableDamping = true; v3.orbit.maxPolarAngle = Math.PI / 2 - .05;
+    bind3DInput(v3.renderer.domElement);
+    new ResizeObserver(v3Resize).observe($('#v3Stage'));
+  }
+  disposeScene(v3.scene);
+  v3.scene = buildScene();
+  v3Resize();
+  // départ : pièce sélectionnée, sinon pièce au centre de l'écran, sinon première pièce
+  const li = doc.levels.indexOf(level());
+  const rooms = items().filter(i => i.type === 'room');
+  const vc = viewCenterWorld();
+  const sel = selected();
+  const startRoom = (sel && sel.type === 'room' && sel) || rooms.find(r => inRect(r, vc.x, vc.y)) || rooms[0];
+  const sp = sel && sel.type !== 'room' ? center(sel) : startRoom ? center(startRoom) : vc;
+  let yaw = Math.PI;
+  if (sel && sel.type === 'stairs') { // face au sens de la montée
+    const a = sel.rot * Math.PI / 180, dir = sel.reverse ? 1 : -1, fx = -Math.sin(a) * dir, fz = Math.cos(a) * dir;
+    yaw = Math.atan2(-fx, -fz);
+  }
+  Object.assign(v3.walk, { x: sp.x, z: sp.y, lv: li, y: 0, yaw, pitch: -.05 });
+  setMode3D(v3.mode);
+  v3.last = performance.now();
+  cancelAnimationFrame(v3.raf);
+  v3.raf = requestAnimationFrame(tick3D);
+}
+
+function close3D() {
+  v3.open = false; $('#v3d').hidden = true;
+  cancelAnimationFrame(v3.raf); v3.keys.clear(); v3.joy = v3.look = null;
+  $('#joy').hidden = true; $('#card3d').hidden = true;
+}
+
+function setMode3D(mode) {
+  v3.mode = mode;
+  $('#m3Over').setAttribute('aria-pressed', mode === 'over');
+  $('#m3Walk').setAttribute('aria-pressed', mode === 'walk');
+  $('#card3d').hidden = true;
+  const touch = matchMedia('(pointer: coarse)').matches;
+  if (mode === 'over') {
+    v3.orbit.enabled = true;
+    const li = doc.levels.indexOf(level());
+    v3.levelGroups.forEach((g, i) => { g.visible = i <= li; });
+    const { cx, cz, size } = v3.bounds, y = v3.layout.elev[li];
+    v3.cam.fov = 45; v3.cam.updateProjectionMatrix();
+    v3.orbit.target.set(cx, y + 80, cz);
+    const k = Math.max(1, 1.3 / v3.cam.aspect); // recule davantage sur un écran en hauteur
+    v3.cam.position.set(cx + size * .55 * k, y + size * 1.05 * k, cz + size * 1.0 * k);
+    v3.orbit.update();
+    $('#v3Help').textContent = touch
+      ? 'Un doigt pour tourner, deux pour zoomer. Touchez un meuble pour le voir, puis « Se promener » pour entrer.'
+      : 'Glisser pour tourner, molette pour zoomer, clic droit pour décaler. Cliquez un meuble pour le voir, double-cliquez le sol pour vous y promener.';
+  } else {
+    v3.orbit.enabled = false;
+    v3.levelGroups.forEach(g => { g.visible = true; });
+    v3.cam.fov = 70; v3.cam.updateProjectionMatrix();
+    $('#v3Help').textContent = touch
+      ? 'Pouce gauche : avancer. Glisser à droite : regarder autour. Les escaliers mènent à l\'étage.'
+      : 'Z Q S D ou flèches pour marcher (Maj pour courir), glisser la souris pour regarder. Les escaliers mènent à l\'étage.';
+  }
+  $('#v3Help').hidden = false;
+  updateWhere();
+}
+function updateWhere() {
+  if (v3.mode === 'over') { $('#v3Where').textContent = `${level().name} et dessous`; return; }
+  const lv = doc.levels[v3.walk.lv], room = lv && lv.items.find(r => r.type === 'room' && inRect(r, v3.walk.x, v3.walk.z));
+  $('#v3Where').textContent = `${lv ? lv.name : ''}${room ? ' · ' + room.name : ''}`;
+}
+
+function floorY() {
+  const w = v3.walk, L = v3.layout;
+  // en montant depuis le niveau courant
+  for (const st of L.stairs[w.lv] || []) {
+    const p = stairProgress(st, w.x, w.z); if (p === null) continue;
+    const top = doc.levels[w.lv + 1] ? L.elev[w.lv + 1] - L.elev[w.lv] : st.h;
+    if (p > .97 && doc.levels[w.lv + 1]) { w.lv++; return L.elev[w.lv]; }
+    return L.elev[w.lv] + p * top;
+  }
+  // en redescendant vers le niveau inférieur
+  if (w.lv > 0) for (const st of L.stairs[w.lv - 1]) {
+    const p = stairProgress(st, w.x, w.z); if (p === null || p > .97) continue;
+    w.lv--;
+    return L.elev[w.lv] + p * (L.elev[w.lv + 1] - L.elev[w.lv]);
+  }
+  return L.elev[w.lv];
+}
+function blocked(x, z) {
+  for (const b of v3.blockers[v3.walk.lv] || []) {
+    const dx = x - b.x, dz = z - b.z;
+    if (Math.abs(dx * b.u.x + dz * b.u.y) < b.hl + RADIUS && Math.abs(dx * b.n.x + dz * b.n.y) < b.ht + RADIUS) return true;
+  }
+  return false;
+}
+
+function tick3D(now) {
+  if (!v3.open) return;
+  const dt = Math.min(.1, (now - v3.last) / 1000); v3.last = now;
+  if (v3.mode === 'walk') {
+    const w = v3.walk, k = v3.keys;
+    let fwd = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
+    let str = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0);
+    const turn = (k.has('ArrowLeft') ? 1 : 0) - (k.has('ArrowRight') ? 1 : 0);
+    w.yaw += turn * 1.8 * dt;
+    if (v3.joy) { fwd = -v3.joy.vy; str = v3.joy.vx; }
+    const speed = (k.has('ShiftLeft') || k.has('ShiftRight') ? 300 : 150) * dt;
+    if (fwd || str) {
+      const sin = Math.sin(w.yaw), cos = Math.cos(w.yaw);
+      // la caméra regarde vers -Z quand yaw = 0
+      const mx = (-sin * fwd + cos * str) * speed, mz = (-cos * fwd - sin * str) * speed;
+      if (!blocked(w.x + mx, w.z + mz)) { w.x += mx; w.z += mz; }
+      else if (!blocked(w.x + mx, w.z)) w.x += mx;
+      else if (!blocked(w.x, w.z + mz)) w.z += mz;
+    }
+    const target = floorY() + EYE;
+    w.y = w.y ? w.y + (target - w.y) * Math.min(1, dt * 12) : target;
+    v3.cam.position.set(w.x, w.y, w.z);
+    v3.cam.rotation.set(w.pitch, w.yaw, 0);
+    if (fwd || str) updateWhere();
+  } else v3.orbit.update();
+  v3.renderer.render(v3.scene, v3.cam);
+  v3.raf = requestAnimationFrame(tick3D);
+}
+
+function raycast(e, list) {
+  const r = v3.renderer.domElement.getBoundingClientRect();
+  const m = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  const rc = new THREE.Raycaster(); rc.setFromCamera(m, v3.cam);
+  return rc.intersectObjects(list, true).filter(h => h.object.visible && (function vis(o) { return !o || (o.visible && vis(o.parent)); })(h.object));
+}
+function showCard(it) {
+  const c = $('#card3d');
+  if (!it) { c.hidden = true; return; }
+  c.innerHTML = `${it.photo ? `<img src="${it.photo}" alt="Photo de ${esc(it.name)}">` : ''}
+    <b>${esc(it.name)}</b>
+    <div class="facts"><span>L <b>${fmt(it.w)}</b></span><span>P <b>${fmt(it.d)}</b></span><span>H <b>${fmt(it.h)}</b> cm</span></div>
+    ${it.notes ? `<div class="empty">${esc(it.notes)}</div>` : ''}
+    <div class="actions"><button class="btn" data-edit3d="${it.id}">Modifier sur le plan</button><button class="btn ghost" data-close3dcard>Fermer</button></div>`;
+  c.hidden = false;
+}
+$('#card3d').addEventListener('click', e => {
+  if (e.target.closest('[data-close3dcard]')) { $('#card3d').hidden = true; return; }
+  const b = e.target.closest('[data-edit3d]'); if (!b) return;
+  const id = b.dataset.edit3d, lv = doc.levels.find(l => l.items.some(i => i.id === id));
+  close3D();
+  if (lv && lv.id !== doc.cur) { doc.cur = lv.id; renderLevels(); renderGhost(); }
+  select(id); openSheet();
+});
+
+function bind3DInput(cv) {
+  cv.addEventListener('pointerdown', e => {
+    v3.down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    $('#v3Help').hidden = true;
+    if (v3.mode !== 'walk') return;
+    cv.setPointerCapture(e.pointerId);
+    const r = cv.getBoundingClientRect();
+    if (e.pointerType === 'touch' && e.clientX - r.left < r.width * .45 && !v3.joy) {
+      v3.joy = { id: e.pointerId, ox: e.clientX, oy: e.clientY, vx: 0, vy: 0 };
+      const j = $('#joy'); j.style.left = (e.clientX - r.left) + 'px'; j.style.top = (e.clientY - r.top) + 'px'; j.hidden = false;
+      j.firstElementChild.style.transform = '';
+    } else if (!v3.look) v3.look = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  });
+  cv.addEventListener('pointermove', e => {
+    if (v3.mode !== 'walk') return;
+    if (v3.joy && e.pointerId === v3.joy.id) {
+      let dx = e.clientX - v3.joy.ox, dy = e.clientY - v3.joy.oy; const d = Math.hypot(dx, dy), max = 50;
+      if (d > max) { dx *= max / d; dy *= max / d; }
+      v3.joy.vx = dx / max; v3.joy.vy = dy / max;
+      $('#joy').firstElementChild.style.transform = `translate(${dx}px, ${dy}px)`;
+    } else if (v3.look && e.pointerId === v3.look.id) {
+      const k = e.pointerType === 'touch' ? .006 : .004;
+      v3.walk.yaw += (e.clientX - v3.look.x) * k;
+      v3.walk.pitch = clamp(v3.walk.pitch + (e.clientY - v3.look.y) * k, -1.3, 1.3);
+      v3.look.x = e.clientX; v3.look.y = e.clientY;
+    }
+  });
+  const up = e => {
+    if (v3.joy && e.pointerId === v3.joy.id) { v3.joy = null; $('#joy').hidden = true; }
+    if (v3.look && e.pointerId === v3.look.id) v3.look = null;
+    const d = v3.down; v3.down = null;
+    if (e.type !== 'pointerup' || !d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6 || performance.now() - d.t > 400) return;
+    const hit = raycast(e, v3.pick)[0];
+    showCard(hit ? (hit.object.userData.item || hit.object.parent.userData.item) : null);
+  };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('dblclick', e => {
+    if (v3.mode !== 'over') return;
+    const hit = raycast(e, v3.levelGroups.filter(g => g.visible))[0];
+    if (!hit) return;
+    const g = (function grp(o) { return o.userData.li !== undefined ? o : grp(o.parent); })(hit.object);
+    Object.assign(v3.walk, { x: hit.point.x, z: hit.point.z, lv: g.userData.li, y: 0, pitch: -.05 });
+    // regarder vers le centre de la maison
+    v3.walk.yaw = Math.atan2(-(v3.bounds.cx - hit.point.x), -(v3.bounds.cz - hit.point.z));
+    setMode3D('walk');
+  });
+}
+
+window.addEventListener('keydown', e => {
+  if (!v3.open || e.target.closest('input, textarea, select')) return;
+  if (e.key === 'Escape') { close3D(); return; }
+  if (v3.mode === 'walk') { v3.keys.add(e.code); if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault(); }
+});
+window.addEventListener('keyup', e => v3.keys.delete(e.code));
+window.addEventListener('blur', () => v3.keys.clear());
+$('#open3d').addEventListener('click', open3D);
+$('#v3Close').addEventListener('click', close3D);
+$('#m3Over').addEventListener('click', () => setMode3D('over'));
+$('#m3Walk').addEventListener('click', () => { v3.walk.y = 0; setMode3D('walk'); });
 
 /* =========================================================
    Démarrage
